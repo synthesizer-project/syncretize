@@ -148,7 +148,7 @@ if __name__ == "__main__":
 
     # Define the download URL
     # NOTE: the original download URL (icg.port.ac.uk/~maraston/SSPn/SED/
-    # Sed_Mar05_SSP_Salpeter.tar.gz) no longer exists (checked 2026-07-22).
+    # Sed_Mar05_SSP_Salpeter.tar.gz) no longer exists (checked 2026-07-29).
     # The input data must be obtained by other means and placed in
     # input_dir before running with --download unset.
     original_data_url = {}
