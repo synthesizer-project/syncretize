@@ -163,6 +163,12 @@ if __name__ == "__main__":
 
     # Download the data if necessary
     if args.download:
+        if original_data_url is None:
+            raise ValueError(
+                "No working download URL is available for maraston11. "
+                "Obtain the input data by other means, place it in "
+                f"{output_dir}, and rerun without --download."
+            )
         download_data(output_dir, original_data_url)
 
     for variant in [

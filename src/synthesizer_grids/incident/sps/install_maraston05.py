@@ -157,6 +157,13 @@ if __name__ == "__main__":
     for imf in imfs:
         # Download the data if necessary
         if args.download:
+            if original_data_url[imf] is None:
+                raise ValueError(
+                    "No working download URL is available for "
+                    f"maraston05 (imf={imf}). Obtain the input data by "
+                    f"other means, place it in {input_dir}, and rerun "
+                    "without --download."
+                )
             print(original_data_url[imf])
             download_data(input_dir, original_data_url[imf])
 
