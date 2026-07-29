@@ -16,22 +16,19 @@ from synthesizer_grids.grid_io import GridFile
 from synthesizer_grids.parser import Parser
 
 
-def download_data(
-    output_dir,
-    data_url="http://www.icg.port.ac.uk/~maraston/M11/SSP_M11_Pickles.tar.gz",
-):
+def download_data(output_dir, url):
     """
     Download Maraston+11 data
     Args:
-        input_dir (string):
+        output_dir (string):
             directory to download and unpack data into
-        data_url (string):
+        url (string):
             URL from which to fetch the data
     Returns:
         None
     """
     filename = wget.download(
-        data_url
+        url
     )  # download the original data to the working directory
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -157,9 +154,16 @@ if __name__ == "__main__":
     # The location to untar the original data
     output_dir = f"{input_dir}/{sps_name}"
 
+    # Define the download URL
+    # NOTE: the original download URL (icg.port.ac.uk/~maraston/M11/
+    # SSP_M11_Pickles.tar.gz) no longer exists (checked 2026-07-29).
+    # The input data must be obtained by other means and placed in
+    # output_dir before running with --download unset.
+    original_data_url = None
+
     # Download the data if necessary
     if args.download:
-        download_data(output_dir)
+        download_data(output_dir, original_data_url)
 
     for variant in [
         False,

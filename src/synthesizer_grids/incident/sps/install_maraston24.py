@@ -129,6 +129,11 @@ if __name__ == "__main__":
 
     input_dir = f"{args.input_dir}/{sps_name}"
 
+    # NOTE: there is no public download URL for this model
+    # (checked 2026-07-29). The input data must be obtained by other
+    # means (e.g. from the authors) and placed in input_dir before
+    # running.
+
     # Create directory to store downloaded output if it doesn't exist
     if not os.path.exists(input_dir):
         os.mkdir(input_dir)

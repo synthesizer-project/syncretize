@@ -116,6 +116,10 @@ if __name__ == "__main__":
     input_dir = args.input_dir
     input_dir += f"/{sps_name}"
 
+    # NOTE: the original download site (icg.port.ac.uk/~maraston) no
+    # longer exists (checked 2026-07-29). The input data must be obtained
+    # by other means and placed in input_dir before running.
+
     # create directory to store downloaded output if it doesn't exist
     if not os.path.exists(input_dir):
         os.mkdir(input_dir)
