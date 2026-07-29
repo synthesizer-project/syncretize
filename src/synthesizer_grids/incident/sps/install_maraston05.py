@@ -154,7 +154,6 @@ if __name__ == "__main__":
     original_data_url = {}
     original_data_url["ss"] = None
 
-
     for imf in imfs:
         # Download the data if necessary
         if args.download:
