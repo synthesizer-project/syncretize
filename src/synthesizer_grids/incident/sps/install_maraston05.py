@@ -8,8 +8,8 @@ from pathlib import Path
 
 import numpy as np
 import wget
-from synthesizer.conversions import flam_to_fnu
-from unyt import Hz, angstrom, cm, dimensionless, erg, s, yr
+from synthesizer.conversions import llam_to_lnu
+from unyt import Hz, angstrom, dimensionless, erg, s, yr
 from utils import get_model_filename
 
 from synthesizer_grids.grid_io import GridFile
@@ -83,9 +83,9 @@ def make_grid(model, imf, hr_morphology, input_dir, grid_dir):
             print(imetal, ia, fn)
             ages_, _, lam_, flam_ = np.loadtxt(fn).T
 
-            flam = flam_[ages_ == age_Gyr]
-            fnu = flam_to_fnu(lam, flam * erg / s / angstrom / cm**2)
-            spec[ia, imetal] = fnu
+            llam = flam_[ages_ == age_Gyr] * erg / s / angstrom
+            lnu = llam_to_lnu(lam, llam)
+            spec[ia, imetal] = lnu
 
     # Create the GridFile ready to take outputs
     out_grid = GridFile(out_filename)
@@ -147,13 +147,23 @@ if __name__ == "__main__":
         os.mkdir(input_dir)
 
     # Define the download URL
+    # NOTE: the original download URL (icg.port.ac.uk/~maraston/SSPn/SED/
+    # Sed_Mar05_SSP_Salpeter.tar.gz) no longer exists (checked 2026-07-29).
+    # The input data must be obtained by other means and placed in
+    # input_dir before running with --download unset.
     original_data_url = {}
-    original_data_url["ss"] = """
-http://www.icg.port.ac.uk/~maraston/SSPn/SED/Sed_Mar05_SSP_Salpeter.tar.gz"""
+    original_data_url["ss"] = None
 
     for imf in imfs:
         # Download the data if necessary
         if args.download:
+            if original_data_url[imf] is None:
+                raise ValueError(
+                    "No working download URL is available for "
+                    f"maraston05 (imf={imf}). Obtain the input data by "
+                    f"other means, place it in {input_dir}, and rerun "
+                    "without --download."
+                )
             print(original_data_url[imf])
             download_data(input_dir, original_data_url[imf])
 
