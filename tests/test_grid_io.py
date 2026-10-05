@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from unyt import Angstrom, Hz, erg, s, unyt_array, yr
 
-from synthesizer_grids.grid_io import GridFile
+from syncretize.grid_io import GridFile
 
 
 def _decode_attr(value):
@@ -58,7 +58,10 @@ def test_gridfile_sets_metadata(tmp_path):
 
     with h5py.File(out_path, "r") as hdf:
         attrs = {key: _decode_attr(val) for key, val in hdf.attrs.items()}
-        assert "synthesizer_grids_version" in attrs
+        assert "syncretize_version" in attrs
+        assert (
+            attrs["synthesizer_grids_version"] == attrs["syncretize_version"]
+        )
         assert "synthesizer_version" in attrs
         assert "date_created" in attrs
 

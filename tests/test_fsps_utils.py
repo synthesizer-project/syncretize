@@ -5,17 +5,17 @@ import numpy as np
 import pytest
 import yaml
 
-from synthesizer_grids.incident.sps.fsps_utils import (
+from syncretize.incident.sps.fsps_utils import (
     expand_fsps_slopes,
     imf_values_at_axis,
     load_fsps_imf_config,
     parse_fsps_imf_config,
 )
-from synthesizer_grids.incident.sps.utils import get_model_filename
+from syncretize.incident.sps.utils import get_model_filename
 
 CONFIG = (
     Path(__file__).parents[1]
-    / "src/synthesizer_grids/incident/sps/fsps/configs"
+    / "src/syncretize/incident/sps/fsps/configs"
     / "variable_high_mass_slope.yaml"
 )
 SINGLE_SLOPE_CONFIG = CONFIG.with_name("variable_single_slope.yaml")

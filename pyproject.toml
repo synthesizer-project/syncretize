@@ -1,11 +1,11 @@
 [project]
-name = "cosmos-synthesizer-grids"
+name = "cosmos-syncretize"
 
 # Dynamic version numbers from git
 dynamic = ["version"]
 
 # Tagline for Synthesizer
-description = "A package for generating Synthesizer SPS grid files"
+description = "Tools for generating and reprocessing Synthesizer model grids"
 
 # A longer description of Synthesizer
 readme = "README.md"
@@ -98,9 +98,9 @@ test = ["pytest"]
 
 # Project urls
 [project.urls]
-"Homepage" = "https://github.com/flaresimulations/synthesizer-grids"
-"Bug Reports" = "https://github.com/flaresimulations/synthesizer-grids/issues"
-"Source" = "https://github.com/flaresimulations/synthesizer-grids"
+"Homepage" = "https://github.com/synthesizer-project/syncretize"
+"Bug Reports" = "https://github.com/synthesizer-project/syncretize/issues"
+"Source" = "https://github.com/synthesizer-project/syncretize"
 
 # Set up the build system
 [build-system]
@@ -113,7 +113,7 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools_scm]
 
 # Make a version file at build time
-version_file = "src/synthesizer_grids/_version.py"
+version_file = "src/syncretize/_version.py"
 
 # Configure the linter and formatter
 [tool.ruff]

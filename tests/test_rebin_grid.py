@@ -2,7 +2,7 @@ import h5py
 import numpy as np
 from spectres import spectres
 
-from synthesizer_grids.extras.rebin_grid import rebin_grid
+from syncretize.extras.rebin_grid import rebin_grid
 
 
 def test_rebin_grid_preserves_data_and_uses_reference_wavelengths(tmp_path):
