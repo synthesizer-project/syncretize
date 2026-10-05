@@ -10,6 +10,5 @@ extensions = ["sphinx.ext.autodoc", "sphinx.ext.napoleon"]
 templates_path = []
 exclude_patterns = ["_build"]
 html_theme = "alabaster"
-html_static_path = ["_static"]
-html_logo = "_static/syncretize_logo.png"
+html_logo = "https://raw.githubusercontent.com/synthesizer-project/synventory/main/branding/syncretize_logo.png"
 autodoc_member_order = "bysource"
