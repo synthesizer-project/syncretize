@@ -12,7 +12,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "../.."))
 # __tag__ = incident_utils.__tag__
 
 
-def get_model_filename(model):
+def get_model_filename(model, axis_name=None):
+    """Build an SPS grid filename following Synthesizer conventions."""
     synthesizer_model_name = f"{model['sps_name']}"
 
     if model["sps_version"] is not False:
@@ -39,8 +40,8 @@ def get_model_filename(model):
     if model["alpha"] is not False:
         synthesizer_model_name += f"_alpha{model['alpha']}"
 
-    # If high mass slope varies then say so
-    if "high_mass_slopes" in list(model.keys()):
-        synthesizer_model_name += "-variable-high-mass-slope"
+    # Higher-dimensional axes extend the canonical SPS/IMF name.
+    if axis_name is not None:
+        synthesizer_model_name += f"_axis-{axis_name}"
 
     return synthesizer_model_name

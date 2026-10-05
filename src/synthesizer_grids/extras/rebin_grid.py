@@ -1,149 +1,102 @@
-"""Create a rebinned grid for testing. This test grid should not be used for
-science"""
+"""Rebin a Synthesizer grid onto another grid's wavelength sampling."""
 
 import argparse
+import os
+from contextlib import ExitStack
+from pathlib import Path
 
 import h5py
 import numpy as np
 from spectres import spectres
 
 
-def get_grid_properties_hf(hf, verbose=False):
-    """
-    A wrapper over get_grid_properties to get the grid properties for a HDF5
-    grid.
-    """
-
-    axes = hf.attrs["axes"]  # list of axes in the correct order
-    axes_values = {
-        axis: hf[f"axes/{axis}"][:] for axis in axes
-    }  # dictionary of axis grid points
-
-    # Get the properties of the grid including the dimensions etc.
-    return axes, *get_grid_properties(axes, axes_values, verbose=verbose)
+def _copy_attrs(source, target):
+    """Copy HDF5 attributes between objects."""
+    for key, value in source.attrs.items():
+        target.attrs[key] = value
 
 
-def get_grid_properties(axes, axes_values, verbose=False):
-    """
-    Get the properties of the grid including the dimensions etc.
-    """
+def rebin_grid(input_grid, reference_grid, output_grid, chunk_size=1):
+    """Rebin spectral datasets while preserving all other grid data."""
+    input_grid = Path(input_grid)
+    reference_grid = Path(reference_grid)
+    output_grid = Path(output_grid)
+    temporary_grid = output_grid.with_suffix(output_grid.suffix + ".tmp")
 
-    # the grid axes
-    if verbose:
-        print(f"axes: {axes}")
+    if output_grid.exists() or temporary_grid.exists():
+        raise FileExistsError(f"Output already exists: {output_grid}")
 
-    # number of axes
-    n_axes = len(axes)
-    if verbose:
-        print(f"number of axes: {n_axes}")
+    with ExitStack() as stack:
+        source = stack.enter_context(h5py.File(input_grid, "r"))
+        reference = stack.enter_context(h5py.File(reference_grid, "r"))
+        output = stack.enter_context(h5py.File(temporary_grid, "w"))
+        old_wavelength = source["spectra/wavelength"][:]
+        new_wavelength = reference["spectra/wavelength"][:]
 
-    # the shape of the grid (useful for creating outputs)
-    shape = list([len(axes_values[axis]) for axis in axes])
-    if verbose:
-        print(f"shape: {shape}")
+        if np.any(np.diff(old_wavelength) <= 0) or np.any(
+            np.diff(new_wavelength) <= 0
+        ):
+            raise ValueError("Wavelength grids must be strictly increasing")
+        if (
+            new_wavelength[0] < old_wavelength[0]
+            or new_wavelength[-1] > old_wavelength[-1]
+        ):
+            raise ValueError("Reference wavelengths exceed input grid range")
 
-    # determine number of models
-    n_models = np.prod(shape)
-    if verbose:
-        print(f"number of models to run: {n_models}")
+        _copy_attrs(source, output)
+        for name in source:
+            if name != "spectra":
+                source.copy(name, output)
 
-    # create the mesh of the grid
-    mesh = np.array(
-        np.meshgrid(*[np.array(axes_values[axis]) for axis in axes])
-    )
+        source_spectra = source["spectra"]
+        output_spectra = output.create_group("spectra")
+        _copy_attrs(source_spectra, output_spectra)
 
-    # create the list of the models
-    model_list = mesh.T.reshape(n_models, n_axes)
-    if verbose:
-        print("model list:")
-        print(model_list)
+        wavelength = output_spectra.create_dataset(
+            "wavelength", data=new_wavelength
+        )
+        _copy_attrs(source_spectra["wavelength"], wavelength)
 
-    # create a list of the indices
+        for name, dataset in source_spectra.items():
+            if name == "wavelength":
+                continue
+            if dataset.ndim == 0 or dataset.shape[-1] != len(old_wavelength):
+                source_spectra.copy(name, output_spectra)
+                continue
 
-    index_mesh = np.array(np.meshgrid(*[range(n) for n in shape]))
+            shape = (*dataset.shape[:-1], len(new_wavelength))
+            chunks = (1, *dataset.shape[1:-1], len(new_wavelength))
+            rebinned = output_spectra.create_dataset(
+                name, shape=shape, dtype=dataset.dtype, chunks=chunks
+            )
+            _copy_attrs(dataset, rebinned)
 
-    index_list = index_mesh.T.reshape(n_models, n_axes)
-    if verbose:
-        print("index list:")
-        print(index_list)
+            for start in range(0, dataset.shape[0], chunk_size):
+                stop = min(start + chunk_size, dataset.shape[0])
+                rebinned[start:stop] = spectres(
+                    new_wavelength,
+                    old_wavelength,
+                    dataset[start:stop],
+                    fill=0.0,
+                    verbose=False,
+                )
 
-    return n_axes, shape, n_models, mesh, model_list, index_list
+    os.replace(temporary_grid, output_grid)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Re-bin a grid to a different spectral resolution"
+        description="Rebin a grid to a reference grid's wavelengths"
     )
-
-    parser.add_argument(
-        "-input_dir", type=str, required=True
-    )  # path to synthesizer_data_dir
-    parser.add_argument(
-        "-input_grid", type=str, required=True
-    )  # grid_name, used to define parameter file
-    parser.add_argument(
-        "-output_dir", type=str, required=True
-    )  # the parameters of the
-    parser.add_argument(
-        "-output_grid", type=str, required=True
-    )  # the parameters of the
+    parser.add_argument("--input-grid", required=True)
+    parser.add_argument("--reference-grid", required=True)
+    parser.add_argument("--output-grid", required=True)
+    parser.add_argument("--chunk-size", type=int, default=1)
     args = parser.parse_args()
 
-    # open the original grid
-    original_grid = h5py.File(f"{args.input_dir}/{args.input_grid}.hdf5", "r")
-
-    # open the new grid file
-    rebinned_grid = h5py.File(
-        f"{args.output_dir}/{args.output_grid}.hdf5", "w"
+    rebin_grid(
+        args.input_grid,
+        args.reference_grid,
+        args.output_grid,
+        args.chunk_size,
     )
-
-    # copy attributes
-    for k, v in original_grid.attrs.items():
-        rebinned_grid.attrs[k] = v
-
-    # copy various quantities (all excluding the spectra) from the original
-    # grid
-    for ds in ["axes", "log10_specific_ionising_luminosity", "lines"]:
-        original_grid.copy(original_grid[ds], rebinned_grid["/"], ds)
-
-    # define the new wavelength grid
-    lmin, lmax, deltal = (
-        100.0,
-        20000.0,
-        20.0,
-    )  # min wavelength, max wavelength, resolution
-    new_wavs = np.arange(lmin, lmax, deltal)
-
-    # alias
-    original_spectra = original_grid["spectra"]
-    spectra_types = original_spectra.attrs["spec_names"]
-
-    # create a group holding the spectra in the grid file
-    rebinned_spectra = rebinned_grid.create_group("spectra")
-    rebinned_spectra["wavelength"] = new_wavs
-    rebinned_spectra.attrs["spec_names"] = original_spectra.attrs["spec_names"]
-
-    # get parameters of grid
-    (
-        axes,
-        n_axes,
-        shape,
-        n_models,
-        mesh,
-        model_list,
-        index_list,
-    ) = get_grid_properties_hf(original_grid)
-
-    for spectra_type in spectra_types:
-        rebinned_spectra[spectra_type] = np.zeros((*shape, len(new_wavs)))
-
-        # loop over all indices
-
-        for i, indices in enumerate(index_list):
-            indices = tuple(indices)
-
-            rebinned_spectra[spectra_type][indices] = spectres(
-                new_wavs,
-                original_spectra["wavelength"][:],
-                original_spectra[spectra_type][indices][:],
-            )
