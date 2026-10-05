@@ -2,7 +2,7 @@
 Create FSPS synthesizer grids.
 
 Example:
-    python install_fsps.py \
+    python generate_incident_grid.py \
     --input-dir path/to/input/dir \
     --grid-dir path/to/grid/dir \
     --include-chabrier \
@@ -12,9 +12,9 @@ Example:
 import fsps
 import numpy as np
 from unyt import Hz, angstrom, dimensionless, erg, s, yr
-from utils import get_model_filename
 
 from syncretize.grid_io import GridFile
+from syncretize.incident.sps.utils import get_model_filename
 from syncretize.parser import Parser
 
 

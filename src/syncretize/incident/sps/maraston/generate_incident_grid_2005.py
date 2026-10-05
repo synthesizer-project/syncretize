@@ -10,9 +10,9 @@ import numpy as np
 import wget
 from synthesizer.conversions import llam_to_lnu
 from unyt import Hz, angstrom, dimensionless, erg, s, yr
-from utils import get_model_filename
 
 from syncretize.grid_io import GridFile
+from syncretize.incident.sps.utils import get_model_filename
 from syncretize.parser import Parser
 
 

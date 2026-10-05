@@ -2,9 +2,10 @@ Included model conversions
 ==========================
 
 These scripts convert model-specific data into the common :doc:`grid_format`.
-All write into ``--grid-dir``. File-backed conversions also need
-``--input-dir`` even though the shared command-line parser marks it as
-optional.
+Each model has its own directory, with its generator and any model-specific
+configuration files together. All write into ``--grid-dir``. File-backed
+conversions also need ``--input-dir`` even though the shared command-line
+parser marks it as optional.
 
 SPS models
 ----------
@@ -19,57 +20,57 @@ SPS models
      - Source requirement
      - Status and special information
    * - FSPS
-     - ``install_fsps.py``
+     - ``fsps/generate_incident_grid.py``
      - Ages, metallicities
      - Working python-FSPS/FSPS installation
      - Ready. Default BPL IMF; optional Chabrier and IMF variants.
    * - FSPS variable IMF
-     - ``install_fsps_variable_imf.py``
+     - ``fsps/generate_incident_grid_variable_imf.py``
      - Ages, metallicities, optional IMF parameter
      - Working python-FSPS/FSPS installation
      - Ready. YAML defines one optional IMF axis.
    * - BPASS 2.2.1
-     - ``install_bpass2.2.1.py``
+     - ``bpass/generate_incident_grid_2_2_1.py``
      - Ages, metallicities
      - Manual BPASS download
      - Ready with data. Binary/single-star variants and multiple IMFs.
    * - BPASS 2.3
-     - ``install_bpass2.3.py``
+     - ``bpass/generate_incident_grid_2_3.py``
      - Ages, metallicities, alpha enhancement
      - Manual BPASS download
      - Constrained. Writes both separate and combined grids regardless of flags.
    * - BC03
-     - ``install_bc03.py``
+     - ``bc03/generate_incident_grid.py``
      - Ages, metallicities
      - Download supported
      - Ready. Padova 2000, Chabrier IMF.
    * - BC03 2016
-     - ``install_bc03-2016.py``
+     - ``bc03/generate_incident_grid_2016.py``
      - Ages, metallicities
      - Download plus Fortran compiler
      - Setup required. Nine atmosphere/IMF combinations.
    * - Maraston 2005
-     - ``install_maraston05.py``
+     - ``maraston/generate_incident_grid_2005.py``
      - Ages, metallicities
      - Manual source data
      - Manual setup. Original download URL is unavailable.
    * - Maraston 2011
-     - ``install_maraston11.py``
+     - ``maraston/generate_incident_grid_2011.py``
      - Ages, metallicities
      - Manual source data
      - Manual setup. Several libraries/IMFs; solar metallicity only.
    * - Maraston 2013
-     - ``install_maraston13.py``
+     - ``maraston/generate_incident_grid_2013.py``
      - Ages, metallicities
      - Manual source data
      - Blocked by known age-unit bug; do not use until fixed.
    * - Maraston 2024
-     - ``install_maraston24.py``
+     - ``maraston/generate_incident_grid_2024.py``
      - Ages, metallicities
      - Data obtained from model authors
      - Manual setup. Rotation, temperature-correction, and IMF variants.
    * - Yggdrasil Pop III
-     - ``install_yggdrasil.py``
+     - ``yggdrasil/generate_incident_grid.py``
      - Ages, metallicities
      - Download supported
      - Caveats. Includes model-provided nebular products; incident products are best
@@ -82,7 +83,7 @@ Generate the default FSPS grid and optional variants:
 
 .. code-block:: console
 
-   python src/syncretize/incident/sps/install_fsps.py \
+   python src/syncretize/incident/sps/fsps/generate_incident_grid.py \
        --grid-dir grids \
        --include-chabrier \
        --include-imf-variants
@@ -95,7 +96,7 @@ grid axis:
 
 .. code-block:: console
 
-   python src/syncretize/incident/sps/install_fsps_variable_imf.py \
+   python src/syncretize/incident/sps/fsps/generate_incident_grid_variable_imf.py \
        --grid-dir grids \
        --config-file \
        src/syncretize/incident/sps/fsps/configs/variable_high_mass_slope.yaml
@@ -112,7 +113,7 @@ supported BPASS 2.2.1 IMF variants with:
 
 .. code-block:: console
 
-   python src/syncretize/incident/sps/install_bpass2.2.1.py \
+   python src/syncretize/incident/sps/bpass/generate_incident_grid_2_2_1.py \
        --input-dir model-data \
        --grid-dir grids \
        --models all
@@ -124,7 +125,7 @@ current script writes both individual and combined outputs regardless of the
 BC03 and Maraston
 ^^^^^^^^^^^^^^^^^
 
-``install_bc03.py --download`` retrieves the original BC03 data. The 2016
+``bc03/generate_incident_grid.py --download`` retrieves the original BC03 data. The 2016
 conversion also compiles a Fortran binary reader and therefore needs ``make``
 and a Fortran compiler.
 
@@ -136,7 +137,7 @@ Other file-backed SPS conversions follow this command shape:
 
 .. code-block:: console
 
-   python src/syncretize/incident/sps/<script>.py \
+   python src/syncretize/incident/sps/<model>/generate_incident_grid*.py \
        --input-dir model-data \
        --grid-dir grids
 
@@ -157,23 +158,23 @@ Black-hole and AGN models
      - Requirement
      - Status and special information
    * - Broken power law
-     - ``install_broken_power_law.py``
+     - ``broken_power_law/generate_incident_grid.py``
      - Three spectral slopes
      - Included YAML configuration
      - Limited. Supplied Feltre configuration works; multiple values on its
        second or third slope do not.
    * - RELAGN
-     - ``install_relagn.py``
+     - ``relagn/generate_incident_grid.py``
      - Mass, accretion rate, spin/efficiency, optional inclination
      - RELAGN and XSPEC
      - External setup. Parallel generation through ``--num-procs``.
    * - RELQSO
-     - ``install_relqso.py``
+     - ``relqso/generate_incident_grid.py``
      - Mass, accretion rate, spin, optional inclination
      - RELAGN and XSPEC
      - External setup. Simplified relativistic model.
    * - QSOSED
-     - ``install_qsosed.py``
+     - ``qsosed/generate_incident_grid.py``
      - Mass, accretion rate, optional inclination
      - RELAGN and XSPEC
      - External setup. Isotropic configs require NumPy 2.
@@ -182,10 +183,10 @@ Run the self-contained broken-power-law model with:
 
 .. code-block:: console
 
-   python src/syncretize/incident/blackholes/install_broken_power_law.py \
+   python src/syncretize/incident/blackholes/broken_power_law/generate_incident_grid.py \
        --grid-dir grids \
        --config-file \
-       src/syncretize/incident/blackholes/params/bpl-feltre16.yaml
+       src/syncretize/incident/blackholes/broken_power_law/bpl-feltre16.yaml
 
 The supplied configuration varies only its first slope. The current
 implementation does not correctly support multiple values on the second or
@@ -193,7 +194,7 @@ third slope axes.
 
 RELAGN, RELQSO, and QSOSED require an external RELAGN checkout and a working
 XSPEC Python environment. Their supplied YAML files are under
-``incident/blackholes/params``. RELQSO and QSOSED currently resolve RELAGN from
+model directories. RELQSO and QSOSED currently resolve RELAGN from
 a working-directory-relative path, so run those scripts from their own
 directory or make RELAGN importable through ``PYTHONPATH``.
 

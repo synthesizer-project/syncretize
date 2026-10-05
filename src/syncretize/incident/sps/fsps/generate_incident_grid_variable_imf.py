@@ -1,22 +1,22 @@
 """Create an FSPS grid with an optional YAML-configured IMF axis.
 
 Example:
-    python install_fsps_variable_imf.py \
+    python generate_incident_grid_variable_imf.py \
         --grid-dir path/to/grid/dir \
         --config-file fsps/configs/variable_high_mass_slope.yaml
 """
 
 import fsps
 import numpy as np
-from fsps_utils import (
+from unyt import Hz, Msun, angstrom, dimensionless, erg, s, yr
+
+from syncretize.grid_io import GridFile
+from syncretize.incident.sps.fsps_utils import (
     expand_fsps_slopes,
     imf_values_at_axis,
     load_fsps_imf_config,
 )
-from unyt import Hz, Msun, angstrom, dimensionless, erg, s, yr
-from utils import get_model_filename
-
-from syncretize.grid_io import GridFile
+from syncretize.incident.sps.utils import get_model_filename
 from syncretize.parser import Parser
 
 

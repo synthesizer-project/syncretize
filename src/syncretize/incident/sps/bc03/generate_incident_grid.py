@@ -2,7 +2,7 @@
 Download BC03 and convert to HDF5 synthesizer grid.
 
 Example:
-    python install_bc03.py \
+    python generate_incident_grid.py \
     --input-dir path/to/input/dir \
     --grid-dir path/to/grid/dir \
 """
@@ -18,9 +18,9 @@ import numpy as np
 import requests
 from tqdm import tqdm
 from unyt import Hz, angstrom, dimensionless, erg, s, yr
-from utils import get_model_filename
 
 from syncretize.grid_io import GridFile
+from syncretize.incident.sps.utils import get_model_filename
 from syncretize.parser import Parser
 
 

@@ -5,7 +5,7 @@ There are three variants (using different atmospheres) and three different
 IMFs. These are all processed automatically.
 
 Example:
-    python install_bc03-2016.py \
+    python generate_incident_grid_2016.py \
     --input-dir path/to/input/dir \
     --grid-dir path/to/grid/dir \
 
@@ -23,9 +23,9 @@ import numpy as np
 import requests
 from tqdm import tqdm
 from unyt import Hz, angstrom, dimensionless, erg, s, yr
-from utils import get_model_filename
 
 from syncretize.grid_io import GridFile
+from syncretize.incident.sps.utils import get_model_filename
 from syncretize.parser import Parser
 
 

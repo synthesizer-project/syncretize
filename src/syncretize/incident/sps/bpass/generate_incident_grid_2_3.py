@@ -20,16 +20,16 @@ mv bpass_v2.3.a*/* bpass_v2.3_imf135_300/
 rm -rf bpass_v2.3.a*
 
 Example:
-    python install_bpass2.3.py \
+    python generate_incident_grid_2_3.py \
     --input-dir path/to/input/dir \
     --grid-dir path/to/grid/dir \
 """
 
 import numpy as np
 from unyt import Hz, angstrom, dimensionless, erg, s, yr
-from utils import get_model_filename
 
 from syncretize.grid_io import GridFile
+from syncretize.incident.sps.utils import get_model_filename
 from syncretize.parser import Parser
 
 

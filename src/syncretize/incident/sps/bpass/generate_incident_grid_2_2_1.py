@@ -12,7 +12,7 @@ manually from:
 https://warwick.ac.uk/fac/sci/physics/research/astro/research/catalogues/bpass/v2p2
 
 Example:
-    python install_bpass2.2.1.py \
+    python generate_incident_grid_2_2_1.py \
     --input-dir path/to/input/dir \
     --grid-dir path/to/grid/dir \
     --models=all
@@ -23,9 +23,9 @@ import tarfile
 
 import numpy as np
 from unyt import Hz, angstrom, dimensionless, erg, s, yr
-from utils import get_model_filename
 
 from syncretize.grid_io import GridFile
+from syncretize.incident.sps.utils import get_model_filename
 from syncretize.parser import Parser
 
 

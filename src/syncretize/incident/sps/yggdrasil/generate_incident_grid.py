@@ -37,9 +37,9 @@ import requests
 from spectres import spectres
 from tqdm import tqdm
 from unyt import Hz, angstrom, c, dimensionless, erg, s, yr
-from utils import get_model_filename
 
 from syncretize.grid_io import GridFile
+from syncretize.incident.sps.utils import get_model_filename
 from syncretize.parser import Parser
 
 

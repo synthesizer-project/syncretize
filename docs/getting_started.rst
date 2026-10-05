@@ -52,7 +52,7 @@ For example, an existing FSPS installation can be converted with:
 .. code-block:: console
 
    mkdir -p grids
-   python src/syncretize/incident/sps/install_fsps.py \
+   python src/syncretize/incident/sps/fsps/generate_incident_grid.py \
        --grid-dir grids
 
 The script writes one or more ``.hdf5`` files to ``grids``. Other models may
