@@ -1,0 +1,62 @@
+# FSPS variable single-power-law IMF configuration
+#
+# This config defines one slope across the complete IMF mass range:
+#
+#     dN/dM proportional to M^(-alpha)
+#
+# The generator applies the same configured value to FSPS imf1, imf2, and
+# imf3. FSPS's internal 0.5 and 1.0 Msun breaks therefore have no effect.
+#
+# `fixed_value` supplies the nominal IMF used in the canonical filename.
+# `vary_axis: true` makes this parameter a Synthesizer grid axis. Axis points
+# may be supplied as an explicit YAML list, as below, or generated using:
+#
+#   range:
+#     minimum: 1.3
+#     maximum: 3.0
+#     number: 10
+#     spacing: linear  # linear or log
+#
+# Explicit `values` and generated `range` sampling are mutually exclusive.
+# `log_on_read` controls Synthesizer interpolation coordinates, not sampling.
+
+model:
+  sps_version: "4.0"
+  imf_type: bpl
+
+imf:
+  mass_boundaries:
+    - name: lower_mass
+      fixed_value: 0.08
+      vary_axis: false
+
+    - name: upper_mass
+      fixed_value: 120.0
+      vary_axis: false
+
+  slopes:
+    - name: slope
+      fixed_value: 2.3
+      vary_axis: true
+      axis:
+        name: imf_slope
+        log_on_read: false
+        values:
+          - 1.3
+          - 1.4
+          - 1.5
+          - 1.6
+          - 1.7
+          - 1.8
+          - 1.9
+          - 2.0
+          - 2.1
+          - 2.2
+          - 2.3
+          - 2.4
+          - 2.5
+          - 2.6
+          - 2.7
+          - 2.8
+          - 2.9
+          - 3.0

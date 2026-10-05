@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from synthesizer_grids.cloudy.utils import get_cloudy_params
-from synthesizer_grids.parser import Parser
+from syncretize.cloudy.utils import get_cloudy_params
+from syncretize.parser import Parser
 
 
 def test_parser_exposes_alpha_flags(tmp_path):

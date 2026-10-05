@@ -146,4 +146,4 @@ dmypy.json
 examples/cloudy/data/*
 
 # Ignore the version file
-src/synthesizer_grids/_version.py
+src/syncretize/_version.py
