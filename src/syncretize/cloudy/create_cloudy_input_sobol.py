@@ -13,10 +13,7 @@ import h5py
 import numpy as np
 import yaml
 from scipy.stats import qmc
-from synthesizer.emission_models import IncidentEmission
 from synthesizer.grid import Grid
-from synthesizer.particle import Stars
-from unyt import Msun, yr
 
 import syncretize.cloudy.submission_scripts as submission_scripts
 from syncretize.cloudy import cloudy17, cloudy23, cloudy25
@@ -50,10 +47,12 @@ def parse_sobol_params(params, incident_grid):
         axis_values = getattr(incident_grid, axis)
         min_val = float(np.min(axis_values))
         max_val = float(np.max(axis_values))
-        # Default to log scale for ages and metallicities
+        # Default to log scale for axes the grid itself treats as logged
+        # (e.g. ages, metallicities, black hole masses, accretion rates)
         scale = (
             "log"
-            if axis in ["ages", "age", "metallicities", "metallicity"]
+            if f"log10{axis}" in incident_grid._extract_axes
+            or axis in ["ages", "age", "metallicities", "metallicity"]
             else "linear"
         )
         incident_params[axis] = (min_val, max_val, scale)
@@ -375,29 +374,20 @@ if __name__ == "__main__":
     # Get wavelength array
     lam = incident_grid.lam
 
-    # Extract sampled ages and metallicities for Stars object
-    ages_array = np.array(
-        [s.get("ages", s.get("age", None)) for s in incident_samples]
-    )
-    metallicities_array = np.array(
-        [
-            s.get("metallicities", s.get("metallicity", None))
-            for s in incident_samples
-        ]
-    )
-
-    # Create Stars object for spectral interpolation
-    initial_masses = np.ones(n_samples) * Msun
-    stars = Stars(
-        initial_masses=initial_masses,
-        ages=ages_array * yr,
-        metallicities=metallicities_array,
-    )
+    # Collect the sampled values for every incident grid axis (in the
+    # grid's native axis units), so this works for any grid (SPS, AGN, ...)
+    axes_values = {
+        axis: np.array([s[axis] for s in incident_samples])
+        for axis in incident_grid.axes
+    }
 
     # Get interpolated spectra
-    emodel = IncidentEmission(incident_grid, per_particle=True)
     print("\nGenerating interpolated spectra...")
-    spec = stars.get_spectra(emodel, nthreads=-1)
+    interp = incident_grid.interpolate_grid_at_axes_value(
+        spectra_type="incident",
+        **axes_values,
+    )
+    spec = interp["spectra"]
 
     with h5py.File(grid_hdf5_file, "a") as hf:
         hf.create_dataset("incident_lam", data=lam, compression="gzip")
@@ -430,10 +420,10 @@ if __name__ == "__main__":
             incident_grid.log10_specific_ionising_lum["HI"][ref_grid_point]
         )
 
-        # Per-sample specific ionising luminosity from the interpolated
-        # incident spectra (initial_masses are 1 Msun). Q is in s^-1.
-        log10Q_samples = np.log10(
-            spec.calculate_ionising_photon_production_rate(nthreads=-1).value
+        # Per-sample specific ionising luminosity interpolated from the
+        # incident grid (per unit grid normalisation). Q is in s^-1.
+        log10Q_samples = np.asarray(
+            interp["log10_specific_ionising_luminosity/HI"]
         )
     else:
         reference_log10_specific_ionising_lum = None
