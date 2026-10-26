@@ -15,7 +15,6 @@ import numpy as np
 import submission_scripts
 from synthesizer.emissions import Sed
 from synthesizer.grid import Grid
-from synthesizer.photoionisation import cloudy17, cloudy23
 from synthesizer.units import has_units
 from unyt import Angstrom, Hz, cm, dimensionless, erg, eV, km, s, yr
 from utils import (
@@ -23,6 +22,7 @@ from utils import (
     get_grid_props_cloudy,
 )
 
+from syncretize.cloudy import cloudy17, cloudy23
 from syncretize.grid_io import GridFile
 from syncretize.parser import Parser
 
