@@ -396,6 +396,10 @@ def cosma7_sobol_onthefly(
     a whole node. The strided models are run in parallel across the node's
     cores (cores_per_node) via xargs -P. memory="0" requests all node memory
     (needed: the cores_per_node parallel Cloudy procs share one cgroup).
+
+    Each Cloudy run is capped at time_per_model minutes with `timeout`, so a
+    stuck model frees its core instead of holding the node until walltime.
+    Timed-out models leave no .cont and are rerun on resubmission.
     """
     import math
     from pathlib import Path
@@ -458,6 +462,7 @@ def cosma7_sobol_onthefly(
             f"TOTAL_SAMPLES={n_samples}",
             f'GRID_DIR="{grid_dir}"',
             f'CLOUDY_EXE="{cloudy_executable_path}/cloudy.exe"',
+            f"MODEL_TIMEOUT={time_per_model}m",
             f'SCRIPT_DIR="{script_dir}"',
             "",
             "# Create continuum output directory",
@@ -489,7 +494,7 @@ def cosma7_sobol_onthefly(
                 '--grid-dir "$GRID_DIR" --sample-index "$incident_idx" '
                 '--work-dir "$work_dir" || { rm -rf "$work_dir"; return; }',
                 '    cd "$work_dir" || return',
-                '    "$CLOUDY_EXE" -r 0',
+                '    timeout "$MODEL_TIMEOUT" "$CLOUDY_EXE" -r 0',
                 '    if [ $? -eq 0 ] && [ -f "0.cont" ]; then',
                 "        # Raw cloudy .cont; parsed later by"
                 " synthesizer.read_continuum",
@@ -498,7 +503,7 @@ def cosma7_sobol_onthefly(
                 "    fi",
                 "}",
                 "export -f run_one",
-                "export GRID_DIR SCRIPT_DIR CLOUDY_EXE",
+                "export GRID_DIR SCRIPT_DIR CLOUDY_EXE MODEL_TIMEOUT",
                 "",
                 "# This task's strided models, ",
                 "# NCORES at a time across the node",
@@ -516,7 +521,7 @@ def cosma7_sobol_onthefly(
                 '--grid-dir "$GRID_DIR" --sample-index $incident_idx '
                 '--work-dir "$work_dir" || exit 1',
                 'cd "$work_dir"',
-                "$CLOUDY_EXE -r 0",
+                'timeout "$MODEL_TIMEOUT" "$CLOUDY_EXE" -r 0',
                 'if [ $? -eq 0 ] && [ -f "0.cont" ]; then',
                 "    # Keep the raw cloudy .cont; collect_sobol_outputs"
                 " parses it with synthesizer.read_continuum",
