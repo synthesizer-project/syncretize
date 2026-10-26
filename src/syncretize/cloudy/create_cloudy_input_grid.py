@@ -84,7 +84,8 @@ def create_cloudy_input(
 
     # Initialise depletion model
     if "depletion_model" in parameters.keys():
-        if parameters["depletion_model"] is None:
+        # YAML reads a bare "None" as a string, so treat it as no model
+        if parameters["depletion_model"] in (None, "None"):
             depletion_model = None
         else:
             if "depletion_scale" not in parameters.keys():
