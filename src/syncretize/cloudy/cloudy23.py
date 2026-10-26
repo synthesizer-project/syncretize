@@ -380,7 +380,7 @@ def create_cloudy_input(
     if params["cosmic_rays"] is not None:
         cinput.append("cosmic rays, background\n")
 
-    if params["CMB"] is not None:
+    if params["CMB"]:
         cinput.append(f"CMB {params['z']}\n")
 
     # define turbulence
