@@ -1,6 +1,6 @@
 """
 Create a grid of cloudy scripts based on a cloudy in-built incident model such
-as a blackbody or AGN.
+as a blackbody.
 
 NOTE: this will not currently work and this functionality (generating grids
 directly from cloudy) may be removed in the future. Much simpler to just use
@@ -43,36 +43,6 @@ class CloudyIncidentShapeCommands:
 
         shape_commands = []
         shape_commands.append(f"black {temperature} \n")
-
-        return shape_commands
-
-    def agn(
-        big_bump_temperature=None, aox=-1.4, auv=-0.5, ax=-1.35, model=None
-    ):
-        """
-        A function for specifying the cloudy AGN model. See 6.2 Hazy1.pdf.
-
-        Args:
-            big_bump_temperature (float)
-                The Big Bump temperature
-            aox (float)
-                The x-ray slope (default value from Calabro CEERS AGN model)
-            auv (float)
-                The uv-slope (default value from Calabro CEERS AGN model)
-            ax (float)
-                Slope normalisation
-
-        Returns:
-            shape_commands (list, str)
-                A list of strings with the cloudy input commands
-        """
-
-        # collect cloudy shape commands
-        shape_commands = []
-        shape_commands.append(
-            f"AGN T = {big_bump_temperature} k, a(ox) = {aox}, a(uv)= {auv} \
-                                a(x)={ax} \n"
-        )
 
         return shape_commands
 

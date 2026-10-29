@@ -54,3 +54,16 @@ Example usage:
 ```
 python qsosed/generate_incident_grid.py --config-file qsosed/qsosed.yaml --grid-dir path/to/grids/
 ```
+
+## cloudy agn spectrum
+
+`cloudy` has a built-in AGN spectrum, set by its `agn` command (see Hazy 1): a big blue bump with an exponential cutoff at a temperature T, plus an X-ray power law, joined using the optical to X-ray index $\alpha_{ox}$. 'cloudy_agn/generate_incident_grid.py' can be used to generate a grid of incident spectra with this shape.
+
+The grid axes are set using the yaml configuration file, from the blue bump temperature (`blue_bump_temperature`) and the three slopes (`alpha_ox`, `alpha_uv`, `alpha_x`); a single value fixes a parameter instead. Two example parameter files are provided (cloudy_agn and cloudy_agn-limited).
+
+`blue_bump_temperature` can be set on each black hole when using these grids, otherwise the default calculation following [Inayoshi and Maiolino (2025)](https://ui.adsabs.harvard.edu/abs/arXiv:2409.07805/abstract) is used.
+
+Example usage:
+```
+python cloudy_agn/generate_incident_grid.py --config-file cloudy_agn/cloudy_agn.yaml --grid-dir path/to/grids/
+```

@@ -41,7 +41,7 @@ If `--machine` is specified, and it is one that is recognised (e.g. Sussex's art
 
 #### Using a cloudy shape command
 
-As an alternative we can create a grid directly from using one of `cloudy`'s in-built shape commands (e.g. blackbody). To do this we need to provide a yaml file containing the name of the model (at the moment this is limited to `blackbody` and `agn`) with all the parameters, including any that are to be varied as a list. **NOTE**: at present this is unlikely to be working correctly.
+As an alternative we can create a grid directly from using one of `cloudy`'s in-built shape commands (e.g. blackbody). To do this we need to provide a yaml file containing the name of the model (at the moment this is limited to `blackbody`) with all the parameters, including any that are to be varied as a list. **NOTE**: at present this is unlikely to be working correctly. For the `agn` shape, use the incident grid made by `incident/blackholes/cloudy_agn/generate_incident_grid.py` instead.
 
 ### Run `cloudy`
 

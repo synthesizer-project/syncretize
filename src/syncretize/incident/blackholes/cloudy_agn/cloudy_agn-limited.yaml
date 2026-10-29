@@ -1,0 +1,5 @@
+model: 'cloudy_agn-limited'
+log10blue_bump_temperature: [4.0, 4.5, 5.0, 5.5, 6.0]
+alpha_ox: -1.4
+alpha_uv: -0.5
+alpha_x: -1.0

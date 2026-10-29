@@ -1,5 +1,0 @@
-model : agn
-big_bump_temperature : [1.0e+4, 1.0e+5, 1.0e+6]
-aox: -1.4 
-auv: -0.5
-ax: -1.35
