@@ -40,7 +40,9 @@ TE1RYD = 157887.512
 X_MIN = 1.0e7 / RYD_HZ
 X_MAX = 1.0e8 / 13.605693122994
 
-# cloudy's sexp(x) returns exactly zero beyond this
+# cloudy's sexp(x) is its safe exponential: exp(-x), but exactly zero once
+# x reaches SEXP_LIMIT (cddefines.h), to avoid underflow. We copy it so the
+# spectrum matches cloudy's.
 SEXP_LIMIT = 84.0
 
 # Spacing of the wavelength grid in dex. cloudy interpolates the incident
