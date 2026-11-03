@@ -140,6 +140,10 @@ def create_cloudy_input(
     """
     default_params = {
         "no_grain_scaling": False,
+        # depletion model, None for no depletion
+        "depletion_model": None,
+        # if not None, iterate to convergence
+        "iterate_to_convergence": None,
         # ionisation parameter
         "ionisation_parameter": None,
         # radius in log10 parsecs, only important for spherical geometry
@@ -294,8 +298,8 @@ def create_cloudy_input(
                 # this should be the dust-phase abundance in the particular
                 # reference environment.
                 if params["grains"] == "Orion":
-                    reference_C_abund = -3.5553
-                    reference_Si_abund = -4.4841
+                    reference_C_abund = -3.6259
+                    reference_Si_abund = -4.5547
                 elif params["grains"] == "ISM":
                     reference_C_abund = -3.5553
                     reference_Si_abund = -4.4841

@@ -155,8 +155,10 @@ def create_cloudy_input(
         "cosmic_rays": False,
         # include metals
         "metals": True,
-        # include dust grains
-        "grains": False,
+        # include dust grains (None, "Orion" or "ISM")
+        "grains": None,
+        # if True, don't scale the grain abundances to the depletion
+        "no_grain_scaling": False,
         # the geometry
         "geometry": "planeparallel",
         # relative resolution the saved continuum spectra
@@ -267,8 +269,8 @@ def create_cloudy_input(
             # this should be the dust-phase abundance in the particular
             # reference environment.
             if params["grains"] == "Orion":
-                reference_C_abund = -3.5553
-                reference_Si_abund = -4.4841
+                reference_C_abund = -3.6259
+                reference_Si_abund = -4.5547
             elif params["grains"] == "ISM":
                 reference_C_abund = -3.5553
                 reference_Si_abund = -4.4841
