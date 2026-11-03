@@ -1,2 +1,0 @@
-model : blackbody
-temperature : [1.0e+4, 2.0e+4, 3.0e+4, 4.0e+4, 5.0e+4, 6.0e+4, 7.0e+4, 8.0e+4, 9.0e+4, 1.0e+5]

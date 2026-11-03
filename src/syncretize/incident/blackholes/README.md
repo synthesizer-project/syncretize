@@ -67,3 +67,16 @@ Example usage:
 ```
 python cloudy_agn/generate_incident_grid.py --config-file cloudy_agn/cloudy_agn.yaml --grid-dir path/to/grids/
 ```
+
+## cloudy blackbody spectrum
+
+`cloudy`'s `blackbody` command gives a blackbody (Planck) spectrum at a temperature T (see Hazy 1). 'blackbody/generate_incident_grid.py' can be used to generate a grid of incident spectra with this shape.
+
+The grid axis is the blackbody temperature (`blackbody_temperature`), set using the yaml configuration file. Two example parameter files are provided (blackbody and blackbody-limited).
+
+`blackbody_temperature` is not calculated by synthesizer, so it needs to be set when using these grids, either on the emitter or as a fixed parameter of the emission model. For example, setting `blackbody_temperature="shakura_sunyaev_temperature"` on a black hole uses its Shakura-Sunyaev thin disc temperature.
+
+Example usage:
+```
+python blackbody/generate_incident_grid.py --config-file blackbody/blackbody.yaml --grid-dir path/to/grids/
+```
