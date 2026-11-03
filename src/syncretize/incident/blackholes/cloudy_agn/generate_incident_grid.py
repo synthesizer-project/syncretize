@@ -3,8 +3,7 @@ Create a synthesizer incident grid for the cloudy ``agn`` input shape.
 
 This writes the spectrum produced by cloudy's ``agn`` command
 (cloudy documentation, Hazy 1) as an incident grid, so it can be
-used like the other incident spectra, rather than using
-create_cloudy_input_grid_from_cloudy.py.
+used like the other incident spectra.
 
 The functional form follows the cloudy c23.01 source code (ParseAgn
 in parse_agn.cpp and ffun1 in cont_ffun.cpp). Note: there are some

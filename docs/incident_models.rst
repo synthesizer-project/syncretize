@@ -184,6 +184,12 @@ Black-hole and AGN models
      - Included YAML configuration
      - Self-contained. Reproduces cloudy's ``agn`` command; uses the
        black holes' ``blue_bump_temperature``.
+   * - cloudy blackbody
+     - ``blackbody/generate_incident_grid.py``
+     - Blackbody temperature
+     - Included YAML configuration
+     - Self-contained. Reproduces cloudy's ``blackbody`` command;
+       ``blackbody_temperature`` must be set by the user.
 
 Run the self-contained broken-power-law model with:
 

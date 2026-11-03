@@ -208,7 +208,3 @@ Specialised paths
 ``create_cloudy_input_sobol.py`` samples incident and photoionisation
 parameters jointly for emulator or training-data generation. Its intermediate
 and collected HDF5 files are not standard Synthesizer grids.
-
-``create_cloudy_input_grid_from_cloudy.py`` targets Cloudy's built-in source
-shapes. It is experimental and currently incompatible with the regular runner
-and collector; do not use it for production grids.
