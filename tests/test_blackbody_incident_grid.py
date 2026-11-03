@@ -68,7 +68,7 @@ def test_normalised_to_unit_bolometric_luminosity():
     nu_hz = (c / lam).to("Hz").value
     for temperature in (1.0e4, 1.0e5, 1.0e6):
         lnu = blackbody.blackbody_lnu(lam, temperature)
-        assert -np.trapezoid(lnu, nu_hz) == pytest.approx(1.0)
+        assert -blackbody.trapezoid(lnu, nu_hz) == pytest.approx(1.0)
 
 
 def test_grid_axis_and_ionising_luminosity(tmp_path):
@@ -104,3 +104,30 @@ def test_grid_axis_and_ionising_luminosity(tmp_path):
         # per erg/s at these temperatures
         log10_q = hf["log10_specific_ionising_luminosity/HI"][...]
         np.testing.assert_allclose(log10_q, [6.645, 10.247], atol=2e-3)
+
+
+def test_rejects_temperatures_not_increasing(tmp_path):
+    """A repeated or decreasing temperature stops the script."""
+    config = {
+        "model": "blackbody-unit-test",
+        "log10blackbody_temperature": [4.0, 5.0, 5.0],
+    }
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.safe_dump(config))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            SCRIPT,
+            "--config-file",
+            str(config_file),
+            "--grid-dir",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "strictly increasing" in result.stderr
+    assert not (tmp_path / "blackbody-unit-test.hdf5").exists()

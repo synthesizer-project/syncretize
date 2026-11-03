@@ -39,6 +39,9 @@ EXP_LIMIT = 84.0
 # Spacing of the wavelength grid in dex, as for the cloudy agn incident grid.
 DEX_STEP = 0.005
 
+# numpy 2.0 renamed trapz to trapezoid, so use whichever this numpy has
+trapezoid = getattr(np, "trapezoid", None) or np.trapz
+
 
 def blackbody_photon_flux(x, blackbody_temperature):
     """
@@ -108,7 +111,7 @@ def blackbody_lnu(lam, blackbody_temperature):
     lnu = x * blackbody_photon_flux(x, blackbody_temperature)
 
     # Frequency decreases along the grid, hence the minus sign
-    bolometric_luminosity = -np.trapezoid(lnu, nu_hz)
+    bolometric_luminosity = -trapezoid(lnu, nu_hz)
 
     return lnu / bolometric_luminosity
 
@@ -132,6 +135,12 @@ if __name__ == "__main__":
     temperatures = 10 ** np.array(
         parameters["log10blackbody_temperature"], dtype=float
     )
+
+    # synthesizer needs the axis to increase, with no repeated values
+    if not np.all(np.diff(temperatures) > 0):
+        raise ValueError(
+            "log10blackbody_temperature must be strictly increasing"
+        )
 
     # Model definition dictionary
     model = {

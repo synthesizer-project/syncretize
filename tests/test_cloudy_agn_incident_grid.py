@@ -151,7 +151,7 @@ def test_normalised_to_unit_bolometric_luminosity():
     for temperature in (1.0e4, 1.0e5, 10**6.5):
         params = {**DEFAULTS, "blue_bump_temperature": temperature}
         lnu = agn.agn_lnu(lam, **params)
-        assert -np.trapezoid(lnu, nu_hz) == pytest.approx(1.0)
+        assert -agn.trapezoid(lnu, nu_hz) == pytest.approx(1.0)
 
 
 def test_grid_axes_and_fixed_parameters(tmp_path):
@@ -190,3 +190,31 @@ def test_grid_axes_and_fixed_parameters(tmp_path):
         # cloudy's default command gives log10 Q(HI) = 9.497 per erg/s
         log10_q = hf["log10_specific_ionising_luminosity/HI"][...]
         assert log10_q[1, 0] == pytest.approx(9.497, abs=2e-3)
+
+
+def test_rejects_axis_not_increasing(tmp_path):
+    """An axis with repeated or decreasing values stops the script."""
+    config = {
+        "model": "cloudy_agn-unit-test",
+        "log10blue_bump_temperature": [4.0, 5.0],
+        "alpha_ox": [-1.0, -1.4],
+    }
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.safe_dump(config))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            SCRIPT,
+            "--config-file",
+            str(config_file),
+            "--grid-dir",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "alpha_ox must be strictly increasing" in result.stderr
+    assert not (tmp_path / "cloudy_agn-unit-test.hdf5").exists()

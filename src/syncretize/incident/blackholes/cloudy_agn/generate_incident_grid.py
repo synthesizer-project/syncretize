@@ -49,6 +49,9 @@ SEXP_LIMIT = 84.0
 # exponential cutoff at 10^4 K to better than 0.1%.
 DEX_STEP = 0.005
 
+# numpy 2.0 renamed trapz to trapezoid, so use whichever this numpy has
+trapezoid = getattr(np, "trapezoid", None) or np.trapz
+
 
 def sexp(x):
     """
@@ -168,7 +171,7 @@ def agn_lnu(lam, blue_bump_temperature, alpha_ox, alpha_uv, alpha_x):
     )
 
     # Frequency decreases along the grid, hence the minus sign
-    bolometric_luminosity = -np.trapezoid(lnu, nu_hz)
+    bolometric_luminosity = -trapezoid(lnu, nu_hz)
 
     return lnu / bolometric_luminosity
 
@@ -223,6 +226,11 @@ if __name__ == "__main__":
     fixed = {
         name: float(value) for name, value in values.items() if not value.ndim
     }
+
+    # synthesizer needs each axis to increase, with no repeated values
+    for name in axes_names:
+        if not np.all(np.diff(values[name]) > 0):
+            raise ValueError(f"{name} must be strictly increasing")
 
     # Model definition dictionary, including any fixed parameters
     model = {
