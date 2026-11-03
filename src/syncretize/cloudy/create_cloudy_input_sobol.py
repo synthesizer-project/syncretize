@@ -4,6 +4,23 @@ Create Cloudy input scripts by Sobol-sampling both incident grid parameters
 
 Uses a single Sobol sequence across all parameters, then interpolates spectra
 from the incident grid at the sampled age/metallicity points.
+
+Alternatively, if the cloudy parameter file contains an `incident` block, the
+incident spectra are computed directly from the named model (currently only
+`relagn`) at each sampled point, and no incident grid is needed, e.g.:
+
+    incident:
+      model: relagn
+      params:
+        masses: [1.0e+6, 1.0e+10, 'log']
+        accretion_rates_eddington: [1.0e-4, 200.0, 'log']
+        spins: [0.0, 0.998, 'linear']   # or a scalar to fix it
+        cosine_inclinations: [0.09, 1.0, 'linear']
+
+WARNING: computing RELAGN spectra directly is slow, ~10-15 s per spectrum
+per process (e.g. ~1.3 hours for 10,000 samples with --num-procs 28). For
+more than a few hundred samples, run this script as a batch job on a full
+node rather than on a login node.
 """
 
 import shutil
@@ -13,14 +30,16 @@ import h5py
 import numpy as np
 import yaml
 from scipy.stats import qmc
+from synthesizer.emissions import Sed
 from synthesizer.grid import Grid
+from unyt import Angstrom, Hz, erg, s
 
 import syncretize.cloudy.submission_scripts as submission_scripts
-from syncretize.cloudy import cloudy17, cloudy23, cloudy25
+from syncretize.cloudy import cloudy17, cloudy23
 from syncretize.parser import Parser
 
 
-def parse_sobol_params(params, incident_grid):
+def parse_sobol_params(params, incident_grid=None, incident_config=None):
     """
     Parse parameters into incident, photoionization, and fixed categories.
     Automatically uses incident grid axes ranges when not specified in params.
@@ -28,6 +47,8 @@ def parse_sobol_params(params, incident_grid):
     Args:
         params (dict): Parameter dictionary from YAML file
         incident_grid (Grid): Incident grid to extract axes ranges
+        incident_config (dict): The `incident` block from the YAML file. If
+            given, incident ranges are taken from it instead of the grid.
 
     Returns:
         tuple: (incident_params, photoionisation_params, fixed_params)
@@ -39,23 +60,33 @@ def parse_sobol_params(params, incident_grid):
     photoionisation_params = {}
     fixed_params = {}
 
-    # Get incident grid axes and their ranges
-    incident_axes = set(incident_grid.axes)
+    if incident_config is not None:
+        # Scalars are fixed values; a zero-width range keeps them in the
+        # saved parameters alongside the sampled ones
+        for key, value in incident_config["params"].items():
+            if isinstance(value, list) and len(value) == 3:
+                incident_params[key] = tuple(value)
+            else:
+                incident_params[key] = (value, value, "linear")
+        incident_axes = set(incident_params)
+    else:
+        # Get incident grid axes and their ranges
+        incident_axes = set(incident_grid.axes)
 
-    # Automatically add all incident grid axes with their full ranges
-    for axis in incident_grid.axes:
-        axis_values = getattr(incident_grid, axis)
-        min_val = float(np.min(axis_values))
-        max_val = float(np.max(axis_values))
-        # Default to log scale for axes the grid itself treats as logged
-        # (e.g. ages, metallicities, black hole masses, accretion rates)
-        scale = (
-            "log"
-            if f"log10{axis}" in incident_grid._extract_axes
-            or axis in ["ages", "age", "metallicities", "metallicity"]
-            else "linear"
-        )
-        incident_params[axis] = (min_val, max_val, scale)
+        # Automatically add all incident grid axes with their full ranges
+        for axis in incident_grid.axes:
+            axis_values = getattr(incident_grid, axis)
+            min_val = float(np.min(axis_values))
+            max_val = float(np.max(axis_values))
+            # Default to log scale for axes the grid itself treats as logged
+            # (e.g. ages, metallicities, black hole masses, accretion rates)
+            scale = (
+                "log"
+                if f"log10{axis}" in incident_grid._extract_axes
+                or axis in ["ages", "age", "metallicities", "metallicity"]
+                else "linear"
+            )
+            incident_params[axis] = (min_val, max_val, scale)
 
     for key, value in params.items():
         # Check if this is an incident grid parameter
@@ -175,10 +206,71 @@ def generate_sobol_samples(
     return incident_samples, photoionisation_samples
 
 
+def compute_incident_spectra(model, incident_samples, num_procs=1):
+    """
+    Compute incident spectra directly from a model at each sampled point.
+
+    Args:
+        model (str): Name of the incident model (currently only 'relagn')
+        incident_samples (list): List of dicts of incident parameter values
+        num_procs (int): Number of processes to use
+
+    Returns:
+        tuple: (lam, lnu)
+            - lam: wavelength array in Angstrom (increasing)
+            - lnu: array of spectra in erg/s/Hz, shape (n_samples, n_lam)
+    """
+    if model != "relagn":
+        raise ValueError(f"Unknown incident model: {model}")
+
+    # Only needed for this model, so import here
+    from multiprocessing import Pool
+
+    from relagn import relagn
+
+    from syncretize.incident.blackholes.relagn.generate_incident_grid import (
+        compute_single_spectrum,
+    )
+
+    required = [
+        "masses",
+        "accretion_rates_eddington",
+        "spins",
+        "cosine_inclinations",
+    ]
+    missing = [key for key in required if key not in incident_samples[0]]
+    if missing:
+        raise ValueError(f"incident params missing for relagn: {missing}")
+
+    lam = relagn().wave_grid[::-1]
+    param_list = [tuple(s[key] for key in required) for s in incident_samples]
+
+    with Pool(processes=num_procs) as pool:
+        lnu = np.array(pool.starmap(compute_single_spectrum, param_list))
+
+    return lam, lnu
+
+
+def log10_ionising_photon_rate(lam, lnu):
+    """
+    Compute log10 of the HI ionising photon production rate of each spectrum.
+
+    Args:
+        lam (np.ndarray): Wavelength array in Angstrom
+        lnu (np.ndarray): Spectra in erg/s/Hz, shape (n_lam,) or (n, n_lam)
+
+    Returns:
+        np.ndarray: log10 Q(HI) [s^-1] for each spectrum
+    """
+    sed = Sed(lam * Angstrom, lnu=lnu * erg / s / Hz)
+    return np.log10(sed.calculate_ionising_photon_production_rate().value)
+
+
 if __name__ == "__main__":
     parser = Parser(
         description="Create Cloudy inputs with Sobol-sampled parameters",
         cloudy_args=True,
+        incident_grid_required=False,
     )
 
     parser.add_argument(
@@ -233,6 +325,15 @@ if __name__ == "__main__":
         help="Expected time per Cloudy model in minutes (default: 10)",
     )
 
+    parser.add_argument(
+        "--num-procs",
+        type=int,
+        required=False,
+        default=1,
+        help="Number of processes for computing incident spectra directly "
+        "(only used with an `incident` block in the parameter file)",
+    )
+
     args = parser.parse_args()
 
     incident_grid_name = args.incident_grid
@@ -251,35 +352,53 @@ if __name__ == "__main__":
             "--cloudy-executable-path is required when --machine is set"
         )
 
-    print(f"Incident grid: {incident_grid_name}")
-    print(f"Parameter file: {cloudy_paramfile}")
-    print(f"Number of Sobol samples: {n_samples}")
-
     # Add extensions if needed
     if not cloudy_paramfile.endswith(".yaml"):
         cloudy_paramfile += ".yaml"
-    if not incident_grid_name.endswith(".hdf5"):
-        incident_grid_name += ".hdf5"
-
-    # Generate grid name (provenance like paramfile/version/seed -> HDF5 attrs)
-    paramfile_base = Path(cloudy_paramfile).stem
-    grid_base = Path(incident_grid_name).stem
-    new_grid_name = args.grid_name or f"{grid_base}_sobol-n{n_samples}"
 
     # Load parameter file
     with open(cloudy_paramfile, "r") as file:
         all_params = yaml.safe_load(file)
 
+    # An `incident` block means the incident spectra are computed directly
+    # from a model rather than interpolated from an incident grid
+    incident_config = all_params.pop("incident", None)
+    if incident_config is None and incident_grid_name is None:
+        parser.error(
+            "--incident-grid is required unless the parameter file "
+            "contains an `incident` block"
+        )
+
+    if incident_config is None:
+        print(f"Incident grid: {incident_grid_name}")
+    else:
+        print(f"Incident model: {incident_config['model']} (computed directly)")
+    print(f"Parameter file: {cloudy_paramfile}")
+    print(f"Number of Sobol samples: {n_samples}")
+
+    # Generate grid name (provenance like paramfile/version/seed -> HDF5 attrs)
+    paramfile_base = Path(cloudy_paramfile).stem
+    if incident_config is None:
+        if not incident_grid_name.endswith(".hdf5"):
+            incident_grid_name += ".hdf5"
+        grid_base = Path(incident_grid_name).stem
+    else:
+        grid_base = incident_config["model"]
+    new_grid_name = args.grid_name or f"{grid_base}_sobol-n{n_samples}"
+
     # Load incident grid
-    incident_grid = Grid(
-        incident_grid_name,
-        grid_dir=incident_grid_dir,
-        ignore_lines=True,
-    )
+    if incident_config is None:
+        incident_grid = Grid(
+            incident_grid_name,
+            grid_dir=incident_grid_dir,
+            ignore_lines=True,
+        )
+    else:
+        incident_grid = None
 
     # Parse parameters
     incident_params, photoionisation_params, fixed_params = parse_sobol_params(
-        all_params, incident_grid
+        all_params, incident_grid, incident_config
     )
 
     print(f"\nIncident parameters: {list(incident_params.keys())}")
@@ -302,8 +421,6 @@ if __name__ == "__main__":
         cloudy = cloudy17
     elif cloudy_version.startswith("c23"):
         cloudy = cloudy23
-    elif cloudy_version.startswith("c25"):
-        cloudy = cloudy25
     else:
         raise ValueError(f"Unknown Cloudy version: {cloudy_version}")
 
@@ -363,6 +480,9 @@ if __name__ == "__main__":
         hf.attrs["n_samples"] = n_samples
         hf.attrs["sampling_method"] = "sobol"
         hf.attrs["incident_grid"] = grid_base
+        hf.attrs["incident_generation"] = (
+            "interpolated" if incident_config is None else "direct"
+        )
         hf.attrs["cloudy_paramfile"] = paramfile_base
         if seed is not None:
             hf.attrs["seed"] = seed
@@ -371,32 +491,57 @@ if __name__ == "__main__":
 
     shutil.copy(cloudy_paramfile, f"{output_directory}/")
 
-    # Get wavelength array
-    lam = incident_grid.lam
+    if incident_config is None:
+        # Get wavelength array
+        lam = incident_grid.lam
 
-    # Collect the sampled values for every incident grid axis (in the
-    # grid's native axis units), so this works for any grid (SPS, AGN, ...)
-    axes_values = {
-        axis: np.array([s[axis] for s in incident_samples])
-        for axis in incident_grid.axes
-    }
+        # Collect the sampled values for every incident grid axis (in the
+        # grid's native axis units), so this works for any grid (SPS, AGN,...)
+        axes_values = {
+            axis: np.array([s[axis] for s in incident_samples])
+            for axis in incident_grid.axes
+        }
 
-    # Get interpolated spectra
-    print("\nGenerating interpolated spectra...")
-    interp = incident_grid.interpolate_grid_at_axes_value(
-        spectra_type="incident",
-        **axes_values,
-    )
-    spec = interp["spectra"]
+        # Get interpolated spectra
+        print("\nGenerating interpolated spectra...")
+        interp = incident_grid.interpolate_grid_at_axes_value(
+            spectra_type="incident",
+            **axes_values,
+        )
+        lnu = interp["spectra"].lnu.value
+    else:
+        print(
+            f"\nComputing {incident_config['model']} spectra directly "
+            f"({args.num_procs} processes)..."
+        )
+        lam, lnu = compute_incident_spectra(
+            incident_config["model"], incident_samples, args.num_procs
+        )
 
     with h5py.File(grid_hdf5_file, "a") as hf:
         hf.create_dataset("incident_lam", data=lam, compression="gzip")
-        hf.create_dataset(
-            "incident_lnu", data=spec.lnu.value, compression="gzip"
-        )
+        hf.create_dataset("incident_lnu", data=lnu, compression="gzip")
 
     # Handle reference ionisation parameter if needed
-    if fixed_params.get("ionisation_parameter_model") == "ref":
+    if (
+        fixed_params.get("ionisation_parameter_model") == "ref"
+        and incident_config is not None
+    ):
+        # The reference point is a set of incident parameter values
+        reference = incident_config.get("reference")
+        if reference is None:
+            raise ValueError(
+                "incident.reference (a dict of incident parameter values) "
+                "is required for the 'ref' model with an `incident` block"
+            )
+        _, ref_lnu = compute_incident_spectra(
+            incident_config["model"], [reference]
+        )
+        reference_log10_specific_ionising_lum = float(
+            log10_ionising_photon_rate(lam, ref_lnu[0])
+        )
+        log10Q_samples = log10_ionising_photon_rate(lam, lnu)
+    elif fixed_params.get("ionisation_parameter_model") == "ref":
         # Get reference point parameters
         ref_age = fixed_params.get("reference_age")
         ref_met = fixed_params.get("reference_metallicity")

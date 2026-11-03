@@ -499,6 +499,7 @@ def cosma7_sobol_onthefly(
                 "        # Raw cloudy .cont; parsed later by"
                 " synthesizer.read_continuum",
                 '        mv "0.cont" "$GRID_DIR/cont/${incident_idx}.cont"',
+                '        mv "0.out" "$GRID_DIR/cont/${incident_idx}.out"',
                 '        cd "$GRID_DIR" && rm -rf "$work_dir"',
                 "    fi",
                 "}",
@@ -526,6 +527,7 @@ def cosma7_sobol_onthefly(
                 "    # Keep the raw cloudy .cont; collect_sobol_outputs"
                 " parses it with synthesizer.read_continuum",
                 '    mv "0.cont" "$GRID_DIR/cont/${incident_idx}.cont"',
+                '    mv "0.out" "$GRID_DIR/cont/${incident_idx}.out"',
                 '    cd "$GRID_DIR" && rm -rf "$work_dir"',
                 "fi",
             ]
