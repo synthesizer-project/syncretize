@@ -2,7 +2,18 @@
 # Default config file for NLR models. 
 
 # CLOUDY VERSION
-cloudy_version: c25.00
+cloudy_version: c23.00
+
+# INCIDENT SPECTRA
+# Computed directly from the model at each Sobol sample (no incident grid).
+# Remove this block to interpolate from --incident-grid instead.
+incident:
+  model: relagn
+  params:
+    masses: [1.0e+6, 1.0e+10, 'log']  # black hole mass [Msun]
+    accretion_rates_eddington: [0.001, 200.0, 'log']  # Eddington ratio (RELAGN invalid below 1e-3)
+    spins: [0.0, 0.998, 'linear']  # black hole spin (scalar to fix)
+    cosine_inclinations: [0.09, 0.98, 'linear']  # cosine of the inclination (RELAGN Lbol spikes above ~0.98)
 
 # ABUNDANCE PATTERN AND DEPLETION
 metallicities: [0.0003, 0.03, 'log']
