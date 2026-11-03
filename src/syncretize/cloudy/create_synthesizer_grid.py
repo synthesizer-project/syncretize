@@ -27,6 +27,15 @@ from syncretize.cloudy import cloudy17, cloudy23
 from syncretize.grid_io import GridFile
 from syncretize.parser import Parser
 
+# numpy 2.0 renamed trapz to trapezoid, so use whichever this numpy has
+trapezoid = getattr(np, "trapezoid", None) or np.trapz
+
+#: Non-ionising band (Angstrom) used to check the normalised incident spectra.
+CHECK_BAND = (1500.0, 5000.0)
+
+#: Largest acceptable fractional offset of the normalised incident continuum.
+CHECK_TOLERANCE = 0.02
+
 # Create dictionary of commonly used units for grid axes
 axes_units = {
     "reference_ionisation_parameter": dimensionless,
@@ -457,6 +466,7 @@ def add_spectra(
     new_shape,
     spec_names=("incident", "transmitted", "nebular", "linecont"),
     norm_by_q=True,
+    incident_grid_file=None,
 ):
     """
     Open cloudy spectra and add them to the grid.
@@ -480,6 +490,9 @@ def add_spectra(
         norm_by_q (bool)
             If True, the spectra are normalised by the specific ionising
             photon luminosity calculated from the incident spectrum.
+        incident_grid_file (str)
+            Path to the incident grid file. If given, the normalised incident
+            spectra are checked against it over CHECK_BAND.
     """
 
     # Determine the cloudy version...
@@ -519,7 +532,23 @@ def add_spectra(
     # Array for recording cloudy failures
     failures = np.zeros(new_shape)
 
+    # Ratio of the normalised incident continuum to the input SED, per run.
+    # The input is read from the file, not a loaded Grid, since synthesizer
+    # rescales luminosity weighted grids on load.
+    band = (lam > CHECK_BAND[0]) & (lam < CHECK_BAND[1])
+    continuum_ratios = []
+    incident_file = None
+    if incident_grid_file is not None and band.any():
+        incident_file = h5py.File(incident_grid_file, "r")
+        input_lam = incident_file["spectra/wavelength"][...]
+
     for incident_index, incident_index_tuple in enumerate(incident_index_list):
+        input_lnu = None
+        if incident_file is not None:
+            input_lnu = incident_file["spectra/incident"][
+                tuple(incident_index_tuple)
+            ]
+
         for photoionisation_index, photoionisation_index_tuple in enumerate(
             photoionisation_index_list
         ):
@@ -582,6 +611,36 @@ def add_spectra(
                         spec_dict[spec_name]
                         * spectra["normalisation"][indices]
                     )
+
+                # Compare the normalised incident continuum with the input
+                if input_lnu is not None:
+                    input_band = np.interp(lam[band], input_lam, input_lnu)
+                    output_band = spectra["incident"][indices][band]
+                    continuum_ratios.append(
+                        trapezoid(output_band, lam[band])
+                        / trapezoid(input_band, lam[band])
+                    )
+
+    if incident_file is not None:
+        incident_file.close()
+
+    # Warn if the normalisation has moved the stellar continuum (#151)
+    continuum_ratios = np.array(continuum_ratios)
+    continuum_ratios = continuum_ratios[np.isfinite(continuum_ratios)]
+    if continuum_ratios.size:
+        offsets = np.abs(continuum_ratios - 1)
+        print(
+            f"Normalised incident vs input over {CHECK_BAND} A: max offset "
+            f"{offsets.max():.3f}, median {np.median(offsets):.3f}."
+        )
+        if offsets.max() > CHECK_TOLERANCE:
+            print(
+                f"WARNING: {np.sum(offsets > CHECK_TOLERANCE)} runs have a "
+                "normalised incident continuum more than "
+                f"{CHECK_TOLERANCE:.0%} from the input SED. The incident grid "
+                "probably samples the ionisation edges too coarsely; "
+                "regenerate it (see syncretize#151)."
+            )
 
     # Apply units to the spectra
     for spec in spectra:
@@ -1036,6 +1095,7 @@ if __name__ == "__main__":
             new_shape,
             spec_names=("incident", "transmitted", "nebular", "linecont"),
             norm_by_q=True,
+            incident_grid_file=incident_grid.grid_filename,
         )
         print("Added spectra")
         print(spectra.keys())

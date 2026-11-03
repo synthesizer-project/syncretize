@@ -26,3 +26,31 @@ def test_q_u_round_trip():
     """calculate_U_from_Q inverts calculate_Q_from_U."""
     q = calculate_Q_from_U(1e-2, 100.0)
     assert np.isclose(calculate_U_from_Q(q, 100.0), 1e-2)
+
+
+def test_ionisation_edges_stay_sharp():
+    """Inserted edge points copy their own side of the edge (#151)."""
+    from unyt import Angstrom, Hz, erg, s
+
+    from syncretize.grid_io import EDGE_OFFSET, add_ionisation_edges
+    from syncretize.photoionisation import edge_is_resolved, edge_wavelength
+
+    # A coarse grid like M13/FSPS 3.2: 905 | 915 around the HI edge
+    lam = np.array([100.0, 905.0, 915.0, 1e4]) * Angstrom
+    lnu = np.array([[1e-3, 1e-2, 1.0, 2.0]]) * erg / s / Hz
+    assert not edge_is_resolved(lam.value)
+
+    new_lam, new_spectra = add_ionisation_edges(lam, {"incident": lnu})
+    edge = edge_wavelength("HI")
+    assert edge_is_resolved(new_lam.value)
+    assert np.all(np.diff(new_lam.value) > 0)
+    assert new_spectra["incident"].units == lnu.units
+    flux = dict(
+        zip(np.round(new_lam.value, 4), new_spectra["incident"][0].value)
+    )
+    assert flux[round(edge - EDGE_OFFSET, 4)] == 1e-2
+    assert flux[round(edge + EDGE_OFFSET, 4)] == 1.0
+    # HeI and HeII edges are inside the grid too: 6 new points in total
+    assert new_lam.size == lam.size + 6
+    # The original points are untouched
+    assert np.all(np.isin(lam.value, new_lam.value))
