@@ -16,10 +16,10 @@ import yaml
 
 # synthesiser modules
 from synthesizer.abundances import Abundances
+from utils import apollo_submission_script, get_grid_properties
 
 # local modules
 from syncretize.cloudy import cloudy17, cloudy23
-from utils import apollo_submission_script, get_grid_properties
 
 
 class CloudyIncidentShapeCommands:

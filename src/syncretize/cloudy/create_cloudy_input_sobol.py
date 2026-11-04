@@ -372,7 +372,9 @@ if __name__ == "__main__":
     if incident_config is None:
         print(f"Incident grid: {incident_grid_name}")
     else:
-        print(f"Incident model: {incident_config['model']} (computed directly)")
+        print(
+            f"Incident model: {incident_config['model']} (computed directly)"
+        )
     print(f"Parameter file: {cloudy_paramfile}")
     print(f"Number of Sobol samples: {n_samples}")
 
