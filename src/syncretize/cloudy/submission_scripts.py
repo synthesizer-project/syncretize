@@ -2,6 +2,11 @@
 Functions for creating submission scripts for specific machines.
 """
 
+from pathlib import Path
+
+# Scripts run run_cloudy.py by absolute path, so jobs work from anywhere
+RUN_CLOUDY = Path(__file__).resolve().parent / "run_cloudy.py"
+
 
 def create_slurm_job_script_by_incident_grid_point(
     number_of_incident_grid_points=None,
@@ -24,8 +29,10 @@ def create_slurm_job_script_by_incident_grid_point(
         [
             "#!/bin/bash",
             "#SBATCH --job-name=run_cloudy      # Job name",
-            "#SBATCH --output=output/%A_%a.out  # Standard output log",
-            "#SBATCH --error=output/%A_%a.err   # Error log",
+            f"#SBATCH --output={cloudy_output_dir}/{new_grid_name}"
+            "/logs/%A_%a.out",
+            f"#SBATCH --error={cloudy_output_dir}/{new_grid_name}"
+            "/logs/%A_%a.err",
             f"#SBATCH --array=0-{number_of_jobs - 1}  # Job array range",
             "#SBATCH --ntasks=1                 # Number of tasks per job",
             "#SBATCH --cpus-per-task=1          # CPU cores per task",
@@ -33,7 +40,7 @@ def create_slurm_job_script_by_incident_grid_point(
             f"#SBATCH --partition={partition}    # Partition/queue name",
             "",
             "# Run command",
-            "python run_cloudy.py \\",
+            f"python {RUN_CLOUDY} \\",
             f"    --grid-name={new_grid_name} \\",
             f"    --cloudy-output-dir={cloudy_output_dir} \\",
             f"    --cloudy-executable-path={cloudy_executable_path} \\",
@@ -64,8 +71,10 @@ def create_slurm_job_script_by_photoionisation_grid_point(
         [
             "#!/bin/bash",
             "#SBATCH --job-name=run_cloudy      # Job name",
-            "#SBATCH --output=output/%A_%a.out  # Standard output log",
-            "#SBATCH --error=output/%A_%a.err   # Error log",
+            f"#SBATCH --output={cloudy_output_dir}/{new_grid_name}"
+            "/logs/%A_%a.out",
+            f"#SBATCH --error={cloudy_output_dir}/{new_grid_name}"
+            "/logs/%A_%a.err",
             f"#SBATCH --array=0-{number_of_jobs - 1} # Job array range",
             "#SBATCH --ntasks=1                 # Number of tasks per job",
             "#SBATCH --cpus-per-task=1          # CPU cores per task",
@@ -73,7 +82,7 @@ def create_slurm_job_script_by_photoionisation_grid_point(
             f"#SBATCH --partition={partition}    # Partition/queue name",
             "",
             "# Run command",
-            "python run_cloudy.py \\",
+            f"python {RUN_CLOUDY} \\",
             f"    --grid-name={new_grid_name} \\",
             f"    --cloudy-output-dir={cloudy_output_dir} \\",
             f"    --cloudy-executable-path={cloudy_executable_path} \\",
@@ -100,8 +109,10 @@ def create_slurm_job_script_for_list(
         [
             "#!/bin/bash",
             "#SBATCH --job-name=run_cloudy      # Job name",
-            "#SBATCH --output=output/%A_%a.out  # Standard output log",
-            "#SBATCH --error=output/%A_%a.err   # Error log",
+            f"#SBATCH --output={cloudy_output_dir}/{new_grid_name}"
+            "/logs/%A_%a.out",
+            f"#SBATCH --error={cloudy_output_dir}/{new_grid_name}"
+            "/logs/%A_%a.err",
             f"#SBATCH --array=0-{number_of_jobs - 1}  # Job array range",
             "#SBATCH --ntasks=1                 # Number of tasks per job",
             "#SBATCH --cpus-per-task=1          # CPU cores per task",
@@ -109,7 +120,7 @@ def create_slurm_job_script_for_list(
             f"#SBATCH --partition={partition}    # Partition/queue name",
             "",
             "# Run command",
-            "python run_cloudy.py \\",
+            f"python {RUN_CLOUDY} \\",
             f"    --grid-name={new_grid_name} \\",
             f"    --cloudy-output-dir={cloudy_output_dir} \\",
             f"    --cloudy-executable-path={cloudy_executable_path} \\",
@@ -134,6 +145,9 @@ def artemis(
     """
     Submission script generator for artemis
     """
+
+    # Absolute, so the job works wherever it is submitted from
+    cloudy_output_dir = str(Path(cloudy_output_dir).resolve())
 
     # If a number_of_jobs is provided use this and assume the number of models
     # is 1. This is mostly relevant for re-running certain jobs due to cloudy
@@ -196,7 +210,13 @@ def artemis(
             )
 
     # save job script
-    open(f"{new_grid_name}.slurm", "w").write(slurm_job_script)
+    # Save the job script beside the Cloudy runs, with a directory for
+    # its logs (SLURM does not create it)
+    grid_output_dir = Path(cloudy_output_dir) / new_grid_name
+    (grid_output_dir / "logs").mkdir(parents=True, exist_ok=True)
+    script_filename = grid_output_dir / f"{new_grid_name}.slurm"
+    script_filename.write_text(slurm_job_script)
+    print(f"Wrote {script_filename}")
 
 
 def cosma7_sobol(

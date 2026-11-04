@@ -3,8 +3,50 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-# Ready-made Cloudy parameter files shipped with syncretize
-PARAM_DIR = Path(__file__).parent / "params"
+from syncretize.cloudy import cloudy17, cloudy23, cloudy25
+
+# The cloudy package directory, holding the bundled line lists, and its
+# ready-made Cloudy parameter files
+CLOUDY_DIR = Path(__file__).parent
+PARAM_DIR = CLOUDY_DIR / "params"
+
+
+def get_cloudy_module(cloudy_version):
+    """
+    Return the interface module for a Cloudy version.
+
+    Arguments:
+        cloudy_version (str)
+            The Cloudy version, e.g. "c23.01".
+
+    Returns:
+        module
+            cloudy17, cloudy23 or cloudy25.
+    """
+    if cloudy_version.startswith("c17"):
+        return cloudy17
+    if cloudy_version.startswith("c23"):
+        return cloudy23
+    if cloudy_version.startswith("c25"):
+        return cloudy25
+    raise ValueError(f"Unknown Cloudy version: {cloudy_version}")
+
+
+def resolve_linelist(linelist):
+    """
+    Find a line list: an existing path, or one bundled with syncretize.
+
+    Arguments:
+        linelist (str or Path)
+            Path or name of the line list.
+
+    Returns:
+        path (Path)
+            Path to the line list.
+    """
+    if Path(linelist).exists():
+        return Path(linelist)
+    return CLOUDY_DIR / linelist
 
 
 def resolve_param_file(param_file, param_dir=None):

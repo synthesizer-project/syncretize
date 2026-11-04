@@ -13,18 +13,18 @@ import re
 
 import h5py
 import numpy as np
-import submission_scripts
 from synthesizer.emissions import Sed
 from synthesizer.grid import Grid
 from synthesizer.units import has_units
 from unyt import Angstrom, Hz, cm, dimensionless, erg, eV, km, s, yr
-from utils import (
+
+from syncretize.cloudy import submission_scripts
+from syncretize.cloudy.utils import (
+    get_cloudy_module,
     get_cloudy_params,
     get_grid_props_cloudy,
     resolve_param_file,
 )
-
-from syncretize.cloudy import cloudy17, cloudy23
 from syncretize.grid_io import GridFile
 from syncretize.parser import Parser
 
@@ -429,8 +429,11 @@ def check_cloudy_runs(
     if number_of_failed_models > 0:
         print("number of failed cloudy runs:", number_of_failed_models)
 
-        # Save list of failed runs
-        failed_filename = f"{new_grid_name}.failures"
+        # Save list of failed runs beside the Cloudy runs
+        failed_filename = (
+            f"{os.path.abspath(cloudy_dir)}/{new_grid_name}/"
+            f"{new_grid_name}.failures"
+        )
         np.savetxt(failed_filename, np.array(failed_list).T, fmt="%d")
 
         # If a specific machine is specified run the function in
@@ -490,10 +493,7 @@ def add_spectra(
     )
 
     # ... and use to select the correct module.
-    if cloudy_version.split(".")[0] == "c23":
-        cloudy = cloudy23
-    elif cloudy_version.split(".")[0] == "c17":
-        cloudy = cloudy17
+    cloudy = get_cloudy_module(cloudy_version)
 
     # Read first spectra from the first grid point to get length and
     # wavelength grid.
@@ -653,10 +653,7 @@ def add_lines(
     )
 
     # ... and use to select the correct module.
-    if cloudy_version.split(".")[0] == "c23":
-        cloudy = cloudy23
-    elif cloudy_version.split(".")[0] == "c17":
-        cloudy = cloudy17
+    cloudy = get_cloudy_module(cloudy_version)
 
     # Open the first linelist and use it to populate the keys
     with open(f"{cloudy_dir}/{new_grid_name}/0/linelist.dat") as file:

@@ -16,10 +16,11 @@ from synthesizer.exceptions import InconsistentParameter
 from synthesizer.grid import Grid
 
 import syncretize.cloudy.submission_scripts as submission_scripts
-from syncretize.cloudy import cloudy17, cloudy23, cloudy25
 from syncretize.cloudy.utils import (
+    get_cloudy_module,
     get_cloudy_params,
     get_grid_props_cloudy,
+    resolve_linelist,
     resolve_param_file,
 )
 from syncretize.parser import Parser
@@ -346,15 +347,7 @@ if __name__ == "__main__":
     lam = incident_grid.lam
 
     # Use cloudy version to initialise a synthesizer.cloudy object
-    cloudy_version = fixed_photoionisation_params["cloudy_version"]
-    if cloudy_version == "c17.03":
-        cloudy = cloudy17
-    elif cloudy_version.startswith("c23"):
-        cloudy = cloudy23
-    elif cloudy_version.startswith("c25"):
-        cloudy = cloudy25
-    else:
-        raise ValueError(f"Unknown Cloudy version: {cloudy_version}")
+    cloudy = get_cloudy_module(fixed_photoionisation_params["cloudy_version"])
 
     # Save all the parameters for use later
     parameters_to_save = (
@@ -375,6 +368,13 @@ if __name__ == "__main__":
     # Save parameters_to_save dictionary to a YAML file
     with open(f"{output_directory}/grid_parameters.yaml", "w") as file:
         yaml.dump(parameters_to_save, file, default_flow_style=False)
+
+    # Cloudy copies the output line list into each model directory, so
+    # give it a path that works from anywhere
+    if fixed_photoionisation_params.get("output_linelist"):
+        fixed_photoionisation_params["output_linelist"] = str(
+            resolve_linelist(fixed_photoionisation_params["output_linelist"])
+        )
 
     # Also save the cloudy parameter file to the output folder
     shutil.copy(cloudy_paramfile, f"{output_directory}/")
@@ -456,7 +456,8 @@ if __name__ == "__main__":
 
         # Copy linelist to this folder
         shutil.copyfile(
-            "linelist.dat", f"{output_directory}/{incident_index}/linelist.dat"
+            resolve_linelist("linelist.dat"),
+            f"{output_directory}/{incident_index}/linelist.dat",
         )
 
         # If the reference ionionisation parameter model is used we want

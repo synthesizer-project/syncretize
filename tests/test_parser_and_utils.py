@@ -2,7 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from syncretize.cloudy.utils import get_cloudy_params, resolve_param_file
+from syncretize.cloudy import cloudy25, submission_scripts
+from syncretize.cloudy.utils import (
+    get_cloudy_module,
+    get_cloudy_params,
+    resolve_linelist,
+    resolve_param_file,
+)
 from syncretize.parser import Parser, get_choice
 
 
@@ -82,3 +88,27 @@ def test_resolve_param_file_takes_paths_and_names(tmp_path):
 
     # A bare name falls back to the ready-made parameter files
     assert resolve_param_file("c23.01-sps").exists()
+
+
+def test_cloudy_helpers_work_from_any_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert get_cloudy_module("c25.00") is cloudy25
+    with pytest.raises(ValueError, match="Unknown Cloudy version"):
+        get_cloudy_module("c99.00")
+    assert resolve_linelist("linelist-standard.dat").exists()
+
+
+def test_slurm_script_is_written_beside_the_runs(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    submission_scripts.artemis(
+        "grid_cloudy-test",
+        number_of_incident_grid_points=3,
+        number_of_photoionisation_models=2,
+        cloudy_output_dir=str(tmp_path / "runs"),
+        cloudy_executable_path="/cloudy",
+    )
+    grid_dir = tmp_path / "runs" / "grid_cloudy-test"
+    script = (grid_dir / "grid_cloudy-test.slurm").read_text()
+    assert (grid_dir / "logs").is_dir()
+    assert f"python {submission_scripts.RUN_CLOUDY}" in script
+    assert f"--output={grid_dir}/logs/" in script

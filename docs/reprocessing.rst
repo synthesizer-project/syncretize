@@ -70,14 +70,15 @@ input-building script also currently expects a metallicity axis. Non-SPS
 incident grids need a compatible parameter file and may require adapting this
 mapping.
 
-Use extensionless parameter names on the command line, for example
-``c23.01-sps`` rather than ``c23.01-sps.yaml``. This keeps generated and
-collected grid names consistent.
+``--cloudy-paramfile`` and ``--cloudy-paramfile-extra`` take a path to a
+parameter file or the name of one in ``params/`` (e.g. ``c23.01-sps``); the
+``.yaml`` extension is optional. The grid is named after the file name without
+its extension.
 
 1. Generate Cloudy inputs
 -------------------------
 
-From ``src/syncretize/cloudy`` run:
+The Cloudy scripts can be run from any directory:
 
 .. code-block:: console
 
@@ -95,8 +96,9 @@ the source spectrum and one Cloudy input per photoionisation-grid point.
 
 Pass ``--machine artemis`` to generate a Slurm array script. By default each
 task handles one incident-grid point and all its photoionisation points. This
-usually balances repeated spectrum setup against scheduler overhead. Create an
-``output`` directory before submitting because generated Slurm logs use it.
+usually balances repeated spectrum setup against scheduler overhead. The
+script is written to ``<cloudy-output-dir>/<grid-name>/<grid-name>.slurm`` and
+its logs to the ``logs`` directory beside it.
 
 2. Run Cloudy
 -------------
@@ -169,7 +171,8 @@ Failures
 The collector treats a sufficiently large ``.emergent_elin`` file as a
 successful model. Failed models with readable output are marked ``1`` in the
 ``failures`` dataset and their cells remain zero. Failed index pairs are also
-written to a ``.failures`` file for resubmission. Models missing ``.out`` must
+written to ``<cloudy-output-dir>/<grid-name>/<grid-name>.failures``
+for resubmission. Models missing ``.out`` must
 be rerun before collection.
 
 Do not publish a grid without checking this mask. A completed HDF5 write does
