@@ -2,9 +2,9 @@
 Process BPASS v2.3 and convert to HDF5 synthesizer grid.
 
 For BPASS v2.3 there is currently only a single variant (bin) and IMF. However
-v2.3 has 5 different values of the alpha enhancement. The processing at the
-moment create grid files for both individual alpha enhancements and then a 3D
-grid where alpha_enhancement is an axis.
+v2.3 has 5 different values of the alpha enhancement. Each run makes either
+the grid for one alpha enhancement or a 3D grid where alpha enhancement is an
+axis, as chosen in the parameter file.
 
 Note: there is no automatic download available so models need to be downloaded
 manually from:
@@ -20,9 +20,8 @@ mv bpass_v2.3.a*/* bpass_v2.3_imf135_300/
 rm -rf bpass_v2.3.a*
 
 Example:
-    python generate_incident_grid_2_3.py \
-    --input-dir path/to/input/dir \
-    --grid-dir path/to/grid/dir \
+    python generate_incident_grid_2_3.py bpass-2.3.yaml \
+        --grid-dir path/to/grids --input-dir path/to/input
 """
 
 import numpy as np
@@ -30,7 +29,7 @@ from unyt import Hz, angstrom, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import Parser
+from syncretize.parser import get_choice, incident_parser, load_param_file
 
 
 def resolve_name(original_model_name, bin, alpha=False):
@@ -91,7 +90,12 @@ def parse_spectra_file(filename):
 
 
 def make_single_alpha_grid(
-    original_model_name, input_dir, grid_dir, ae="+00", bs="bin"
+    original_model_name,
+    input_dir,
+    grid_dir,
+    ae="+00",
+    bs="bin",
+    param_file=None,
 ):
     """make a grid for a single alpha enhancement"""
 
@@ -176,7 +180,7 @@ def make_single_alpha_grid(
             spectra[ia, imetal, :] = spec_
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=param_file)
 
     # A dictionary with Boolean values for each axis, where True
     # indicates that the attribute should be interpolated in
@@ -201,7 +205,9 @@ def make_single_alpha_grid(
     out_grid.add_specific_ionising_lum()
 
 
-def make_full_grid(original_model_name, input_dir, grid_dir, bs="bin"):
+def make_full_grid(
+    original_model_name, input_dir, grid_dir, bs="bin", param_file=None
+):
     """make a full grid for different alpha-ehancements"""
 
     # returns a dictionary containing the sps model parameters
@@ -297,7 +303,7 @@ def make_full_grid(original_model_name, input_dir, grid_dir, bs="bin"):
                 spectra[ia, imetal, iae, :] = spec_  # Lsol AA^-1 10^6 Msol^-1
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=param_file)
 
     log_on_read = {
         "ages": True,
@@ -326,53 +332,34 @@ def make_full_grid(original_model_name, input_dir, grid_dir, bs="bin"):
 
 
 if __name__ == "__main__":
-    # Set up the command line arguments
-    parser = Parser(
-        description="BPASS_2.3 download and grid creation",
-        with_alpha=True,
-    )
-
-    parser.add_argument(
-        "-models",
-        "--models",
-        default="bpass_v2.3_imf135_300",
-        type=lambda arg: arg.split(","),
-    )
-
-    # flags whether to build individual grids or the full grid.
-    individual = True
-    full = True
-
-    # Unpack the arguments
+    parser = incident_parser("BPASS v2.3 grid creation", input_dir=True)
     args = parser.parse_args()
+    params = load_param_file(args.param_file)
 
-    # the directory to store downloaded input files
-    input_dir = args.input_dir
+    model = get_choice(params, "model", ["bpass_v2.3_imf135_300"])
+    variant = get_choice(params, "variant", ["bin"])  # no single star models
 
-    # the directory to store the grid
-    grid_dir = args.grid_dir
+    # The BPASS file codes for each alpha enhancement
+    alpha_codes = {-0.2: "-02", 0.0: "+00", 0.2: "+02", 0.4: "+04", 0.6: "+06"}
+    alpha = get_choice(params, "alpha_enhancement", [*alpha_codes, "axis"])
 
-    # define sps name used to store the input files
-    sps_name = "bpass"
+    # Source data are in <input-dir>/bpass/<model>
+    input_dir = f"{args.input_dir}/bpass"
 
-    # append sps_name to input_dir to define where to store downloaded input
-    # files
-    input_dir += f"/{sps_name}"
-
-    models = args.models
-
-    for model in models:
-        for bs in ["bin"]:  # no single star models , 'sin'
-            # make a grid with a single alpha enahancement value
-            if individual:
-                for ae in ["-02", "+00", "+02", "+04", "+06"]:
-                    print(ae)
-                    out_filename = make_single_alpha_grid(
-                        model, input_dir, grid_dir, ae=ae, bs=bs
-                    )
-
-            # make a full 3D grid
-            if full:
-                out_filename = make_full_grid(
-                    model, input_dir, grid_dir, bs=bs
-                )
+    if alpha == "axis":
+        make_full_grid(
+            model,
+            input_dir,
+            args.grid_dir,
+            bs=variant,
+            param_file=args.param_file,
+        )
+    else:
+        make_single_alpha_grid(
+            model,
+            input_dir,
+            args.grid_dir,
+            ae=alpha_codes[alpha],
+            bs=variant,
+            param_file=args.param_file,
+        )

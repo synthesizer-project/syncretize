@@ -1,5 +1,12 @@
 """
-Download the Maraston2013 SPS model and convert to HDF5 synthesizer grid.
+Convert the Maraston (2013) SPS model to an HDF5 synthesizer grid.
+
+The original download site no longer exists, so the source data must be
+obtained by other means and placed in <input-dir>/maraston13.
+
+Example:
+    python generate_incident_grid_2013.py maraston13.yaml \
+        --grid-dir path/to/grids --input-dir path/to/input
 """
 
 import os
@@ -10,10 +17,10 @@ from unyt import Angstrom, Hz, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import Parser
+from syncretize.parser import get_choice, incident_parser, load_param_file
 
 
-def make_grid(model, imf, input_dir, grid_dir):
+def make_grid(model, imf, input_dir, grid_dir, param_file=None):
     """Main function to convert Maraston 2013 and
     produce grids used by synthesizer
     Args:
@@ -57,14 +64,14 @@ def make_grid(model, imf, input_dir, grid_dir):
     ages_, _, lam_, llam_ = np.loadtxt(fn).T  # llam is in (ergs /s /AA /Msun)
 
     ages_Gyr = np.sort(np.array(list(set(ages_))))  # Gyr
-    ages = ages_Gyr * 1e9 * yr
+    ages = ages_Gyr * 1e9
 
     lam = lam_[ages_ == ages_[0]] * Angstrom
 
     spec = np.zeros((len(ages), len(metallicities), len(lam)))
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=param_file)
 
     # at each point in spec convert the units
     for iZ, Z in enumerate(metallicities):
@@ -101,39 +108,26 @@ def make_grid(model, imf, input_dir, grid_dir):
 
 
 if __name__ == "__main__":
-    # Set up the command line arguments
-    parser = Parser(description="Maraston+13 download and grid creation")
-
+    parser = incident_parser("Maraston (2013) grid creation", input_dir=True)
     args = parser.parse_args()
+    params = load_param_file(args.param_file)
 
-    grid_dir = args.grid_dir
-
-    # Define the model metadata
-    sps_name = "maraston13"
-    imfs = ["salpeter", "kroupa"]
     imf_code = {"salpeter": "ss", "kroupa": "kr"}
+    imf = get_choice(params, "imf_type", imf_code)
 
-    input_dir = args.input_dir
-    input_dir += f"/{sps_name}"
+    sps_name = "maraston13"
 
-    # NOTE: the original download site (icg.port.ac.uk/~maraston) no
-    # longer exists (checked 2026-07-29). The input data must be obtained
-    # by other means and placed in input_dir before running.
+    input_dir = f"{args.input_dir}/{sps_name}"
+    os.makedirs(input_dir, exist_ok=True)
 
-    # create directory to store downloaded output if it doesn't exist
-    if not os.path.exists(input_dir):
-        os.mkdir(input_dir)
+    model = {
+        "sps_name": sps_name,
+        "sps_version": False,
+        "sps_variant": False,
+        "imf_type": imf,
+        "imf_masses": [0.1, 100],
+        "imf_slopes": False,
+        "alpha": False,
+    }
 
-    # then run the rest
-    for imf in imfs:
-        model = {
-            "sps_name": sps_name,
-            "sps_version": False,
-            "sps_variant": False,
-            "imf_type": imf,
-            "imf_masses": [0.1, 100],
-            "imf_slopes": False,
-            "alpha": False,
-        }
-
-        make_grid(model, imf, input_dir, grid_dir)
+    make_grid(model, imf, input_dir, args.grid_dir, param_file=args.param_file)

@@ -33,6 +33,8 @@ create_cloudy_input_grid.py \
 
 An integral part of this process are the provision of a parameter file(s) which contains the photoionisation parameters. These can either be single values or lists (arrays). When a quantity is an array this adds an additional axis to the reprocessed grid. A range of ready-made parameter files are available for a range of scnearios in the `params/` directory.
 
+`--cloudy-paramfile` and `--cloudy-paramfile-extra` take either a path to a parameter file or the name of one in `params/` (e.g. `c23.01-sps`); the `.yaml` extension is optional. The new grid is named after the file name without its extension.
+
 It is possible to provide two parameter files, for example a default set of parameters and then a file containing a limited set of parameters to be changed. This approach is used to build a *photoionisation test suite*; this is a series of parameter files used to generate grids where we systematically vary a photoionisation parameter (e.g. the hydrogen density or ionisation parameter) or flag. 
 
 ##### Machines

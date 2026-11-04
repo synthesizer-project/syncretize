@@ -169,7 +169,6 @@ def test_grid_axes_and_fixed_parameters(tmp_path):
         [
             sys.executable,
             SCRIPT,
-            "--config-file",
             str(config_file),
             "--grid-dir",
             str(tmp_path),
@@ -185,6 +184,10 @@ def test_grid_axes_and_fixed_parameters(tmp_path):
         )
         assert hf["Model"].attrs["alpha_uv"] == -0.5
         assert hf["Model"].attrs["alpha_x"] == -1.0
+        assert hf["ParameterFile"].attrs["alpha_uv"] == -0.5
+        assert (
+            yaml.safe_load(hf["ParameterFile/contents"][()].decode()) == config
+        )
         assert hf["spectra/incident"].shape[:2] == (2, 2)
 
         # cloudy's default command gives log10 Q(HI) = 9.497 per erg/s
@@ -206,7 +209,6 @@ def test_rejects_axis_not_increasing(tmp_path):
         [
             sys.executable,
             SCRIPT,
-            "--config-file",
             str(config_file),
             "--grid-dir",
             str(tmp_path),

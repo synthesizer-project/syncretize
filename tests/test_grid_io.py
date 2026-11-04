@@ -185,3 +185,39 @@ def test_grid_readable_by_synthesizer(simple_grid):
     assert read_grid.available_spectra == ["incident"]
     assert read_grid.spectra["incident"].shape == simple_grid["spectra_shape"]
     np.testing.assert_allclose(read_grid.spectra["incident"], 1.0)
+
+
+def test_gridfile_stores_param_file(tmp_path):
+    param_file = tmp_path / "params.yaml"
+    param_file.write_text(
+        "grid_dir: grids\n"
+        "models: [a, b]\n"
+        "nested:\n"
+        "  value: 1.5\n"
+        "  missing: null\n"
+        "imf: [{name: lower, value: 0.1}]\n"
+    )
+    out_path = tmp_path / "grid.hdf5"
+
+    GridFile(str(out_path), param_file=str(param_file))
+
+    with h5py.File(out_path, "r") as hdf:
+        grp = hdf["ParameterFile"]
+        assert grp.attrs["grid_dir"] == "grids"
+        assert [_decode_attr(m) for m in grp.attrs["models"]] == ["a", "b"]
+        assert grp["nested"].attrs["value"] == 1.5
+        assert grp["nested"].attrs["missing"] == "None"
+        assert "lower" in grp.attrs["imf"]
+        assert grp["contents"][()].decode() == param_file.read_text()
+        assert grp["contents"].attrs["path"] == str(param_file.resolve())
+
+
+def test_gridfile_grid_name_sets_file_name(tmp_path):
+    param_file = tmp_path / "params.yaml"
+    param_file.write_text("grid_name: published-name_0.1,100\n")
+
+    grid = GridFile(str(tmp_path / "script-name.hdf5"), param_file=param_file)
+
+    assert grid.filepath == str(tmp_path / "published-name_0.1,100.hdf5")
+    assert (tmp_path / "published-name_0.1,100.hdf5").exists()
+    assert not (tmp_path / "script-name.hdf5").exists()

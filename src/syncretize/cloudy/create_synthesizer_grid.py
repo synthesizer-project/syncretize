@@ -16,14 +16,15 @@ import numpy as np
 import submission_scripts
 from synthesizer.emissions import Sed
 from synthesizer.grid import Grid
-from synthesizer.photoionisation import cloudy17, cloudy23
 from synthesizer.units import has_units
 from unyt import Angstrom, Hz, cm, dimensionless, erg, eV, km, s, yr
 from utils import (
     get_cloudy_params,
     get_grid_props_cloudy,
+    resolve_param_file,
 )
 
+from syncretize.cloudy import cloudy17, cloudy23
 from syncretize.grid_io import GridFile
 from syncretize.parser import Parser
 
@@ -863,8 +864,10 @@ if __name__ == "__main__":
     grid_dir = args.grid_dir
     cloudy_dir = args.cloudy_output_dir
     incident_grid_name = args.incident_grid
-    cloudy_param_file = args.cloudy_paramfile
+    cloudy_param_file = resolve_param_file(args.cloudy_paramfile)
     extra_cloudy_param_file = args.cloudy_paramfile_extra
+    if extra_cloudy_param_file is not None:
+        extra_cloudy_param_file = resolve_param_file(extra_cloudy_param_file)
     include_spectra = args.include_spectra
     machine = args.machine
     cloudy_executable_path = args.cloudy_executable_path
@@ -876,24 +879,6 @@ if __name__ == "__main__":
     print("cloudy_param_file:", cloudy_param_file)
     print("extra_cloudy_param_file:", extra_cloudy_param_file)
 
-    # Check for extensions
-    # Create _file and _name versions (with and w/o extensions)
-
-    if cloudy_param_file.split(".")[-1] != "yaml":
-        cloudy_param_name = cloudy_param_file
-        cloudy_param_file += ".yaml"
-    else:
-        cloudy_param_name = "".join(cloudy_param_file.split(".")[:-1])
-
-    if extra_cloudy_param_file is not None:
-        if extra_cloudy_param_file.split(".")[-1] != "yaml":
-            extra_cloudy_param_name = extra_cloudy_param_file
-            extra_cloudy_param_file += ".yaml"
-        else:
-            extra_cloudy_param_name = "".join(
-                extra_cloudy_param_file.split(".")[:-1]
-            )
-
     if incident_grid_name.split(".")[-1] != "hdf5":
         incident_grid_file = incident_grid_name + ".hdf5"
     else:
@@ -902,14 +887,11 @@ if __name__ == "__main__":
 
     # Get name of new grid (concatenation of incident_grid and cloudy
     # parameter file)
-    new_grid_name = f"{incident_grid_name}_cloudy-{cloudy_param_name}"
+    new_grid_name = f"{incident_grid_name}_cloudy-{cloudy_param_file.stem}"
 
     # If an additional parameter set append this to the new grid name
     if extra_cloudy_param_file:
-        # Ignore the directory part if it exists
-        extra_cloudy_param_name = extra_cloudy_param_name.split("/")[-1]
-        # Append the new_grid_name with the additional name
-        new_grid_name += "-" + extra_cloudy_param_name
+        new_grid_name += "-" + extra_cloudy_param_file.stem
 
     new_grid_file = new_grid_name + ".hdf5"
 

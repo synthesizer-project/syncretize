@@ -11,9 +11,10 @@ from synthesizer.exceptions import (
     InconsistentArguments,
     UnrecognisedOption,
 )
-from synthesizer.photoionisation import calculate_Q_from_U
 from synthesizer.synth_warnings import warn
 from unyt import angstrom, c, h, unyt_array
+
+from syncretize.photoionisation import calculate_Q_from_U
 
 
 class ShapeCommands:
@@ -139,6 +140,10 @@ def create_cloudy_input(
     """
     default_params = {
         "no_grain_scaling": False,
+        # depletion model, None for no depletion
+        "depletion_model": None,
+        # if not None, iterate to convergence
+        "iterate_to_convergence": None,
         # ionisation parameter
         "ionisation_parameter": None,
         # radius in log10 parsecs, only important for spherical geometry
@@ -292,24 +297,21 @@ def create_cloudy_input(
                 # define the reference abundances for the different grain types
                 # this should be the dust-phase abundance in the particular
                 # reference environment.
-                if params["grains"] == "Orion":
-                    reference_C_abund = -3.6259
-                    reference_Si_abund = -4.5547
-                # this is incorrect since the abundance in the ISM is probably
-                # different.
-                elif params["grains"] == "ISM":
+                # Orion and ISM grains share the same reference dust-phase
+                # abundances; only their grain size distributions differ.
+                if params["grains"] in ("Orion", "ISM"):
                     reference_C_abund = -3.5553
                     reference_Si_abund = -4.4841
                 else:
                     raise UnrecognisedOption(
-                        "Only Orion and ISM grain types "
-                        "are available in cloudy"
+                        "Only Orion and ISM grain types are available in "
+                        "cloudy"
                     )
 
-                PAH_abund = -4.446
+                reference_PAH_abund = -5.526
                 f_graphite = delta_graphite / (10 ** (reference_C_abund))
                 f_Si = delta_Si / (10 ** (reference_Si_abund))
-                f_pah = delta_PAH / (10 ** (PAH_abund))
+                f_pah = delta_PAH / (10 ** (reference_PAH_abund))
 
             else:
                 f_graphite = 1.0

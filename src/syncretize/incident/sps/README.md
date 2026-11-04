@@ -16,8 +16,7 @@ one variable power-law slope across the complete IMF mass range.
 ```bash
 export SPS_HOME=/path/to/fsps
 python fsps/generate_incident_grid_variable_imf.py \
-    --grid-dir path/to/grid/dir \
-    --config-file fsps/configs/variable_high_mass_slope.yaml
+    fsps/configs/variable_high_mass_slope.yaml --grid-dir path/to/grid/dir
 ```
 
 Generated names retain the standard SPS/IMF prefix and append

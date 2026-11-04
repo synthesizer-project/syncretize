@@ -1,6 +1,12 @@
 """
-Download the Maraston2024 SPS model
-and convert to HDF5 synthesizer grid.
+Convert the Maraston (2024) SPS model to an HDF5 synthesizer grid.
+
+There is no public download URL for this model. The source data must be
+obtained from the authors and placed in <input-dir>/maraston24.
+
+Example:
+    python generate_incident_grid_2024.py maraston24.yaml \
+        --grid-dir path/to/grids --input-dir path/to/input
 """
 
 import os
@@ -11,10 +17,12 @@ from unyt import Angstrom, Hz, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import Parser
+from syncretize.parser import get_choice, incident_parser, load_param_file
 
 
-def make_grid(model, rotation, model_type, imf, input_dir, grid_dir):
+def make_grid(
+    model, rotation, model_type, imf, input_dir, grid_dir, param_file=None
+):
     """Main function to convert Maraston 2024 and
     produce grids used by synthesizer
     Args:
@@ -76,7 +84,9 @@ def make_grid(model, rotation, model_type, imf, input_dir, grid_dir):
     spec = np.zeros((len(ages), len(metallicities), len(lam)))
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(f"{grid_dir}/{synthesizer_model_name}.hdf5")
+    out_grid = GridFile(
+        f"{grid_dir}/{synthesizer_model_name}.hdf5", param_file=param_file
+    )
 
     log_on_read = {"ages": True, "metallicities": False}
 
@@ -113,56 +123,37 @@ def make_grid(model, rotation, model_type, imf, input_dir, grid_dir):
 
 
 if __name__ == "__main__":
-    # Set up the command line arguments
-    parser = Parser(description="Maraston+24 download and grid creation")
-
+    parser = incident_parser("Maraston (2024) grid creation", input_dir=True)
     args = parser.parse_args()
+    params = load_param_file(args.param_file)
 
-    grid_dir = args.grid_dir
+    imf_codes = {"kroupa": "kr", "salpeter": "ss"}
+    rotation_codes = {0.0: "00", 0.4: "40"}
+    imf_type = get_choice(params, "imf_type", imf_codes)
+    rotation = rotation_codes[get_choice(params, "rotation", rotation_codes)]
+    model_type = get_choice(params, "model_type", ["Te", "Tenc"])
 
-    # Define the model metadata
     sps_name = "maraston24"
-    rotations = ["00", "40"]
-
-    model_types = ["Te", "Tenc"]
-    imfs = ["kr", "ss"]
 
     input_dir = f"{args.input_dir}/{sps_name}"
+    os.makedirs(input_dir, exist_ok=True)
 
-    # NOTE: there is no public download URL for this model
-    # (checked 2026-07-29). The input data must be obtained by other
-    # means (e.g. from the authors) and placed in input_dir before
-    # running.
+    model = {
+        "sps_name": sps_name,
+        "sps_version": False,
+        "sps_variant": f"{model_type}{rotation}",
+        "imf_type": imf_type,
+        "imf_masses": [0.1, 100],
+        "imf_slopes": False,
+        "alpha": False,
+    }
 
-    # Create directory to store downloaded output if it doesn't exist
-    if not os.path.exists(input_dir):
-        os.mkdir(input_dir)
-
-    for imf in imfs:
-        for model_type in model_types:
-            for rotation in rotations:
-                if imf == "kr":
-                    imf_type = "kroupa"
-                if imf == "ss":
-                    imf_type = "salpeter"
-
-                variant_name = f"{model_type}{rotation}"
-
-                model = {
-                    "sps_name": sps_name,
-                    "sps_version": False,
-                    "sps_variant": variant_name,
-                    "imf_type": imf_type,
-                    "imf_masses": [0.1, 100],
-                    "imf_slopes": False,
-                    "alpha": False,
-                }
-
-                make_grid(
-                    model,
-                    rotation,
-                    model_type,
-                    imf,
-                    input_dir,
-                    grid_dir,
-                )
+    make_grid(
+        model,
+        rotation,
+        model_type,
+        imf_codes[imf_type],
+        input_dir,
+        args.grid_dir,
+        param_file=args.param_file,
+    )

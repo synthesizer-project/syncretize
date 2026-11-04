@@ -1,3 +1,17 @@
+# Parameter file for cloudy_agn/generate_incident_grid.py
+#
+#   python generate_incident_grid.py cloudy_agn-limited.yaml --grid-dir <grid-dir>
+#
+# Each parameter below is a grid axis if given as a list (strictly
+# increasing) or a fixed value if given as a single number.
+#
+#   model: name of the grid; the grid is written to <grid-dir>/<model>.hdf5
+#   log10blue_bump_temperature: log10(T/K) of the big blue bump.
+#   alpha_ox: optical to X-ray index between 2500 A and 2 keV (cloudy
+#     default -1.4).
+#   alpha_uv: low energy slope of the big blue bump (optional, default -0.5).
+#   alpha_x: slope of the X-ray power law (optional, default -1.0).
+
 model: 'cloudy_agn-limited'
 log10blue_bump_temperature: [4.0, 4.5, 5.0, 5.5, 6.0]
 alpha_ox: -1.4

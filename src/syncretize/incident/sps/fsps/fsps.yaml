@@ -1,0 +1,26 @@
+# Parameter file for fsps/generate_incident_grid.py
+#
+#   python generate_incident_grid.py fsps.yaml --grid-dir <grid-dir>
+#
+# Needs a working python-FSPS installation (SPS_HOME set). The isochrones and
+# spectral library are those FSPS was compiled with.
+#
+#   libraries: optional, the [isochrones, spectra, dust] FSPS must have been
+#     compiled with (trailing ones may be left out), e.g. [mist, miles].
+#     The script stops if the installation differs.
+#
+#   imf_type: bpl (broken power law) or chabrier03.
+#   imf_masses: IMF mass boundaries in Msun.
+#     bpl: [m_low, 0.5, 1.0, m_high] (FSPS fixes the internal boundaries).
+#     chabrier03: [m_low, m_high].
+#   imf_slopes: bpl only, the three slopes alpha_i in dN/dM ~ M^-alpha_i
+#     between consecutive imf_masses.
+#
+# For example, a Chabrier IMF with a 120 Msun upper mass:
+#
+#   imf_type: chabrier03
+#   imf_masses: [0.08, 120]
+
+imf_type: bpl
+imf_masses: [0.08, 0.5, 1.0, 120]
+imf_slopes: [1.3, 2.3, 2.3]

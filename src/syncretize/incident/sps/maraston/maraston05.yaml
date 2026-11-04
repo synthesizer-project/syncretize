@@ -1,0 +1,14 @@
+# Parameter file for maraston/generate_incident_grid_2005.py (Maraston 2005)
+#
+#   python generate_incident_grid_2005.py maraston05.yaml \
+#       --grid-dir <grid-dir> --input-dir <input-dir>
+#
+# The source data must be obtained manually and placed in
+# <input-dir>/maraston05 (the original download URL no longer exists).
+#
+#   imf_type: salpeter   (the only option currently supported)
+#   hr_morphology: rhb   (red horizontal branch, the only option currently
+#                         supported)
+
+imf_type: salpeter
+hr_morphology: rhb

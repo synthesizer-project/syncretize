@@ -20,6 +20,7 @@ from syncretize.cloudy import cloudy17, cloudy23, cloudy25
 from syncretize.cloudy.utils import (
     get_cloudy_params,
     get_grid_props_cloudy,
+    resolve_param_file,
 )
 from syncretize.parser import Parser
 
@@ -249,8 +250,10 @@ if __name__ == "__main__":
     incident_grid_name = args.incident_grid
     incident_grid_dir = args.grid_dir
     cloudy_output_dir = args.cloudy_output_dir
-    cloudy_paramfile = args.cloudy_paramfile
+    cloudy_paramfile = resolve_param_file(args.cloudy_paramfile)
     extra_cloudy_paramfile = args.cloudy_paramfile_extra
+    if extra_cloudy_paramfile is not None:
+        extra_cloudy_paramfile = resolve_param_file(extra_cloudy_paramfile)
     machine = args.machine
     cloudy_executable_path = args.cloudy_executable_path
     by_photoionisation_grid_point = args.by_photoionisation_grid_point
@@ -263,21 +266,13 @@ if __name__ == "__main__":
 
     # Get name of new grid (concatenation of incident_grid and cloudy
     # parameter file)
-    new_grid_name = f"{incident_grid_name}_cloudy-{cloudy_paramfile}"
+    new_grid_name = f"{incident_grid_name}_cloudy-{cloudy_paramfile.stem}"
 
     # If an additional parameter set append this to the new grid name
     if extra_cloudy_paramfile:
-        # Ignore the directory part if it exists
-        extra_cloudy_paramfile_name = extra_cloudy_paramfile.split("/")[-1]
-        # Append the new_grid_name with the additional name
-        new_grid_name += "-" + extra_cloudy_paramfile_name
+        new_grid_name += "-" + extra_cloudy_paramfile.stem
 
     # Check for extensions
-    if cloudy_paramfile.split(".")[-1] != "yaml":
-        cloudy_paramfile += ".yaml"
-    if extra_cloudy_paramfile is not None:
-        if extra_cloudy_paramfile.split(".")[-1] != "yaml":
-            extra_cloudy_paramfile += ".yaml"
     if incident_grid_name.split(".")[-1] != "hdf5":
         incident_grid_name += ".hdf5"
 
@@ -382,9 +377,9 @@ if __name__ == "__main__":
         yaml.dump(parameters_to_save, file, default_flow_style=False)
 
     # Also save the cloudy parameter file to the output folder
-    shutil.copy(f"params/{cloudy_paramfile}", f"{output_directory}/")
+    shutil.copy(cloudy_paramfile, f"{output_directory}/")
     if extra_cloudy_paramfile is not None:
-        shutil.copy(f"params/{extra_cloudy_paramfile}", f"{output_directory}/")
+        shutil.copy(extra_cloudy_paramfile, f"{output_directory}/")
 
     # If the ionisation_parameter_model is the reference model (i.e. not fixed)
     # save the value of the ionising photon luminosity at the reference grid
