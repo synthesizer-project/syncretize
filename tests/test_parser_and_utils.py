@@ -4,6 +4,7 @@ import pytest
 
 from syncretize.cloudy import cloudy25, submission_scripts
 from syncretize.cloudy.utils import (
+    cloudy_run_status,
     get_cloudy_module,
     get_cloudy_params,
     resolve_linelist,
@@ -88,6 +89,25 @@ def test_resolve_param_file_takes_paths_and_names(tmp_path):
 
     # A bare name falls back to the ready-made parameter files
     assert resolve_param_file("c23.01-sps").exists()
+
+
+def test_cloudy_run_status_reads_the_out_file(tmp_path):
+    model = tmp_path / "0"
+    assert cloudy_run_status(model) == "not run (no .out file)"
+
+    model.with_suffix(".out").write_text("")
+    assert cloudy_run_status(model) == "empty .out file"
+
+    model.with_suffix(".out").write_text(
+        "lots of output\n Cloudy exited OK]\n"
+    )
+    assert cloudy_run_status(model) is None
+
+    model.with_suffix(".out").write_text("zone 3\n PROBLEM ABORT boom\n")
+    assert cloudy_run_status(model).startswith("aborted")
+
+    model.with_suffix(".out").write_text("zone 3\n zone 4\n")
+    assert cloudy_run_status(model) == "did not finish: zone 4"
 
 
 def test_cloudy_helpers_work_from_any_directory(tmp_path, monkeypatch):

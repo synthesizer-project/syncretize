@@ -10,6 +10,9 @@ from syncretize.cloudy import cloudy17, cloudy23, cloudy25
 CLOUDY_DIR = Path(__file__).parent
 PARAM_DIR = CLOUDY_DIR / "params"
 
+# What Cloudy prints at the end of a successful run
+CLOUDY_SUCCESS = "Cloudy exited OK"
+
 
 def get_cloudy_module(cloudy_version):
     """
@@ -47,6 +50,40 @@ def resolve_linelist(linelist):
     if Path(linelist).exists():
         return Path(linelist)
     return CLOUDY_DIR / linelist
+
+
+def cloudy_run_status(model):
+    """
+    Say whether a Cloudy run succeeded, from the end of its output.
+
+    Arguments:
+        model (str or Path)
+            The model path without extension, e.g. <grid>/<i>/<j>.
+
+    Returns:
+        reason (str or None)
+            None if Cloudy exited OK, otherwise why the run failed.
+    """
+    out_file = Path(f"{model}.out")
+    if not out_file.exists():
+        return "not run (no .out file)"
+    with open(out_file, "rb") as handle:
+        handle.seek(0, 2)
+        handle.seek(max(handle.tell() - 8192, 0))
+        tail = handle.read().decode("utf-8", errors="ignore")
+    lines = [line.strip() for line in tail.splitlines() if line.strip()]
+    if any(CLOUDY_SUCCESS in line for line in lines[-20:]):
+        return None
+    if not lines:
+        return "empty .out file"
+    for token, reason in (
+        ("ABORT", "aborted"),
+        ("did not converge", "did not converge"),
+        ("DISASTER", "disaster"),
+    ):
+        if any(token in line for line in lines[-20:]):
+            return f"{reason}: {lines[-1]}"
+    return f"did not finish: {lines[-1]}"
 
 
 def resolve_param_file(param_file, param_dir=None):

@@ -20,6 +20,7 @@ from unyt import Angstrom, Hz, cm, dimensionless, erg, eV, km, s, yr
 
 from syncretize.cloudy import submission_scripts
 from syncretize.cloudy.utils import (
+    cloudy_run_status,
     get_cloudy_module,
     get_cloudy_params,
     get_grid_props_cloudy,
@@ -330,9 +331,13 @@ def check_if_failed(
 
     """
 
+    # Cloudy must have exited OK...
+    if cloudy_run_status(model_to_check) is not None:
+        return True
+
     failed = False
 
-    # Check if files exist
+    # ...and written its outputs. Check if files exist
     for ext in extensions_to_check:
         if not os.path.isfile(model_to_check + "." + ext):
             failed = True
@@ -399,16 +404,11 @@ def check_cloudy_runs(
 
             # Record models that have failed
             if failed:
-                # The path to the cloudy out file
-                outfile = (
-                    f"{cloudy_dir}/{new_grid_name}/"
-                    f"{incident_index}/{photoionisation_index}.out"
+                # Why it failed
+                reason = (
+                    cloudy_run_status(model_to_check)
+                    or "missing or truncated output files"
                 )
-
-                # Grab the final line of
-                with open(outfile, "r") as file:
-                    lines = file.readlines()
-                    last_line = lines[-1].strip()
 
                 # Append the incident and photoionisation index to an array
                 failed_list.append([incident_index, photoionisation_index])
@@ -416,13 +416,10 @@ def check_cloudy_runs(
                 # If at least one model fails print a header
                 if len(failed_list) == 1:
                     print("Failed models:")
-                    print(
-                        "incident_index, photoionisation_index, last line from"
-                        "cloudy"
-                    )
+                    print("incident_index, photoionisation_index, reason")
 
                 # Print the indices and the last line of the cloudy out file
-                print("    ", incident_index, photoionisation_index, last_line)
+                print("    ", incident_index, photoionisation_index, reason)
 
     number_of_failed_models = len(failed_list)
 

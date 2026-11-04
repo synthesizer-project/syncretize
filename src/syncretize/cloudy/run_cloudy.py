@@ -9,9 +9,13 @@ or all models (setting neither).
 
 import argparse
 import os
+import subprocess
+import sys
 
 import numpy as np
 import yaml
+
+from syncretize.cloudy.utils import cloudy_run_status
 
 if __name__ == "__main__":
     # Initial parser
@@ -157,25 +161,35 @@ if __name__ == "__main__":
     print(f"incident model indices: {incident_indices}")
     print(f"photoionisation model indices: {photoionisation_indices}")
 
-    # Loop over the list of indices and run each one
+    # Define the cloudy executable path
+    cloudy_executable = (
+        f"{args.cloudy_executable_path}/{parameters['cloudy_version']}"
+        "/source/cloudy.exe"
+    )
+
+    # Loop over the list of indices and run each one, in its incident
+    # grid point's directory
+    failures = []
     for incident_index, photoionisation_index in zip(
         incident_indices, photoionisation_indices
     ):
-        # change directory to the output directory
-        os.chdir(f"{output_directory}/{incident_index}")
+        model_dir = f"{output_directory}/{incident_index}"
+        command = [cloudy_executable, "-r", str(photoionisation_index)]
+        print(" ".join(command), f"(in {model_dir})")
+        result = subprocess.run(command, cwd=model_dir)
 
-        # Define the cloudy input file
-        input_file = (
-            f"{output_directory}/{incident_index}/{photoionisation_index}.in"
-        )
+        # Cloudy can exit 0 without finishing, so also check its output
+        reason = cloudy_run_status(f"{model_dir}/{photoionisation_index}")
+        if result.returncode != 0:
+            reason = f"exit status {result.returncode}" + (
+                f", {reason}" if reason else ""
+            )
+        if reason is not None:
+            failures.append((incident_index, photoionisation_index, reason))
 
-        # Define the cloudy executable path
-        cloudy_executable = (
-            f"{args.cloudy_executable_path}/{parameters['cloudy_version']}"
-            "/source/cloudy.exe"
-        )
-
-        # Run the cloudy job
-        command = f"{cloudy_executable} -r {photoionisation_index}"
-        print(command)
-        os.system(command)
+    # Report failures and exit non-zero, so a scheduler marks the job
+    # as failed
+    for incident_index, photoionisation_index, reason in failures:
+        print(f"FAILED {incident_index}/{photoionisation_index}: {reason}")
+    if failures:
+        sys.exit(1)
