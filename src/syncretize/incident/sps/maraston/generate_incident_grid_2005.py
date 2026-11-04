@@ -1,5 +1,12 @@
 """
-Download M05 and convert to HDF5 synthesizer grid.
+Convert the Maraston (2005) SPS model to an HDF5 synthesizer grid.
+
+The original download URL no longer exists, so the source data must be
+obtained by other means and placed in <input-dir>/maraston05.
+
+Example:
+    python generate_incident_grid_2005.py maraston05.yaml \
+        --grid-dir path/to/grids --input-dir path/to/input
 """
 
 import os
@@ -13,7 +20,7 @@ from unyt import Hz, angstrom, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import Parser
+from syncretize.parser import get_choice, incident_parser, load_param_file
 
 
 def download_data(input_dir, url):
@@ -33,7 +40,7 @@ def download_data(input_dir, url):
     os.remove(filename)
 
 
-def make_grid(model, imf, hr_morphology, input_dir, grid_dir):
+def make_grid(model, imf, hr_morphology, input_dir, grid_dir, param_file=None):
     """Main function to convert BC03 grids and
     produce grids used by synthesizer"""
 
@@ -88,7 +95,7 @@ def make_grid(model, imf, hr_morphology, input_dir, grid_dir):
             spec[ia, imetal] = lnu
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=param_file)
 
     # A dictionary with Boolean values for each axis, where True
     # indicates that the attribute should be interpolated in
@@ -113,67 +120,53 @@ def make_grid(model, imf, hr_morphology, input_dir, grid_dir):
     out_grid.add_specific_ionising_lum()
 
 
-# Lets include a way to call this script not via an entry point
 if __name__ == "__main__":
-    # Set up the command line arguments
-    parser = Parser(description="Maraston download and grid creation")
-
-    # Unpack the arguments
+    parser = incident_parser(
+        "Maraston (2005) grid creation", input_dir=True, download=True
+    )
     args = parser.parse_args()
+    params = load_param_file(args.param_file)
 
-    # the directory to store downloaded input files
-    input_dir = args.input_dir
-
-    # the directory to store the grid
-    grid_dir = args.grid_dir
+    # Only one variant is currently supported, but check the parameter file
+    # asks for it
+    get_choice(params, "imf_type", ["salpeter"])
+    hr_morphology = get_choice(params, "hr_morphology", ["rhb"])
+    imf = "ss"
 
     sps_name = "maraston05"
 
-    # Define the model metadata
-    model_name = sps_name
-    imfs = ["ss"]  # , 'kr'
+    # append sps_name to input_dir to define where to store downloaded input
+    # files
+    input_dir = f"{args.input_dir}/{sps_name}"
+    os.makedirs(input_dir, exist_ok=True)
+
+    # NOTE: the original download URL (icg.port.ac.uk/~maraston/SSPn/SED/
+    # Sed_Mar05_SSP_Salpeter.tar.gz) no longer exists (checked 2026-07-29).
+    original_data_url = None
+    if args.download:
+        if original_data_url is None:
+            raise ValueError(
+                "No working download URL is available for maraston05. "
+                f"Obtain the input data by other means, place it in "
+                f"{input_dir}, and rerun without --download."
+            )
+        download_data(input_dir, original_data_url)
+
     model = {
         "sps_name": sps_name,
         "sps_version": False,
+        "sps_variant": hr_morphology,
+        "imf_type": "bpl",
+        "imf_masses": [0.1, 100],
+        "imf_slopes": [2.35],
         "alpha": False,
     }
 
-    # append sps_name to input_dir to define where to store downloaded input
-    # files
-    input_dir += f"/{sps_name}"
-
-    # create directory to store downloaded output if it doesn't exist
-    if not os.path.exists(input_dir):
-        os.mkdir(input_dir)
-
-    # Define the download URL
-    # NOTE: the original download URL (icg.port.ac.uk/~maraston/SSPn/SED/
-    # Sed_Mar05_SSP_Salpeter.tar.gz) no longer exists (checked 2026-07-29).
-    # The input data must be obtained by other means and placed in
-    # input_dir before running with --download unset.
-    original_data_url = {}
-    original_data_url["ss"] = None
-
-    for imf in imfs:
-        # Download the data if necessary
-        if args.download:
-            if original_data_url[imf] is None:
-                raise ValueError(
-                    "No working download URL is available for "
-                    f"maraston05 (imf={imf}). Obtain the input data by "
-                    f"other means, place it in {input_dir}, and rerun "
-                    "without --download."
-                )
-            print(original_data_url[imf])
-            download_data(input_dir, original_data_url[imf])
-
-        if imf == "ss":
-            model["imf_type"] = "bpl"
-            model["imf_masses"] = [0.1, 100]
-            model["imf_slopes"] = [2.35]
-
-        for hr_morphology in ["rhb"]:
-            model["sps_variant"] = hr_morphology
-
-            # Get and write the grid
-            make_grid(model, imf, hr_morphology, input_dir, grid_dir)
+    make_grid(
+        model,
+        imf,
+        hr_morphology,
+        input_dir,
+        args.grid_dir,
+        param_file=args.param_file,
+    )

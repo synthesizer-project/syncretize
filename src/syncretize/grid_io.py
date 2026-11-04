@@ -19,8 +19,8 @@ datasets and attributes.
 
 Example usage:
 
-    # Create a grid file
-    grid = GridFile("grid.hdf5")
+    # Create a grid file, storing the YAML parameter file used to make it
+    grid = GridFile("grid.hdf5", param_file="params.yaml")
 
     # Write out the common parts of the grid
     grid.write_grid_common(
@@ -34,9 +34,11 @@ Example usage:
 """
 
 from datetime import date
+from pathlib import Path
 
 import h5py
 import numpy as np
+import yaml
 from synthesizer._version import __version__ as synthesizer_version
 from synthesizer.emissions import Sed
 from synthesizer.units import has_units
@@ -67,6 +69,8 @@ class GridFile:
         mode (string)
             The mode used to open the file. Initialisation uses ``"w"`` and
             subsequent operations use ``"r+"``.
+        param_file (str or None)
+            The YAML parameter file stored in the ``ParameterFile`` group.
     """
 
     # Define common descriptions
@@ -82,7 +86,7 @@ class GridFile:
         "log_on_read": "Boolean, True for interpolated axes",
     }
 
-    def __init__(self, filepath):
+    def __init__(self, filepath, param_file=None):
         """
         Initialise the helper.
 
@@ -92,9 +96,14 @@ class GridFile:
             filepath (str)
                 The file path to where the file should be stored. This should
                 include the file name itself.
+            param_file (str, optional)
+                The YAML parameter file used to make the grid. Its parameters
+                and verbatim contents are written to the ``ParameterFile``
+                group so the grid can be reproduced.
         """
         # Store the filepath for posterity
         self.filepath = filepath
+        self.param_file = param_file
 
         # Setup the HDF5 file attribute
         self.hdf = None
@@ -117,9 +126,29 @@ class GridFile:
         self.hdf.attrs["synthesizer_grids_version"] = syncretize_version
         self.hdf.attrs["synthesizer_version"] = synthesizer_version
         self.hdf.attrs["date_created"] = str(date.today())
+        if self.param_file is not None:
+            self._write_param_file()
         self.hdf.close()
         self.hdf = None
         self.mode = "r+"
+
+    def _write_param_file(self):
+        """
+        Write the parameter file to the ``ParameterFile`` group.
+
+        The parameters are stored as attributes (nested mappings become
+        subgroups) and the verbatim file in the ``contents`` dataset, so
+        ``yaml.safe_load(hdf["ParameterFile/contents"][()])`` recovers it.
+        """
+        contents = Path(self.param_file).read_text()
+        grp = self.hdf.create_group("ParameterFile")
+        _write_attrs(grp, yaml.safe_load(contents) or {})
+        dset = grp.create_dataset(
+            "contents",
+            data=contents,
+            dtype=h5py.string_dtype(),
+        )
+        dset.attrs["path"] = str(Path(self.param_file).resolve())
 
     def _open_file(self):
         """Open the file if it isn't already open."""
@@ -708,28 +737,8 @@ class GridFile:
         # Open the file
         self._open_file()
 
-        # Create the CloudyParams group if it doesn't exist
-        if "CloudyParams" not in self.hdf:
-            self.hdf.create_group("CloudyParams")
-        cloudy_grp = self.hdf["CloudyParams"]
-
-        # Add other parameters as attributes
-        for k, v in params.items():
-            # If v is None then convert to string None for saving in the
-            # HDF5 file.
-            if v is None:
-                v = "None"
-
-            # If the parameter is a dictionary (e.g. as used for abundances)
-            if isinstance(v, dict):
-                # Create group for this key
-                nested_grp = cloudy_grp.create_group(k)
-
-                for k2, v2 in v.items():
-                    nested_grp.attrs[k2] = v2
-
-            else:
-                cloudy_grp.attrs[k] = v
+        # Write the parameters to the CloudyParams group
+        _write_attrs(self.hdf.require_group("CloudyParams"), params)
 
         # Close the file
         self._close_file()
@@ -795,6 +804,32 @@ class GridFile:
             print(index_list)
 
         return n_axes, shape, n_models, mesh, model_list, index_list
+
+
+def _write_attrs(grp, params):
+    """
+    Write a dictionary of parameters as attributes of an HDF5 group.
+
+    Nested dictionaries become subgroups and None becomes "None". Values
+    HDF5 can't store as attributes (e.g. lists of dictionaries) are stored
+    as their string representation.
+
+    Args:
+        grp (h5py.Group)
+            The group to write to.
+        params (dict)
+            The parameters to write.
+    """
+    for key, value in params.items():
+        if value is None:
+            value = "None"
+        if isinstance(value, dict):
+            _write_attrs(grp.require_group(key), value)
+            continue
+        try:
+            grp.attrs[key] = value
+        except (TypeError, ValueError):
+            grp.attrs[key] = str(value)
 
 
 def read_params(param_file):

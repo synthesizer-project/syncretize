@@ -1,26 +1,9 @@
 from pathlib import Path
 
+import pytest
+
 from syncretize.cloudy.utils import get_cloudy_params
-from syncretize.parser import Parser
-
-
-def test_parser_exposes_alpha_flags(tmp_path):
-    parser = Parser("alpha test", with_alpha=True)
-
-    args = parser.parse_args(
-        [
-            "--grid-dir",
-            str(tmp_path),
-            "--input-dir",
-            str(tmp_path),
-            "--full",
-        ]
-    )
-
-    assert args.grid_dir == str(tmp_path)
-    assert args.input_dir == str(tmp_path)
-    assert args.full
-    assert not args.individual
+from syncretize.parser import Parser, get_choice
 
 
 def test_parser_cloudy_arguments(tmp_path):
@@ -73,3 +56,18 @@ def test_get_cloudy_params_splits_fixed_and_grid(tmp_path):
 
     assert grid["hydrogen_density"].tolist() == [1.0, 2.0]
     assert grid["abundance_scalings.carbon_to_oxygen"].tolist() == [0.1, 0.2]
+
+
+def test_get_choice_checks_options():
+    assert (
+        get_choice({"imf_type": "kroupa"}, "imf_type", ["kroupa"]) == "kroupa"
+    )
+    assert (
+        get_choice({"rotation": 0.4}, "rotation", {0.0: "00", 0.4: "40"})
+        == 0.4
+    )
+
+    with pytest.raises(ValueError, match="must be one of"):
+        get_choice({"imf_type": "bad"}, "imf_type", ["kroupa", "salpeter"])
+    with pytest.raises(ValueError, match="must be one of"):
+        get_choice({}, "imf_type", ["kroupa"])

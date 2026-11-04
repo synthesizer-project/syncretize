@@ -1,0 +1,15 @@
+# Parameter file for maraston/generate_incident_grid_2024.py (Maraston 2024)
+#
+#   python generate_incident_grid_2024.py maraston24.yaml \
+#       --grid-dir <grid-dir> --input-dir <input-dir>
+#
+# The source data must be obtained from the authors and placed in
+# <input-dir>/maraston24.
+#
+#   imf_type: kroupa or salpeter
+#   rotation: initial stellar rotation (v_ini), 0.0 or 0.4
+#   model_type: Te (corrected effective temperatures) or Tenc (not corrected)
+
+imf_type: kroupa
+rotation: 0.0
+model_type: Te
