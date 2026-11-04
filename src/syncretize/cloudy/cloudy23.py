@@ -142,8 +142,8 @@ def create_cloudy_input(
         "no_grain_scaling": False,
         # depletion model, None for no depletion
         "depletion_model": None,
-        # if not None, iterate to convergence
-        "iterate_to_convergence": None,
+        # iterate to convergence (cloudy17 always does)
+        "iterate_to_convergence": True,
         # ionisation parameter
         "ionisation_parameter": None,
         # radius in log10 parsecs, only important for spherical geometry
@@ -413,7 +413,7 @@ def create_cloudy_input(
         cinput.append(f"covering factor {params['covering_factor']} linear\n")
 
     # Processing commands
-    if params["iterate_to_convergence"] is not None:
+    if params["iterate_to_convergence"]:
         cinput.append("iterate to convergence\n")
 
     if params["T_floor"] is not None:
