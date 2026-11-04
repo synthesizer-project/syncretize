@@ -64,7 +64,7 @@ def make_grid(model, imf, input_dir, grid_dir, param_file=None):
     ages_, _, lam_, llam_ = np.loadtxt(fn).T  # llam is in (ergs /s /AA /Msun)
 
     ages_Gyr = np.sort(np.array(list(set(ages_))))  # Gyr
-    ages = ages_Gyr * 1e9 * yr
+    ages = ages_Gyr * 1e9
 
     lam = lam_[ages_ == ages_[0]] * Angstrom
 

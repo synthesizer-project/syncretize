@@ -210,3 +210,14 @@ def test_gridfile_stores_param_file(tmp_path):
         assert "lower" in grp.attrs["imf"]
         assert grp["contents"][()].decode() == param_file.read_text()
         assert grp["contents"].attrs["path"] == str(param_file.resolve())
+
+
+def test_gridfile_grid_name_sets_file_name(tmp_path):
+    param_file = tmp_path / "params.yaml"
+    param_file.write_text("grid_name: published-name_0.1,100\n")
+
+    grid = GridFile(str(tmp_path / "script-name.hdf5"), param_file=param_file)
+
+    assert grid.filepath == str(tmp_path / "published-name_0.1,100.hdf5")
+    assert (tmp_path / "published-name_0.1,100.hdf5").exists()
+    assert not (tmp_path / "script-name.hdf5").exists()

@@ -46,6 +46,7 @@ from tqdm import tqdm
 from unyt import dimensionless, unyt_array
 
 from syncretize._version import __version__ as syncretize_version
+from syncretize.parser import load_param_file
 from syncretize.photoionisation import Ions
 
 
@@ -99,8 +100,18 @@ class GridFile:
             param_file (str, optional)
                 The YAML parameter file used to make the grid. Its parameters
                 and verbatim contents are written to the ``ParameterFile``
-                group so the grid can be reproduced.
+                group so the grid can be reproduced. If it sets
+                ``grid_name``, the file is named ``<grid_name>.hdf5`` (in the
+                same directory) instead of the name in ``filepath``.
         """
+        # A parameter file can fix the grid's name, so a published grid is
+        # remade under its published name whatever the script would call it
+        if param_file is not None:
+            grid_name = load_param_file(param_file).get("grid_name")
+            if grid_name:
+                filepath = str(Path(filepath).with_name(f"{grid_name}.hdf5"))
+                print(f"Writing {filepath} (grid_name in {param_file})")
+
         # Store the filepath for posterity
         self.filepath = filepath
         self.param_file = param_file

@@ -298,7 +298,8 @@ if __name__ == "__main__":
 
     # Only one variant is currently supported, but check the parameter
     # file asks for it
-    get_choice(params, "isochrones", ["Padova2000"])
+    isochrone_labels = {"Padova2000": "padova00"}
+    isochrones = get_choice(params, "isochrones", isochrone_labels)
     imf_type = get_choice(params, "imf_type", ["chabrier03"])
 
     sps_name = "bc03"
@@ -316,8 +317,8 @@ if __name__ == "__main__":
 
     model = {
         "sps_name": sps_name,
-        "sps_version": False,
-        "sps_variant": False,
+        "sps_version": "2003",
+        "sps_variant": isochrone_labels[isochrones],
         "imf_type": imf_type,
         "imf_masses": [0.1, 100],
         "imf_slopes": False,

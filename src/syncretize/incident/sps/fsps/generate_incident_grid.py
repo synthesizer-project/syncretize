@@ -57,7 +57,7 @@ def generate_grid(model, grid_dir, param_file=None):
     # include the isochrones/spectra as the sps_variant name
     # model['sps_variant'] = '-'.join(map(lambda x: str(x), sp.libraries[:2]))
 
-    model["sps_variant"] = "-".join(
+    model["sps_variant"] = "".join(
         map(lambda x: x.decode("utf-8"), sp.libraries[:2])
     )
     print(model["sps_variant"])
@@ -130,7 +130,7 @@ if __name__ == "__main__":
     params = load_param_file(args.param_file)
 
     imf_type = get_choice(params, "imf_type", ["bpl", "chabrier03"])
-    imf_masses = [float(m) for m in params["imf_masses"]]
+    imf_masses = params["imf_masses"]
     if imf_type == "chabrier03" and len(imf_masses) != 2:
         raise ValueError("The chabrier03 IMF needs imf_masses [m_low, m_high]")
 
