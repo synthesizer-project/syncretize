@@ -104,7 +104,10 @@ law or Chabrier IMF):
        src/syncretize/incident/sps/fsps/fsps.yaml --grid-dir grids
 
 The result depends on the libraries compiled into the local FSPS installation.
-Record that environment with the generated file.
+The grid records them in its ``fsps_libraries`` model attribute. To insist on
+particular ones, list them in the parameter file (``libraries``, or
+``model.libraries`` for the variable-IMF script), e.g. ``[mist, miles]``; the
+script stops if FSPS was compiled with others.
 
 The variable-IMF conversion adds one slope or outer mass boundary as a genuine
 grid axis:

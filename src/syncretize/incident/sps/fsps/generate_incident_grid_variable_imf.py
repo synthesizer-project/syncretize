@@ -12,6 +12,7 @@ from unyt import Hz, Msun, angstrom, dimensionless, erg, s, yr
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.fsps_utils import (
     expand_fsps_slopes,
+    fsps_libraries,
     imf_values_at_axis,
     load_fsps_imf_config,
 )
@@ -54,7 +55,8 @@ def generate_grid(config, grid_dir, config_file):
         imf3=fsps_slopes[2],
     )
 
-    variant = "".join(library.decode("utf-8") for library in sp.libraries[:2])
+    libraries = fsps_libraries(sp, config["libraries"])
+    variant = "".join(libraries[:2])
     axis = config["axis"]
     model = {
         "sps_name": "fsps",
@@ -65,6 +67,7 @@ def generate_grid(config, grid_dir, config_file):
         "imf_slopes": fixed_slopes,
         "alpha": False,
         "pyfsps_version": str(fsps.__version__),
+        "fsps_libraries": ",".join(libraries),
         "imf_config": str(config_file),
     }
     if axis is not None:
