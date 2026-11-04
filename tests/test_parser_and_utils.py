@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from syncretize.cloudy.utils import get_cloudy_params
+from syncretize.cloudy.utils import get_cloudy_params, resolve_param_file
 from syncretize.parser import Parser, get_choice
 
 
@@ -71,3 +71,14 @@ def test_get_choice_checks_options():
         get_choice({"imf_type": "bad"}, "imf_type", ["kroupa", "salpeter"])
     with pytest.raises(ValueError, match="must be one of"):
         get_choice({}, "imf_type", ["kroupa"])
+
+
+def test_resolve_param_file_takes_paths_and_names(tmp_path):
+    # A path is used as given, with or without the extension
+    param_file = tmp_path / "c23.01-custom.yaml"
+    param_file.write_text("cloudy_version: c23.01\n")
+    assert resolve_param_file(param_file) == param_file
+    assert resolve_param_file(tmp_path / "c23.01-custom") == param_file
+
+    # A bare name falls back to the ready-made parameter files
+    assert resolve_param_file("c23.01-sps").exists()
