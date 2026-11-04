@@ -122,3 +122,39 @@ def test_create_empty_grid_copies_stored_ionising_luminosity(
                 n_extra = len(new_axes_values["ionisation_parameter"])
                 expected = np.repeat(expected[:, np.newaxis], n_extra, axis=1)
             np.testing.assert_array_equal(stored, expected)
+
+
+def test_create_empty_grid_stores_parameter_files(tmp_path, create_empty_grid):
+    """The new grid keeps its own and the incident grid's parameter files."""
+    incident_params = tmp_path / "incident.yaml"
+    incident_params.write_text("model: unit-test\n")
+    _write_incident_grid(tmp_path / "incident.hdf5", "initial_masses")
+    GridFile(str(tmp_path / "unused.hdf5"), param_file=incident_params)
+    with h5py.File(tmp_path / "unused.hdf5", "r") as src, h5py.File(
+        tmp_path / "incident.hdf5", "a"
+    ) as dst:
+        src.copy(src["ParameterFile"], dst)
+
+    cloudy_params = tmp_path / "c23.01-test.yaml"
+    cloudy_params.write_text("cloudy_version: c23.01\n")
+    extra_params = tmp_path / "extra.yaml"
+    extra_params.write_text("hydrogen_density: 100.0\n")
+
+    create_empty_grid(
+        str(tmp_path),
+        "incident",
+        "new.hdf5",
+        ["alpha"],
+        {"alpha": np.array([-1.6, -1.2])},
+        {"cloudy_version": "c23.01"},
+        cloudy_param_file=str(cloudy_params),
+        extra_cloudy_param_file=str(extra_params),
+    )
+
+    with h5py.File(tmp_path / "new.hdf5", "r") as hf:
+        for group, path in (
+            ("ParameterFile", cloudy_params),
+            ("ExtraParameterFile", extra_params),
+            ("IncidentParameterFile", incident_params),
+        ):
+            assert hf[f"{group}/contents"][()].decode() == path.read_text()

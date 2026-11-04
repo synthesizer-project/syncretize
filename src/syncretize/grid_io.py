@@ -138,28 +138,65 @@ class GridFile:
         self.hdf.attrs["synthesizer_version"] = synthesizer_version
         self.hdf.attrs["date_created"] = str(date.today())
         if self.param_file is not None:
-            self._write_param_file()
+            self._write_param_file(self.param_file)
         self.hdf.close()
         self.hdf = None
         self.mode = "r+"
 
-    def _write_param_file(self):
+    def write_param_file(self, param_file, group="ParameterFile"):
         """
-        Write the parameter file to the ``ParameterFile`` group.
+        Store a YAML parameter file in a group (see _write_param_file).
+
+        Args:
+            param_file (str)
+                The parameter file.
+            group (str)
+                The group to store it in.
+        """
+        self._open_file()
+        self._write_param_file(param_file, group)
+        self._close_file()
+
+    def copy_group(self, src_filepath, src_group, group):
+        """
+        Copy a group from another HDF5 file, if it has it.
+
+        Used to carry an input grid's provenance (e.g. its
+        ``ParameterFile``) into a grid made from it.
+
+        Args:
+            src_filepath (str)
+                The file to copy from.
+            src_group (str)
+                The group to copy.
+            group (str)
+                The name of the copy in this file.
+        """
+        self._open_file()
+        with h5py.File(src_filepath, "r") as src:
+            if src_group in src:
+                src.copy(src[src_group], self.hdf, name=group)
+            else:
+                print(f"{src_filepath} has no {src_group} group to copy")
+        self._close_file()
+
+    def _write_param_file(self, param_file, group="ParameterFile"):
+        """
+        Write a parameter file to a group (``ParameterFile`` by default).
 
         The parameters are stored as attributes (nested mappings become
         subgroups) and the verbatim file in the ``contents`` dataset, so
         ``yaml.safe_load(hdf["ParameterFile/contents"][()])`` recovers it.
         """
-        contents = Path(self.param_file).read_text()
-        grp = self.hdf.create_group("ParameterFile")
+        contents = Path(param_file).read_text()
+        grp = self.hdf.create_group(group)
         _write_attrs(grp, yaml.safe_load(contents) or {})
         dset = grp.create_dataset(
             "contents",
             data=contents,
             dtype=h5py.string_dtype(),
         )
-        dset.attrs["path"] = str(Path(self.param_file).resolve())
+        dset.attrs["path"] = str(Path(param_file).resolve())
 
     def _open_file(self):
         """Open the file if it isn't already open."""

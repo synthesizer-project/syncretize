@@ -157,6 +157,9 @@ The final HDF5 file contains:
 
 * original incident axes followed by photoionisation axes;
 * original ``Model`` metadata and fixed ``CloudyParams``;
+* the Cloudy parameter file in ``ParameterFile`` (and any extra one in
+  ``ExtraParameterFile``), and the incident grid's own parameter file in
+  ``IncidentParameterFile``, so the grid can be remade;
 * incident, transmitted, nebular, and line spectra;
 * line IDs, wavelengths, luminosities, and continua;
 * expanded ionising-luminosity arrays;

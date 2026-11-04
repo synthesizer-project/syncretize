@@ -85,6 +85,8 @@ def create_empty_grid(
     new_axes,
     new_axes_values,
     photoionisation_parameters,
+    cloudy_param_file=None,
+    extra_cloudy_param_file=None,
 ):
     """
     Create an empty Synthesizer grid file based on an existing incident grid.
@@ -102,6 +104,11 @@ def create_empty_grid(
             Dictionary of the new axes values (including incident).
         photoionisation_parameters (dict):
             Dictionary of photoionisation modelling parameters.
+        cloudy_param_file (str, optional):
+            The Cloudy parameter file, stored in ``ParameterFile``.
+        extra_cloudy_param_file (str, optional):
+            The extra Cloudy parameter file, stored in
+            ``ExtraParameterFile``.
 
     Returns:
         out_grid (GridFile):
@@ -118,8 +125,18 @@ def create_empty_grid(
         ignore_lines=True,
     )
 
-    # Make the new grid
-    out_grid = GridFile(f"{grid_dir}/{new_grid_name}")
+    # Make the new grid, storing the parameter files that made it and the
+    # incident grid's own, so the whole chain can be remade
+    out_grid = GridFile(
+        f"{grid_dir}/{new_grid_name}", param_file=cloudy_param_file
+    )
+    if extra_cloudy_param_file is not None:
+        out_grid.write_param_file(
+            extra_cloudy_param_file, group="ExtraParameterFile"
+        )
+    out_grid.copy_group(
+        incident_grid.grid_filename, "ParameterFile", "IncidentParameterFile"
+    )
 
     # Add attribute with the original incident grid axes
     out_grid.write_attribute(
@@ -984,6 +1001,8 @@ if __name__ == "__main__":
         new_axes,
         new_axes_values,
         fixed_photoionisation_params,
+        cloudy_param_file=cloudy_param_file,
+        extra_cloudy_param_file=extra_cloudy_param_file,
     )
 
     # Check cloudy runs and potentially replace them by the nearest grid point
