@@ -13,7 +13,7 @@ from synthesizer.exceptions import (
 )
 from synthesizer.photoionisation import calculate_Q_from_U
 from synthesizer.synth_warnings import warn
-from unyt import angstrom, c, h, unyt_array
+from unyt import angstrom, c, cm, h, s, unyt_array
 
 
 class ShapeCommands:
@@ -375,8 +375,8 @@ def create_cloudy_input(
         # the inner face of the cloud.
         log10ionising_luminosity = np.log10(
             calculate_Q_from_U(
-                ionisation_parameter, params["hydrogen_density"]
-            )
+                ionisation_parameter, params["hydrogen_density"] * cm**-3
+            ).to_value(1 / s)
         )
         cinput.append(f"Q(H) = {log10ionising_luminosity}\n")
         cinput.append(f"radius {np.log10(params['radius'])} log parsecs\n")

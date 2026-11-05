@@ -9,7 +9,7 @@ import shutil
 import numpy as np
 from synthesizer.exceptions import UnrecognisedOption
 from synthesizer.photoionisation import calculate_Q_from_U
-from unyt import angstrom, c, h, unyt_array
+from unyt import angstrom, c, cm, h, s, unyt_array
 
 
 class ShapeCommands:
@@ -317,7 +317,9 @@ def create_cloudy_input(
         # in the spherical geometry case I think U is some average U, not U at
         # the inner face of the cloud.
         log10_specific_ionising_lum = np.log10(
-            calculate_Q_from_U(U, params["hydrogen_density"])
+            calculate_Q_from_U(
+                U, params["hydrogen_density"] * cm**-3
+            ).to_value(1 / s)
         )
         cinput.append(f"Q(H) = {log10_specific_ionising_lum}\n")
         cinput.append(f"radius {np.log10(params['radius'])} log parsecs\n")
