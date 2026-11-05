@@ -297,9 +297,14 @@ def create_cloudy_input(
                 # define the reference abundances for the different grain types
                 # this should be the dust-phase abundance in the particular
                 # reference environment.
-                # Orion and ISM grains share the same reference dust-phase
-                # abundances; only their grain size distributions differ.
-                if params["grains"] in ("Orion", "ISM"):
+                # Orion and ISM grains share the same underlying dust-phase
+                # abundances, but Cloudy multiplies the abundance given to
+                # "grains Orion" by 0.85 (parse_grain.cpp). The Orion
+                # references include log10(0.85) to compensate.
+                if params["grains"] == "Orion":
+                    reference_C_abund = -3.6259
+                    reference_Si_abund = -4.5547
+                elif params["grains"] == "ISM":
                     reference_C_abund = -3.5553
                     reference_Si_abund = -4.4841
                 else:
