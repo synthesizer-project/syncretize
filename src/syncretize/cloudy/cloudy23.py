@@ -11,10 +11,9 @@ from synthesizer.exceptions import (
     InconsistentArguments,
     UnrecognisedOption,
 )
+from synthesizer.photoionisation import calculate_Q_from_U
 from synthesizer.synth_warnings import warn
 from unyt import angstrom, c, h, unyt_array
-
-from syncretize.photoionisation import calculate_Q_from_U
 
 
 class ShapeCommands:

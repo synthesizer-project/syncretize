@@ -8,9 +8,8 @@ import shutil
 
 import numpy as np
 from synthesizer.exceptions import UnrecognisedOption
+from synthesizer.photoionisation import calculate_Q_from_U
 from unyt import angstrom, c, h, unyt_array
-
-from syncretize.photoionisation import calculate_Q_from_U
 
 
 class ShapeCommands:
