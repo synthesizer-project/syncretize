@@ -17,6 +17,7 @@ import submission_scripts
 from synthesizer.emissions import Sed
 from synthesizer.grid import Grid
 from synthesizer.units import has_units
+from synthesizer.utils.integrate import trapezoid
 from unyt import Angstrom, Hz, cm, dimensionless, erg, eV, km, s, yr
 from utils import (
     get_cloudy_params,
@@ -26,6 +27,12 @@ from utils import (
 from syncretize.cloudy import cloudy17, cloudy23
 from syncretize.grid_io import GridFile
 from syncretize.parser import Parser
+
+#: Non-ionising band (Angstrom) used to check the normalised incident spectra.
+CHECK_BAND = (1500.0, 5000.0)
+
+#: Largest acceptable fractional offset of the normalised incident continuum.
+CHECK_TOLERANCE = 0.02
 
 # Create dictionary of commonly used units for grid axes
 axes_units = {
@@ -457,6 +464,7 @@ def add_spectra(
     new_shape,
     spec_names=("incident", "transmitted", "nebular", "linecont"),
     norm_by_q=True,
+    incident_grid_file=None,
 ):
     """
     Open cloudy spectra and add them to the grid.
@@ -480,6 +488,9 @@ def add_spectra(
         norm_by_q (bool)
             If True, the spectra are normalised by the specific ionising
             photon luminosity calculated from the incident spectrum.
+        incident_grid_file (str)
+            Path to the incident grid file. If given, the normalised incident
+            spectra are checked against it over CHECK_BAND.
     """
 
     # Determine the cloudy version...
@@ -519,7 +530,22 @@ def add_spectra(
     # Array for recording cloudy failures
     failures = np.zeros(new_shape)
 
+    # Ratio of the normalised incident continuum to the input SED, per run.
+    # The input is read from the file, not a loaded Grid, since synthesizer
+    # rescales luminosity weighted grids on load.
+    band = (lam > CHECK_BAND[0]) & (lam < CHECK_BAND[1])
+    continuum_ratios = []
+    input_spectra = None
+    if incident_grid_file is not None and band.any():
+        with h5py.File(incident_grid_file, "r") as incident_file:
+            input_lam = incident_file["spectra/wavelength"][...]
+            input_spectra = incident_file["spectra/incident"][...]
+
     for incident_index, incident_index_tuple in enumerate(incident_index_list):
+        input_lnu = None
+        if input_spectra is not None:
+            input_lnu = input_spectra[tuple(incident_index_tuple)]
+
         for photoionisation_index, photoionisation_index_tuple in enumerate(
             photoionisation_index_list
         ):
@@ -582,6 +608,41 @@ def add_spectra(
                         spec_dict[spec_name]
                         * spectra["normalisation"][indices]
                     )
+
+                # Compare the normalised incident continuum with the input
+                if input_lnu is not None:
+                    input_band = np.interp(lam[band], input_lam, input_lnu)
+                    output_band = spectra["incident"][indices][band]
+                    input_flux = trapezoid(input_band, lam[band])
+                    # An input with no flux in the band can't be compared
+                    if input_flux > 0:
+                        continuum_ratios.append(
+                            trapezoid(output_band, lam[band]) / input_flux
+                        )
+
+    # Warn if the normalisation has moved the stellar continuum (#151)
+    continuum_ratios = np.array(continuum_ratios)
+    continuum_ratios = continuum_ratios[np.isfinite(continuum_ratios)]
+    if input_spectra is not None and not continuum_ratios.size:
+        print(
+            "Could not compare the normalised incident continuum with "
+            f"the input SED over {CHECK_BAND} A: no successful run has "
+            "input flux there."
+        )
+    elif continuum_ratios.size:
+        offsets = np.abs(continuum_ratios - 1)
+        print(
+            f"Normalised incident vs input over {CHECK_BAND} A: max offset "
+            f"{offsets.max():.3f}, median {np.median(offsets):.3f}."
+        )
+        if offsets.max() > CHECK_TOLERANCE:
+            print(
+                f"WARNING: {np.sum(offsets > CHECK_TOLERANCE)} runs have a "
+                "normalised incident continuum more than "
+                f"{CHECK_TOLERANCE:.0%} from the input SED. The incident grid "
+                "probably samples the ionisation edges too coarsely; "
+                "regenerate it (see syncretize#151)."
+            )
 
     # Apply units to the spectra
     for spec in spectra:
@@ -1036,6 +1097,7 @@ if __name__ == "__main__":
             new_shape,
             spec_names=("incident", "transmitted", "nebular", "linecont"),
             norm_by_q=True,
+            incident_grid_file=incident_grid.grid_filename,
         )
         print("Added spectra")
         print(spectra.keys())
