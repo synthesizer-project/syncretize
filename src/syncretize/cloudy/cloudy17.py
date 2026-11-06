@@ -51,12 +51,14 @@ class ShapeCommands:
             lam *= angstrom
 
         # Cloudy smears any ionisation edge the input doesn't sample closely,
-        # which biases the Q normalisation of the outputs (#151).
+        # which biases the Q normalisation of the outputs (#151). A smooth
+        # SED has no edge to smear, so this is only a possible problem.
         if not edge_is_resolved(lam.to("Angstrom").value):
             warn(
                 "The input SED has no wavelength points within 1 Angstrom of "
-                "the HI ionisation edge, so cloudy will smear it. Regenerate "
-                "the incident grid with sharp edges (see syncretize#151)."
+                "the HI ionisation edge. If it has an edge there, cloudy will "
+                "smear it; regenerate the incident grid with sharp edges "
+                "(see syncretize#151)."
             )
 
         # define frequency

@@ -58,7 +58,8 @@ def add_ionisation_edges(wavelength, spectra, ions=EDGE_IONS):
     biases the Q normalisation of the cloudy outputs (#151). A point just
     blueward of each edge takes the value of its nearest blueward neighbour
     and a point just redward that of its nearest redward neighbour, so the
-    edge stays sharp without inventing flux across it.
+    edge stays sharp without inventing flux across it. A side that already
+    has a sample within EDGE_OFFSET of the edge is left as it is.
 
     Args:
         wavelength (unyt_array):
@@ -80,7 +81,13 @@ def add_ionisation_edges(wavelength, spectra, ions=EDGE_IONS):
         edge = edge_wavelength(ion)
         sides = ((edge - EDGE_OFFSET, True), (edge + EDGE_OFFSET, False))
         for x, is_blue in sides:
-            if lam[0] < x < lam[-1] and x not in lam:
+            # Samples between x and the edge, on this side of it
+            near = (
+                (lam >= x) & (lam < edge)
+                if is_blue
+                else ((lam > edge) & (lam <= x))
+            )
+            if lam[0] < x < lam[-1] and not near.any():
                 new.append(x)
                 blue.append(is_blue)
     if not new:

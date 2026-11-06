@@ -535,17 +535,16 @@ def add_spectra(
     # rescales luminosity weighted grids on load.
     band = (lam > CHECK_BAND[0]) & (lam < CHECK_BAND[1])
     continuum_ratios = []
-    incident_file = None
+    input_spectra = None
     if incident_grid_file is not None and band.any():
-        incident_file = h5py.File(incident_grid_file, "r")
-        input_lam = incident_file["spectra/wavelength"][...]
+        with h5py.File(incident_grid_file, "r") as incident_file:
+            input_lam = incident_file["spectra/wavelength"][...]
+            input_spectra = incident_file["spectra/incident"][...]
 
     for incident_index, incident_index_tuple in enumerate(incident_index_list):
         input_lnu = None
-        if incident_file is not None:
-            input_lnu = incident_file["spectra/incident"][
-                tuple(incident_index_tuple)
-            ]
+        if input_spectra is not None:
+            input_lnu = input_spectra[tuple(incident_index_tuple)]
 
         for photoionisation_index, photoionisation_index_tuple in enumerate(
             photoionisation_index_list
@@ -614,18 +613,23 @@ def add_spectra(
                 if input_lnu is not None:
                     input_band = np.interp(lam[band], input_lam, input_lnu)
                     output_band = spectra["incident"][indices][band]
-                    continuum_ratios.append(
-                        trapezoid(output_band, lam[band])
-                        / trapezoid(input_band, lam[band])
-                    )
-
-    if incident_file is not None:
-        incident_file.close()
+                    input_flux = trapezoid(input_band, lam[band])
+                    # An input with no flux in the band can't be compared
+                    if input_flux > 0:
+                        continuum_ratios.append(
+                            trapezoid(output_band, lam[band]) / input_flux
+                        )
 
     # Warn if the normalisation has moved the stellar continuum (#151)
     continuum_ratios = np.array(continuum_ratios)
     continuum_ratios = continuum_ratios[np.isfinite(continuum_ratios)]
-    if continuum_ratios.size:
+    if input_spectra is not None and not continuum_ratios.size:
+        print(
+            "Could not compare the normalised incident continuum with "
+            f"the input SED over {CHECK_BAND} A: no successful run has "
+            "input flux there."
+        )
+    elif continuum_ratios.size:
         offsets = np.abs(continuum_ratios - 1)
         print(
             f"Normalised incident vs input over {CHECK_BAND} A: max offset "

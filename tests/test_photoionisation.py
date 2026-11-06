@@ -48,3 +48,18 @@ def test_ionisation_edges_stay_sharp():
     assert new_lam.size == lam.size + 6
     # The original points are untouched
     assert np.all(np.isin(lam.value, new_lam.value))
+    # Inserted either side of the HeII, HeI and HI edges (hc/E, written out
+    # here rather than taken from edge_wavelength)
+    edges = np.array([227.9121, 504.0008, 911.6485])
+    expected = np.sort(np.r_[edges - EDGE_OFFSET, edges + EDGE_OFFSET])
+    inserted = np.setdiff1d(new_lam.value, lam.value)
+    np.testing.assert_allclose(inserted, expected, atol=1e-3)
+
+    # A sample already just blueward of the HI edge is kept, not duplicated
+    close = np.array([100.0, 905.0, edge - EDGE_OFFSET / 2, 915.0, 1e4])
+    close_lam, _ = add_ionisation_edges(
+        close * Angstrom, {"incident": np.ones((1, 5)) * erg / s / Hz}
+    )
+    # Only the redward HI point and the four He points are added
+    assert close_lam.size == close.size + 5
+    assert np.min(np.abs(close_lam.value - (edge + EDGE_OFFSET))) < 1e-6
