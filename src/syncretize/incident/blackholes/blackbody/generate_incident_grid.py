@@ -19,6 +19,7 @@ integrated over cloudy's full energy range (10 MHz to 100 MeV).
 
 import numpy as np
 import yaml
+from synthesizer.utils.integrate import trapezoid
 from unyt import Hz, K, c, erg, s
 
 from syncretize.grid_io import GridFile
@@ -38,9 +39,6 @@ EXP_LIMIT = 84.0
 
 # Spacing of the wavelength grid in dex, as for the cloudy agn incident grid.
 DEX_STEP = 0.005
-
-# numpy 2.0 renamed trapz to trapezoid, so use whichever this numpy has
-trapezoid = getattr(np, "trapezoid", None) or np.trapz
 
 
 def blackbody_photon_flux(x, blackbody_temperature):

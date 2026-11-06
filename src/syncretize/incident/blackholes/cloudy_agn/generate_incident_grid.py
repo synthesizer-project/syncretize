@@ -26,6 +26,7 @@ import itertools
 
 import numpy as np
 import yaml
+from synthesizer.utils.integrate import trapezoid
 from unyt import Hz, K, c, dimensionless, erg, s
 
 from syncretize.grid_io import GridFile
@@ -48,9 +49,6 @@ SEXP_LIMIT = 84.0
 # spectrum in log-log space, so this is fine enough to follow the blue bump's
 # exponential cutoff at 10^4 K to better than 0.1%.
 DEX_STEP = 0.005
-
-# numpy 2.0 renamed trapz to trapezoid, so use whichever this numpy has
-trapezoid = getattr(np, "trapezoid", None) or np.trapz
 
 
 def sexp(x):

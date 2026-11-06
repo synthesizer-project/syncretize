@@ -29,6 +29,7 @@ from matplotlib.axes import Axes
 from numpy.typing import NDArray
 from scipy.interpolate import interp1d
 from synthesizer.emission_models.attenuation import Calzetti2000, GrainModels
+from synthesizer.utils.integrate import trapezoid
 from unyt import (
     Angstrom,
     cm,
@@ -348,7 +349,6 @@ def calculate_Alam_over_NH(
     Nwav = wav_micron.size
     Alam_by_N_H = np.zeros(Nwav, dtype=float)
     # Fallback for older numpy
-    _trapz = getattr(np, "trapezoid", np.trapz)
     for iw in range(Nwav):
         q = Qext[iw, :]
         f_lin = interp1d(radii_micron, q, bounds_error=False, fill_value=0)
@@ -357,7 +357,7 @@ def calculate_Alam_over_NH(
         # da in cm, Q is unitless)
         integrand = math.pi * (a_grid_cm**2) * q_interp * n_a
         # In units of mag cm^2
-        Alam_by_N_H[iw] = prefac * _trapz(integrand, a_grid_cm)
+        Alam_by_N_H[iw] = prefac * trapezoid(integrand, a_grid_cm)
 
     return Alam_by_N_H
 

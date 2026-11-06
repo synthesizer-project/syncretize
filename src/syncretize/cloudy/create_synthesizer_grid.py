@@ -17,6 +17,7 @@ import submission_scripts
 from synthesizer.emissions import Sed
 from synthesizer.grid import Grid
 from synthesizer.units import has_units
+from synthesizer.utils.integrate import trapezoid
 from unyt import Angstrom, Hz, cm, dimensionless, erg, eV, km, s, yr
 from utils import (
     get_cloudy_params,
@@ -26,9 +27,6 @@ from utils import (
 from syncretize.cloudy import cloudy17, cloudy23
 from syncretize.grid_io import GridFile
 from syncretize.parser import Parser
-
-# numpy 2.0 renamed trapz to trapezoid, so use whichever this numpy has
-trapezoid = getattr(np, "trapezoid", None) or np.trapz
 
 #: Non-ionising band (Angstrom) used to check the normalised incident spectra.
 CHECK_BAND = (1500.0, 5000.0)
