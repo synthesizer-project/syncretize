@@ -6,7 +6,7 @@ package (rather than redefining the alias in each module) keeps the Cloudy
 version handling consistent across the subpackage.
 """
 
-from synthesizer.photoionisation import cloudy17, cloudy23
+from syncretize.cloudy import cloudy17, cloudy23
 
 # Cloudy 25 uses the same interface as Cloudy 23; alias for semantic clarity.
 cloudy25 = cloudy23

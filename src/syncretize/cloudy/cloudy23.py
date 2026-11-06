@@ -13,7 +13,7 @@ from synthesizer.exceptions import (
 )
 from synthesizer.photoionisation import calculate_Q_from_U
 from synthesizer.synth_warnings import warn
-from unyt import angstrom, c, h, unyt_array
+from unyt import angstrom, c, cm, h, s, unyt_array
 
 
 class ShapeCommands:
@@ -139,6 +139,10 @@ def create_cloudy_input(
     """
     default_params = {
         "no_grain_scaling": False,
+        # depletion model, None for no depletion
+        "depletion_model": None,
+        # iterate to convergence (cloudy17 always does)
+        "iterate_to_convergence": True,
         # ionisation parameter
         "ionisation_parameter": None,
         # radius in log10 parsecs, only important for spherical geometry
@@ -292,24 +296,26 @@ def create_cloudy_input(
                 # define the reference abundances for the different grain types
                 # this should be the dust-phase abundance in the particular
                 # reference environment.
+                # Orion and ISM grains share the same underlying dust-phase
+                # abundances, but Cloudy multiplies the abundance given to
+                # "grains Orion" by 0.85 (parse_grain.cpp). The Orion
+                # references include log10(0.85) to compensate.
                 if params["grains"] == "Orion":
                     reference_C_abund = -3.6259
                     reference_Si_abund = -4.5547
-                # this is incorrect since the abundance in the ISM is probably
-                # different.
                 elif params["grains"] == "ISM":
                     reference_C_abund = -3.5553
                     reference_Si_abund = -4.4841
                 else:
                     raise UnrecognisedOption(
-                        "Only Orion and ISM grain types "
-                        "are available in cloudy"
+                        "Only Orion and ISM grain types are available in "
+                        "cloudy"
                     )
 
-                PAH_abund = -4.446
+                reference_PAH_abund = -5.526
                 f_graphite = delta_graphite / (10 ** (reference_C_abund))
                 f_Si = delta_Si / (10 ** (reference_Si_abund))
-                f_pah = delta_PAH / (10 ** (PAH_abund))
+                f_pah = delta_PAH / (10 ** (reference_PAH_abund))
 
             else:
                 f_graphite = 1.0
@@ -369,8 +375,8 @@ def create_cloudy_input(
         # the inner face of the cloud.
         log10ionising_luminosity = np.log10(
             calculate_Q_from_U(
-                ionisation_parameter, params["hydrogen_density"]
-            )
+                ionisation_parameter, params["hydrogen_density"] * cm**-3
+            ).to_value(1 / s)
         )
         cinput.append(f"Q(H) = {log10ionising_luminosity}\n")
         cinput.append(f"radius {np.log10(params['radius'])} log parsecs\n")
@@ -411,7 +417,7 @@ def create_cloudy_input(
         cinput.append(f"covering factor {params['covering_factor']} linear\n")
 
     # Processing commands
-    if params["iterate_to_convergence"] is not None:
+    if params["iterate_to_convergence"]:
         cinput.append("iterate to convergence\n")
 
     if params["T_floor"] is not None:
