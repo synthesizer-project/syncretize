@@ -34,7 +34,7 @@ def process_dl07_to_hdf5(
             Location of the input data file to process
     """
 
-    spec_names = ["pdr", "diffuse", "fsil_pdr", "fsil_diffuse"]
+    spec_names = ["pdr", "diffuse", "pdr_fsil", "diffuse_fsil"]
 
     # Define the models parameters
     suffix = np.array(
