@@ -64,7 +64,7 @@ def generate_grid(config, grid_dir, config_file):
         "imf_type": config["imf_type"],
         "imf_masses": fixed_boundaries,
         "imf_slopes": fixed_slopes,
-        "alpha": False,
+        "alpha_enhancement": False,
         "pyfsps_version": str(fsps.__version__),
         "imf_config": str(config_file),
     }
