@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from synthesizer.abundances import Abundances
 
 from syncretize.cloudy import cloudy25, submission_scripts
 from syncretize.cloudy.utils import (
@@ -116,6 +117,23 @@ def test_cloudy_helpers_work_from_any_directory(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="Unknown Cloudy version"):
         get_cloudy_module("c99.00")
     assert resolve_linelist("linelist-standard.dat").exists()
+
+
+def test_cloudy25_is_its_own_module_and_cmb_false_is_off():
+    assert cloudy25.__name__ == "syncretize.cloudy.cloudy25"
+    for cmb, expected in ((None, False), (False, False), (True, True)):
+        lines = cloudy25.create_cloudy_input(
+            "model",
+            [],
+            Abundances(),
+            output_dir=None,
+            CMB=cmb,
+            ionisation_parameter=0.01,
+            ionisation_parameter_model="fixed",
+            hydrogen_density=100.0,
+            geometry="planeparallel",
+        )
+        assert any(line.startswith("CMB") for line in lines) is expected
 
 
 def test_slurm_script_is_written_beside_the_runs(tmp_path, monkeypatch):

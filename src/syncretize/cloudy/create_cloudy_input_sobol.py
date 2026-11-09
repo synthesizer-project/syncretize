@@ -19,7 +19,7 @@ from synthesizer.particle import Stars
 from unyt import Msun, yr
 
 import syncretize.cloudy.submission_scripts as submission_scripts
-from syncretize.cloudy import cloudy17, cloudy23, cloudy25
+from syncretize.cloudy.utils import get_cloudy_module
 from syncretize.parser import Parser
 
 
@@ -299,14 +299,7 @@ if __name__ == "__main__":
 
     # Determine Cloudy version
     cloudy_version = fixed_params["cloudy_version"]
-    if cloudy_version == "c17.03":
-        cloudy = cloudy17
-    elif cloudy_version.startswith("c23"):
-        cloudy = cloudy23
-    elif cloudy_version.startswith("c25"):
-        cloudy = cloudy25
-    else:
-        raise ValueError(f"Unknown Cloudy version: {cloudy_version}")
+    cloudy = get_cloudy_module(cloudy_version)
 
     # Save grid parameters
     parameters_to_save = {

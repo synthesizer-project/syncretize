@@ -37,6 +37,9 @@ not the executable itself. For ``cloudy_version: c23.01`` the runner expects:
 
 Check that exact path before generating jobs.
 
+Cloudy 25 is also supported: use a ``c25.00-*`` parameter file (e.g.
+``c25.00-sps``) so the grid is labelled, and the executable found, as c25.00.
+
 Parameter files and added axes
 ------------------------------
 

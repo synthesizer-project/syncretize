@@ -20,7 +20,7 @@ import h5py
 import numpy as np
 import yaml
 
-from syncretize.cloudy import cloudy17, cloudy23, cloudy25
+from syncretize.cloudy.utils import get_cloudy_module
 
 # All spectra exposed by synthesizer.read_continuum(return_dict=True).
 AVAILABLE_SPECTRA = (
@@ -40,18 +40,6 @@ DEFAULT_SPECTRA = (
     "nebular",
     "linecont",
 )
-
-
-def _select_cloudy_module(cloudy_version):
-    """Return the synthesizer cloudy module for a given version string."""
-    major = cloudy_version.split(".")[0]
-    if major == "c23":
-        return cloudy23
-    elif major == "c25":
-        return cloudy25
-    elif major == "c17":
-        return cloudy17
-    raise ValueError(f"Unknown Cloudy version: {cloudy_version}")
 
 
 def collect_sobol_outputs(
@@ -94,7 +82,7 @@ def collect_sobol_outputs(
     with open(param_file, "r") as f:
         grid_params = yaml.safe_load(f)
 
-    cloudy = _select_cloudy_module(grid_params["cloudy_version"])
+    cloudy = get_cloudy_module(grid_params["cloudy_version"])
 
     # Read n_samples from existing HDF5 file
     with h5py.File(output_file, "r") as hf:

@@ -16,10 +16,10 @@ import numpy as np
 import yaml
 from unyt import Angstrom, Hz, erg, s
 
-from syncretize.cloudy import cloudy17, cloudy23, cloudy25
 from syncretize.cloudy.create_cloudy_input_grid import (
     create_cloudy_input,
 )
+from syncretize.cloudy.utils import get_cloudy_module
 
 
 def generate_input_for_index(grid_dir, sample_index, work_dir=None):
@@ -51,15 +51,7 @@ def generate_input_for_index(grid_dir, sample_index, work_dir=None):
     with open(param_file, "r") as f:
         grid_params = yaml.safe_load(f)
 
-    cloudy_version = grid_params["cloudy_version"]
-    if cloudy_version.startswith("c23"):
-        cloudy = cloudy23
-    elif cloudy_version.startswith("c25"):
-        cloudy = cloudy25
-    elif cloudy_version.split(".")[0] == "c17":
-        cloudy = cloudy17
-    else:
-        raise ValueError(f"Unknown Cloudy version: {cloudy_version}")
+    cloudy = get_cloudy_module(grid_params["cloudy_version"])
 
     # Read data from HDF5
     with h5py.File(grid_file, "r") as hf:
