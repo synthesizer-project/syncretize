@@ -777,7 +777,7 @@ def add_lines(
                     normalisation = 1.0
 
                 # Calculate line luminosity and save it. Uses normalisation
-                # from spectra. Units are erg/s
+                # from spectra. Units are erg/s (written out in Lsun)
                 lines["luminosity"][indices] = luminosities * normalisation
 
                 # Calculate continuum luminosities. Units are erg/s/Hz.

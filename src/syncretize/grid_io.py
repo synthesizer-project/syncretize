@@ -41,7 +41,7 @@ from synthesizer._version import __version__ as synthesizer_version
 from synthesizer.emissions import Sed
 from synthesizer.units import has_units
 from tqdm import tqdm
-from unyt import dimensionless, unyt_array
+from unyt import Lsun, dimensionless, unyt_array
 
 from syncretize._version import __version__ as syncretize_version
 from syncretize.photoionisation import Ions
@@ -583,10 +583,11 @@ class GridFile:
             "Cloudy ID of each emission line",
         )
 
-        # Write out the lumminosity array
+        # Write out the luminosity array in Lsun. In erg/s the values
+        # overflow float32 once weighted by realistic stellar populations.
         self.write_dataset(
             "lines/luminosity",
-            lines["luminosity"],
+            lines["luminosity"].to(Lsun),
             "Line luminosity",
             log_on_read=False,
         )
