@@ -10,7 +10,7 @@ so here they are per Msun of hydrogen.
 import argparse
 
 import numpy as np
-from unyt import Angstrom, Hz, Msun, Unit, c, dimensionless, erg, mp, s, um
+from unyt import Angstrom, Hz, Msun, c, dimensionless, erg, mp, s, um
 
 from syncretize.grid_io import GridFile
 
@@ -147,6 +147,7 @@ def process_dl07_to_hdf5(
     # Write the grid
     out_grid = GridFile(f"{grid_loc}/{grid_name}.hdf5")
     out_grid.write_attribute("/", "axes", ["qpah", "umin", "alpha"])
+    out_grid.write_attribute("/", "WeightVariable", "hydrogen_mass")
     out_grid.write_dataset(
         "axes/qpah",
         qpahs * dimensionless,
@@ -171,8 +172,9 @@ def process_dl07_to_hdf5(
         "Wavelength of the spectra grid",
         log_on_read=False,
     )
-    # Built from a string: erg / s / Hz / Msun would simplify to erg/kg
-    lnu_units = Unit("erg/(s*Hz*Msun)")
+    # As with the SPS grids, the per-mass normalisation is carried by the
+    # WeightVariable rather than the units
+    lnu_units = erg / s / Hz
     for key, data, units, description in (
         ("pdr", pdr, lnu_units, "PDR dust emission per Msun of hydrogen"),
         (
