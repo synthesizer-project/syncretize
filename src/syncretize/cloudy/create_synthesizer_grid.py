@@ -23,7 +23,7 @@ from utils import (
     get_grid_props_cloudy,
 )
 
-from syncretize.cloudy import cloudy17, cloudy23
+from syncretize.cloudy import cloudy17, cloudy23, cloudy25
 from syncretize.grid_io import GridFile
 from syncretize.parser import Parser
 
@@ -448,6 +448,42 @@ def check_cloudy_runs(
     return number_of_failed_models
 
 
+# Spectra stored in the grid by default. All are read from Cloudy by
+# read_continuum (in cloudy17/cloudy23) and include the light leaving
+# both faces of the cloud, consistent with the emergent line luminosities:
+#   incident           : the incident spectrum
+#   transmitted        : the attenuated incident spectrum (outward)
+#   nebular            : nebular emission from both faces, lines included
+#                        (DiffOut + reflc - reflected_incident)
+#   linecont           : line contribution from both faces (outlin + reflin)
+#   reflected_incident : incident light scattered back towards the source
+#                        (open geometries; zero for 'sphere')
+# so that total = transmitted + nebular + reflected_incident and
+# nebular_continuum = nebular - linecont. Every grid stores the same set, so
+# grids are read the same way whatever the geometry. read_continuum also
+# provides "reflected" (reflc) and "reflected_linecont" (reflin), from which
+# the outward-only spectra can be recovered.
+SPEC_NAMES = (
+    "incident",
+    "transmitted",
+    "nebular",
+    "linecont",
+    "reflected_incident",
+)
+
+
+def _cloudy_module(cloudy_version):
+    """Return the syncretize module reading this Cloudy version's outputs."""
+    major = cloudy_version.split(".")[0]
+    if major == "c17":
+        return cloudy17
+    if major == "c23":
+        return cloudy23
+    if major == "c25":
+        return cloudy25
+    raise ValueError(f"Unsupported Cloudy version: {cloudy_version}")
+
+
 def add_spectra(
     new_grid,
     new_grid_name,
@@ -455,7 +491,7 @@ def add_spectra(
     incident_index_list,
     photoionisation_index_list,
     new_shape,
-    spec_names=("incident", "transmitted", "nebular", "linecont"),
+    spec_names=SPEC_NAMES,
     norm_by_q=True,
 ):
     """
@@ -473,8 +509,8 @@ def add_spectra(
         photoionisation_index_list (list)
             List of photoionisation grid points
         spec_names (list)
-            The names of the spectra to save (default is incident, transmitted,
-            nebular and linecont).
+            The names of the spectra to save (default SPEC_NAMES: incident,
+            transmitted, nebular, linecont and reflected_incident).
         shape (ndarray)
             The shape of the new grid.
         norm_by_q (bool)
@@ -489,10 +525,7 @@ def add_spectra(
     )
 
     # ... and use to select the correct module.
-    if cloudy_version.split(".")[0] == "c23":
-        cloudy = cloudy23
-    elif cloudy_version.split(".")[0] == "c17":
-        cloudy = cloudy17
+    cloudy = _cloudy_module(cloudy_version)
 
     # Read first spectra from the first grid point to get length and
     # wavelength grid.
@@ -652,10 +685,7 @@ def add_lines(
     )
 
     # ... and use to select the correct module.
-    if cloudy_version.split(".")[0] == "c23":
-        cloudy = cloudy23
-    elif cloudy_version.split(".")[0] == "c17":
-        cloudy = cloudy17
+    cloudy = _cloudy_module(cloudy_version)
 
     # Open the first linelist and use it to populate the keys
     with open(f"{cloudy_dir}/{new_grid_name}/0/linelist.dat") as file:
@@ -702,8 +732,12 @@ def add_lines(
 
         # Calculate total_continuum. Note this is not the same as adding
         #  nebular and transmitted since that would include emission lines.
+        # The incident light scattered back towards the source is continuum
+        # leaving the cloud too (zero in spherical geometry).
         spectra_["total_continuum"] = (
-            spectra_["nebular_continuum"] + spectra_["transmitted"]
+            spectra_["nebular_continuum"]
+            + spectra_["transmitted"]
+            + spectra["reflected_incident"]
         )
 
         # Define output arrays
@@ -1034,7 +1068,7 @@ if __name__ == "__main__":
             incident_index_list,
             photoionisation_index_list,
             new_shape,
-            spec_names=("incident", "transmitted", "nebular", "linecont"),
+            spec_names=SPEC_NAMES,
             norm_by_q=True,
         )
         print("Added spectra")
