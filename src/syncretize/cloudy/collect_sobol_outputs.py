@@ -6,6 +6,8 @@ Reads, for each sample, the raw cloudy files kept in the ``cont/`` subdirectory
 by the submission script:
   - ``{index}.cont``: continuum spectra, read with synthesizer's
     ``read_continuum`` (column mapping, wavelength ordering and units);
+  - ``{index}.refl`` (open geometries): reflected continuum, used by
+    ``read_continuum`` to separate the reflected incident light;
   - ``{index}.emergent_elin`` (and optionally ``.intrinsic_elin``): line
     luminosities for the line list given by ``output_linelist``.
 
@@ -32,15 +34,21 @@ AVAILABLE_SPECTRA = (
     "nebular_continuum",
     "total",
     "linecont",
+    "reflected",
+    "reflected_linecont",
+    "reflected_incident",
 )
 
-# Base spectra to store; total and nebular_continuum are derived from these
-# within synthesizer and so are not saved by default.
+# Base spectra to store (as in create_synthesizer_grid.SPEC_NAMES); total and
+# nebular_continuum are derived from these within synthesizer
+# (total = transmitted + nebular + reflected_incident) and so are not saved by
+# default.
 DEFAULT_SPECTRA = (
     "incident",
     "transmitted",
     "nebular",
     "linecont",
+    "reflected_incident",
 )
 
 # Continuum values stored at each line wavelength (as in synthesizer grids)
@@ -354,8 +362,12 @@ def collect_sobol_outputs(
                         "transmitted": spec_dict["transmitted"],
                         "nebular_continuum": spec_dict["nebular_continuum"],
                     }
+                    # As in create_synthesizer_grid: the continuum seen
+                    # from both faces includes the reflected incident light
                     cont["total_continuum"] = (
-                        cont["nebular_continuum"] + cont["transmitted"]
+                        cont["nebular_continuum"]
+                        + cont["transmitted"]
+                        + spec_dict["reflected_incident"]
                     )
                     for k in LINE_CONTINUA:
                         lbuf[k][j] = (
@@ -450,7 +462,7 @@ if __name__ == "__main__":
         default=list(DEFAULT_SPECTRA),
         choices=list(AVAILABLE_SPECTRA),
         help="Spectra to save (default: incident transmitted nebular "
-        "linecont).",
+        "linecont reflected_incident).",
     )
     parser.add_argument(
         "--no-lines",
