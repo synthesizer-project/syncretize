@@ -387,8 +387,10 @@ def cosma7_sobol_onthefly(
 ):
     """
     Create COSMA7 SLURM script for Sobol grids with on-the-fly input
-    generation. Generates inputs, runs Cloudy, extracts spectra, and
-    cleans up the work directories of successful runs. Failed runs (Cloudy
+    generation. Generates inputs, runs Cloudy, keeps the raw continuum
+    (.cont), output (.out), line luminosities (.emergent_elin,
+    .intrinsic_elin) and overview (.ovr) in cont/, and cleans up the work
+    directories of successful runs. Failed runs (Cloudy
     error or missing .cont) intentionally leave their work directories
     behind to aid debugging.
 
@@ -500,6 +502,12 @@ def cosma7_sobol_onthefly(
                 " synthesizer.read_continuum",
                 '        mv "0.cont" "$GRID_DIR/cont/${incident_idx}.cont"',
                 '        mv "0.out" "$GRID_DIR/cont/${incident_idx}.out"',
+                "        # Line luminosities (read by collect_sobol_outputs) "
+                "and the overview",
+                "        for ext in emergent_elin intrinsic_elin ovr; do",
+                '            [ -f "0.$ext" ] && mv "0.$ext" '
+                '"$GRID_DIR/cont/${incident_idx}.$ext"',
+                "        done",
                 '        cd "$GRID_DIR" && rm -rf "$work_dir"',
                 "    fi",
                 "}",
@@ -528,6 +536,12 @@ def cosma7_sobol_onthefly(
                 " parses it with synthesizer.read_continuum",
                 '    mv "0.cont" "$GRID_DIR/cont/${incident_idx}.cont"',
                 '    mv "0.out" "$GRID_DIR/cont/${incident_idx}.out"',
+                "    # Line luminosities (read by collect_sobol_outputs) "
+                "and the overview",
+                "    for ext in emergent_elin intrinsic_elin ovr; do",
+                '        [ -f "0.$ext" ] && mv "0.$ext" '
+                '"$GRID_DIR/cont/${incident_idx}.$ext"',
+                "    done",
                 '    cd "$GRID_DIR" && rm -rf "$work_dir"',
                 "fi",
             ]
