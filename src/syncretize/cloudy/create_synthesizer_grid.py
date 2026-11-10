@@ -459,9 +459,10 @@ def check_cloudy_runs(
 #   reflected_incident : incident light scattered back towards the source
 #                        (open geometries; zero for 'sphere')
 # so that total = transmitted + nebular + reflected_incident and
-# nebular_continuum = nebular - linecont. read_continuum also provides
-# "reflected" (reflc) and "reflected_linecont" (reflin), which can be added to
-# spec_names to recover the outward-only spectra.
+# nebular_continuum = nebular - linecont. Every grid stores the same set, so
+# grids are read the same way whatever the geometry. read_continuum also
+# provides "reflected" (reflc) and "reflected_linecont" (reflin), from which
+# the outward-only spectra can be recovered.
 SPEC_NAMES = (
     "incident",
     "transmitted",
@@ -732,14 +733,12 @@ def add_lines(
         # Calculate total_continuum. Note this is not the same as adding
         #  nebular and transmitted since that would include emission lines.
         # The incident light scattered back towards the source is continuum
-        # leaving the cloud too (zero in spherical geometry or if not stored).
+        # leaving the cloud too (zero in spherical geometry).
         spectra_["total_continuum"] = (
-            spectra_["nebular_continuum"] + spectra_["transmitted"]
+            spectra_["nebular_continuum"]
+            + spectra_["transmitted"]
+            + spectra["reflected_incident"]
         )
-        if "reflected_incident" in spectra:
-            spectra_["total_continuum"] = (
-                spectra_["total_continuum"] + spectra["reflected_incident"]
-            )
 
         # Define output arrays
         for continuum_quantity in continuum_quantities:
