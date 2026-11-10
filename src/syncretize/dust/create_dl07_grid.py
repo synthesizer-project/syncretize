@@ -3,14 +3,16 @@ Create the Draine and Li 2007 dust emission grids.
 Here we are using the updated the grids from 2014,
 where the maximum of the interstellar radiation field
 is fixed to 1e7. Similar to the SPS models, the spectra
-is per mass, here it is the dust mass (in Msun units)
+are per mass: the DL07 emissivities are per hydrogen nucleon,
+so here they are per Msun of hydrogen.
 """
 
 import argparse
 
-import h5py
 import numpy as np
-from unyt import Hz, Msun, c, erg, mp, s, um
+from unyt import Angstrom, Hz, Msun, c, dimensionless, erg, mp, s, um
+
+from syncretize.grid_io import GridFile
 
 
 def process_dl07_to_hdf5(
@@ -33,8 +35,6 @@ def process_dl07_to_hdf5(
         data_loc (str)
             Location of the input data file to process
     """
-
-    spec_names = ["pdr", "diffuse", "fsil_pdr", "fsil_diffuse"]
 
     # Define the models parameters
     suffix = np.array(
@@ -111,91 +111,95 @@ def process_dl07_to_hdf5(
     nu = nu.to(Hz).value
     msun_by_mp = (Msun / mp).value
 
-    with h5py.File(f"{grid_loc}/{grid_name}.hdf5", "w") as hf:
-        hf.attrs["axes"] = ["qpah", "umin", "alpha"]
-        axes = hf.create_group("axes")
-        axes["qpah"] = qpahs
-        axes["qpah"].attrs["Description"] = (
-            "Fraction of dust mass in the form of PAHs"
+    # Allocate the spectra. The diffuse spectra do not depend on alpha.
+    pdr = np.zeros((*axes_shape, n_lam))
+    diffuse = np.zeros((len(qpahs), len(umins), n_lam))
+    pdr_fsil = np.zeros((*axes_shape, n_lam))
+    diffuse_fsil = np.zeros((len(qpahs), len(umins), n_lam))
+
+    def read_spec(fname):
+        """Read a DL07 spectrum file, returning lnu per Msun of H and fsil."""
+        with open(fname) as f:
+            # Skip the header, keeping the 1001 wavelength rows
+            skip_header = len(f.readlines()) - 1001
+        tmp = np.genfromtxt(fname, skip_header=skip_header)
+        spec = (tmp[:, 1][::-1] * erg / s / (nu * Hz)).to(erg / s / Hz).value
+        fsil = tmp[:, 4][::-1] / (tmp[:, 3][::-1] + tmp[:, 4][::-1])
+        return spec * msun_by_mp, fsil
+
+    for ii in range(len(qpahs)):
+        for jj, umin in enumerate(umins):
+            # Diffuse dust spectrum
+            fname = (
+                f"{data_loc}/U{umin}_{umin}_{data_name}_{suffix[ii]}"
+                "/spec_1.0.dat"
+            )
+            diffuse[ii, jj], diffuse_fsil[ii, jj] = read_spec(fname)
+
+            # PDR dust spectrum
+            for kk, alpha in enumerate(alphas):
+                fname = (
+                    f"{data_loc}/U{umin}_{umaxs[0]}_{data_name}_"
+                    + f"{suffix[ii]}/spec_{np.round(alpha, 2)}.dat"
+                )
+                pdr[ii, jj, kk], pdr_fsil[ii, jj, kk] = read_spec(fname)
+
+    # Write the grid
+    out_grid = GridFile(f"{grid_loc}/{grid_name}.hdf5")
+    out_grid.write_attribute("/", "axes", ["qpah", "umin", "alpha"])
+    out_grid.write_attribute("/", "WeightVariable", "hydrogen_mass")
+    out_grid.write_dataset(
+        "axes/qpah",
+        qpahs * dimensionless,
+        "Fraction of dust mass in the form of PAHs",
+        log_on_read=False,
+    )
+    out_grid.write_dataset(
+        "axes/umin",
+        umins.astype(float) * dimensionless,
+        "Radiation field heating majority of the dust or diffuse dust",
+        log_on_read=False,
+    )
+    out_grid.write_dataset(
+        "axes/alpha",
+        alphas * dimensionless,
+        "Powerlaw slope dU/dM propto U^alpha",
+        log_on_read=False,
+    )
+    out_grid.write_dataset(
+        "spectra/wavelength",
+        (lam * um).to(Angstrom),
+        "Wavelength of the spectra grid",
+        log_on_read=False,
+    )
+    # As with the SPS grids, the per-mass normalisation is carried by the
+    # WeightVariable rather than the units
+    lnu_units = erg / s / Hz
+    for key, data, units, description in (
+        ("pdr", pdr, lnu_units, "PDR dust emission per Msun of hydrogen"),
+        (
+            "diffuse",
+            diffuse,
+            lnu_units,
+            "Diffuse dust emission per Msun of hydrogen",
+        ),
+        ("pdr_fsil", pdr_fsil, dimensionless, "PDR silicate fraction"),
+        (
+            "diffuse_fsil",
+            diffuse_fsil,
+            dimensionless,
+            "Diffuse silicate fraction",
+        ),
+    ):
+        out_grid.write_dataset(
+            f"spectra/{key}",
+            data * units,
+            description,
+            log_on_read=False,
         )
-        axes["qpah"].attrs["Units"] = "dimensionless"
-
-        axes["umin"] = umins.astype(float)
-        axes["umin"].attrs["Description"] = (
-            "Radiation field heating majority of the dust or diffuse dust"
-        )
-        axes["umin"].attrs["Units"] = "dimensionless"
-
-        axes["alpha"] = alphas
-        axes["alpha"].attrs["Description"] = (
-            "Powerlaw slope dU/dM propto U^alpha"
-        )
-        axes["alpha"].attrs["Units"] = "dimensionless"
-
-        # create a group holding the spectra in the grid file
-        spectra = hf.create_group("spectra")
-
-        # save list of spectra as attribute
-        spectra.attrs["spec_names"] = spec_names
-        spectra["pdr"] = np.zeros((*axes_shape, n_lam))
-        spectra["diffuse"] = np.zeros((len(qpahs), len(umins), n_lam))
-
-        spectra["pdr_fsil"] = np.zeros((*axes_shape, n_lam))
-        spectra["diffuse_fsil"] = np.zeros((len(qpahs), len(umins), n_lam))
-
-        for ii, qpah in enumerate(qpahs):
-            diffuse_spectra = np.zeros((len(umins), n_lam))
-            pdr_spectra = np.zeros((len(umins), len(alphas), n_lam))
-            diffuse_fsil = np.zeros((len(umins), n_lam))
-            pdr_fsil = np.zeros((len(umins), len(alphas), n_lam))
-
-            for jj, umin in enumerate(umins):
-                # diffuse dust spectrum
-                fname = f"{data_loc}/U{umin}_{umin}_{data_name}_{suffix[ii]}"
-                with open(f"{fname}/spec_1.0.dat") as f:
-                    tmp = f.readlines()
-                    # Number of wavelength values
-                    skip_header = len(tmp) - 1001
-
-                tmp = np.genfromtxt(f"{fname}", skip_header=skip_header)
-
-                spec = tmp[:, 1][::-1] * erg / s
-                spec /= nu * Hz
-                spec = spec.to(erg / s / Hz).value
-                diffuse_spectra[jj] = spec * msun_by_mp  # erg/s/Hz/Mdust
-
-                fsil = tmp[:, 4][::-1] / (tmp[:, 3][::-1] + tmp[:, 4][::-1])
-                diffuse_fsil[jj] = fsil
-
-                # pdr dust spectrum
-                for kk, alpha in enumerate(alphas):
-                    fname = (
-                        f"{data_loc}/U{umin}_{umaxs[0]}_{data_name}_"
-                        + f"{suffix[ii]}/spec_{np.round(alpha, 2)}.dat"
-                    )
-                    with open(f"{fname}") as f:
-                        tmp = f.readlines()
-                        # Number of wavelength values
-                        skip_header = len(tmp) - 1001
-
-                    tmp = np.genfromtxt(f"{fname}", skip_header=skip_header)
-
-                    spec = tmp[:, 1][::-1] * erg / s
-                    spec /= nu * Hz
-                    spec = spec.to(erg / s / Hz).value
-                    pdr_spectra[jj, kk] = spec * msun_by_mp  # erg/s/Hz/Mdust
-
-                    fsil = tmp[:, 4][::-1] / (
-                        tmp[:, 3][::-1] + tmp[:, 4][::-1]
-                    )
-                    pdr_fsil[jj, kk] = fsil
-
-            spectra["pdr"][ii] = pdr_spectra  # type: ignore
-            spectra["diffuse"][ii] = diffuse_spectra  # type: ignore
-            spectra["pdr_fsil"][ii] = pdr_fsil  # type: ignore
-            spectra["diffuse_fsil"][ii] = diffuse_fsil  # type: ignore
-
-        spectra["wavelength"] = lam * 1e4  # convert to Angstrom
+    out_grid.write_attribute(
+        "spectra", "spec_names", ["pdr", "diffuse", "pdr_fsil", "diffuse_fsil"]
+    )
 
 
 if __name__ == "__main__":
