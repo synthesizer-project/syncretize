@@ -9,7 +9,7 @@ import shutil
 import numpy as np
 from synthesizer.exceptions import UnrecognisedOption
 from synthesizer.photoionisation import calculate_Q_from_U
-from unyt import angstrom, c, h, unyt_array
+from unyt import angstrom, c, cm, h, s, unyt_array
 
 
 class ShapeCommands:
@@ -154,8 +154,10 @@ def create_cloudy_input(
         "cosmic_rays": False,
         # include metals
         "metals": True,
-        # include dust grains
-        "grains": False,
+        # include dust grains (None, "Orion" or "ISM")
+        "grains": None,
+        # if True, don't scale the grain abundances to the depletion
+        "no_grain_scaling": False,
         # the geometry
         "geometry": "planeparallel",
         # relative resolution the saved continuum spectra
@@ -265,9 +267,13 @@ def create_cloudy_input(
             # define the reference abundances for the different grain types
             # this should be the dust-phase abundance in the particular
             # reference environment.
+            # Orion and ISM grains share the same underlying dust-phase
+            # abundances, but Cloudy multiplies the abundance given to
+            # "grains Orion" by 0.85 (parse_grain.cpp). The Orion
+            # references include log10(0.85) to compensate.
             if params["grains"] == "Orion":
-                reference_C_abund = -3.5553
-                reference_Si_abund = -4.4841
+                reference_C_abund = -3.6259
+                reference_Si_abund = -4.5547
             elif params["grains"] == "ISM":
                 reference_C_abund = -3.5553
                 reference_Si_abund = -4.4841
@@ -311,7 +317,9 @@ def create_cloudy_input(
         # in the spherical geometry case I think U is some average U, not U at
         # the inner face of the cloud.
         log10_specific_ionising_lum = np.log10(
-            calculate_Q_from_U(U, params["hydrogen_density"])
+            calculate_Q_from_U(
+                U, params["hydrogen_density"] * cm**-3
+            ).to_value(1 / s)
         )
         cinput.append(f"Q(H) = {log10_specific_ionising_lum}\n")
         cinput.append(f"radius {np.log10(params['radius'])} log parsecs\n")

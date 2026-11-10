@@ -39,12 +39,12 @@ import h5py
 import numpy as np
 from synthesizer._version import __version__ as synthesizer_version
 from synthesizer.emissions import Sed
-from synthesizer.photoionisation import Ions
 from synthesizer.units import has_units
 from tqdm import tqdm
 from unyt import dimensionless, unyt_array
 
 from syncretize._version import __version__ as syncretize_version
+from syncretize.photoionisation import Ions
 
 
 class GridFile:

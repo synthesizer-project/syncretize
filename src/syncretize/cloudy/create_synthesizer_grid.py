@@ -11,6 +11,7 @@ Example usage:
 import os
 import re
 
+import h5py
 import numpy as np
 import submission_scripts
 from synthesizer.emissions import Sed
@@ -144,22 +145,30 @@ def create_empty_grid(
     # cloudy grid due to additional parameters, in which case we need to
     # extend the axes of log10_specific_ionising_luminosity.
 
+    # Read log10_specific_ionising_luminosity directly from the incident
+    # grid file rather than from the loaded Grid. synthesizer rescales
+    # luminosity weighted grids to its internal luminosity unit on load, but
+    # the cloudy outputs must be normalised to the values stored in the file.
+    with h5py.File(incident_grid.grid_filename, "r") as hf:
+        log10_specific_ionising_lum = {
+            ion: hf["log10_specific_ionising_luminosity"][ion][...]
+            for ion in hf["log10_specific_ionising_luminosity"].keys()
+        }
+
     # Compute the amount we may have to expand the axes (if we don't need to
     # expand this is harmless)
     expansion = int(
-        np.prod(shape)
-        / np.prod(incident_grid.log10_specific_ionising_lum["HI"].shape)
+        np.prod(shape) / np.prod(log10_specific_ionising_lum["HI"].shape)
     )
 
     # Loop over ions
-    for ion in incident_grid.log10_specific_ionising_lum.keys():
+    for ion in log10_specific_ionising_lum.keys():
         # If there are no additional axes simply copy over the incident
         # .log10_specific_ionising_lum .
         if len(new_axes) == len(incident_grid.axes):
             out_grid.write_dataset(
                 key=f"log10_specific_ionising_luminosity/{ion}",
-                data=incident_grid.log10_specific_ionising_lum[ion]
-                * dimensionless,
+                data=log10_specific_ionising_lum[ion] * dimensionless,
                 description="The specific ionising photon luminosity for"
                 f" {ion}",
                 log_on_read=False,
@@ -170,7 +179,7 @@ def create_empty_grid(
         else:
             # Create new array with repeated elements
             log10_specific_ionising_luminosity = np.repeat(
-                incident_grid.log10_specific_ionising_lum[ion] * dimensionless,
+                log10_specific_ionising_lum[ion] * dimensionless,
                 expansion,
                 axis=-1,
             )
