@@ -539,7 +539,7 @@ def read_lines(filename, extension="lines"):
 
 
 def convert_cloudy_wavelength(x):
-    """Convert a wavelength string (e.g. 6562.81A, 1.008m) to a unyt_quantity.
+    """Convert a wavelength string (e.g. 6562.81A, 1.008m,) to Angstroms.
 
     Args:
         x (str):
@@ -559,6 +559,12 @@ def convert_cloudy_wavelength(x):
     # if microns
     if unit == "m":
         return 1e4 * value
+
+    # if centimetres (radio / sub-mm lines)
+    if unit == "c":
+        return 1e8 * value
+
+    raise ValueError(f"Unknown Cloudy wavelength unit in {x!r}")
 
 
 def read_linelist(filename, extension="elin"):
