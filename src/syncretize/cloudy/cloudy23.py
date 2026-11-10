@@ -4,6 +4,7 @@ Given an SED (from an SPS model, for example), generate a cloudy atmosphere
 grid. Can optionally generate an array of input files for selected parameters.
 """
 
+import os
 import shutil
 
 import numpy as np
@@ -458,6 +459,17 @@ def create_cloudy_input(
                 f"units Angstroms no clobber\n"
             )
         )
+        # reflected continuum: its albedo column separates the incident
+        # light scattered back towards the source from the nebular emission
+        # (see read_continuum). Cloudy only predicts it for open geometries
+        # (it aborts with "sphere", where nothing leaves the illuminated face).
+        if params["geometry"] != "spherical":
+            cinput.append(
+                (
+                    f'save last reflected continuum "{model_name}.refl" '
+                    f"units Angstroms no clobber\n"
+                )
+            )
     # output lines
     if params["output_lines"]:
         cinput.append(
@@ -639,11 +651,34 @@ def read_wavelength(filename):
 
 
 def read_continuum(filename, return_dict=False):
-    """Extract just the spectra from a cloudy.cont file.
+    """Extract the spectra from a cloudy .cont file (and .refl, if present).
+
+    The spectra include the light leaving both faces of the cloud, so that
+    they are consistent with the emergent line luminosities of
+    ``save line list emergent`` (which also sum both faces). The .cont
+    columns are::
+
+        0 = wavelength, 1 = incident, 2 = trans, 3 = DiffOut, 4 = net trans,
+        5 = reflc, 6 = total, 7 = reflin, 8 = outlin
+
+    with net trans = trans + DiffOut and total = net trans + reflc. reflc
+    (light leaving the illuminated face) is the sum of the reflected
+    incident continuum, the reflected diffuse continuum and the reflected
+    lines (reflin). In a closed spherical geometry (``sphere``) nothing
+    leaves the illuminated face: reflc = reflin = 0 and all emission is in
+    DiffOut and outlin.
+
+    The incident light scattered back towards the source is not nebular
+    emission, so it is separated using the albedo (reflected incident /
+    incident) column of the ``{filename}.refl`` file written by
+    ``save last reflected continuum``. Cloudy only predicts this for open
+    geometries; for open-geometry runs without a .refl file it stays in
+    ``nebular`` (``reflected_incident`` is then zero) and a warning is
+    raised.
 
     Args:
         filename (str):
-            The cloudy filename
+            The cloudy filename (without the .cont extension).
         return_dict (bool):
             If True, return a dictionary of the spectra.
             If False, return a tuple of the spectra.
@@ -656,54 +691,103 @@ def read_continuum(filename, return_dict=False):
         incident (np.ndarray of float):
             The incident spectrum
         transmitted (np.ndarray of float):
-            The transmitted spectrum
+            The transmitted spectrum (attenuated incident, outward)
         nebular (np.ndarray of float):
-            The nebular spectrum
+            The nebular spectrum, both faces, lines included
+            (DiffOut + reflc - reflected_incident)
         nebular_continuum (np.ndarray of float):
-            The nebular continuum spectrum
+            The nebular continuum spectrum (nebular - linecont)
         total (np.ndarray of float):
-            The total spectrum
+            The total spectrum (Cloudy's total = transmitted + nebular +
+            reflected_incident)
         linecont (np.ndarray of float):
-            The line contribution spectrum
+            The line contribution spectrum, both faces (outlin + reflin)
 
-        alternatively returns a dictionary
+        alternatively returns a dictionary, which also holds
+        reflected (reflc), reflected_linecont (reflin) and
+        reflected_incident, from which the outward-only spectra can be
+        recovered (e.g. outward nebular = nebular + reflected_incident -
+        reflected).
 
     """
     # ----- Open SED
-
-    """
-    1 = incident, 2 = transmitted, 3 = nebular,
-    4 = total, 8 = contribution of lines to total
-    """
-    lam, incident, transmitted, nebular, total, linecont = np.loadtxt(
-        f"{filename}.cont", delimiter="\t", usecols=(0, 1, 2, 3, 4, 8)
+    (
+        lam,
+        incident,
+        transmitted,
+        diffout,
+        reflected,
+        total,
+        reflected_linecont,
+        outlin,
+    ) = np.loadtxt(
+        f"{filename}.cont",
+        delimiter="\t",
+        usecols=(0, 1, 2, 3, 5, 6, 7, 8),
     ).T
+
+    # reflected incident continuum = albedo x incident, from the .refl file
+    # (columns: wavelength, cont, line, total, albedo, label). The .refl
+    # "cont" column (= reflc - reflin) is not needed: the albedo is the ratio
+    # of the reflected to the incident continuum in each cell.
+    if os.path.exists(f"{filename}.refl"):
+        refl = np.loadtxt(
+            f"{filename}.refl", delimiter="\t", usecols=(0, 4), ndmin=2
+        )
+        if refl.shape[0] != lam.size or not np.allclose(
+            refl[:, 0], lam, rtol=1e-4
+        ):
+            raise InconsistentArguments(
+                f"{filename}.refl does not share the wavelength grid of "
+                f"{filename}.cont"
+            )
+        reflected_incident = refl[:, 1] * incident
+    else:
+        if np.any(reflected > 0):
+            warn(
+                f"{filename}.refl not found: the reflected incident "
+                "continuum cannot be separated and is included in the "
+                "nebular spectrum. Save it with 'save last reflected "
+                "continuum' (open geometries only)."
+            )
+        reflected_incident = np.zeros_like(incident)
+
+    # nebular emission leaving both faces (lines included). The reflected
+    # nebular part (reflc - reflected incident) cannot be below the reflected
+    # lines; clip there to absorb the 4-digit print precision of the files
+    # (relevant where reflc is almost all reflected incident, e.g. X-rays).
+    nebular = diffout + np.maximum(
+        reflected - reflected_incident, reflected_linecont
+    )
+
+    # line contribution leaving both faces
+    linecont = outlin + reflected_linecont
+
+    # nebular continuum is the total nebular emission (nebular)
+    # minus the line contribution (linecont)
+    nebular_continuum = nebular - linecont
 
     # --- frequency
     lam = lam[::-1]  # reverse array
     lam_m = lam * 1e-10  # m
     nu = c.value / (lam_m)
 
-    """
-    nebular continuum is the total nebular emission (nebular)
-    minus the line continuum (linecont)
-    """
-    nebular_continuum = nebular - linecont
-
     spec_dict = {"lam": lam, "nu": nu}
 
-    for spec_type in [
-        "incident",
-        "transmitted",
-        "nebular",
-        "nebular_continuum",
-        "total",
-        "linecont",
+    for spec_type, sed in [
+        ("incident", incident),
+        ("transmitted", transmitted),
+        ("nebular", nebular),
+        ("nebular_continuum", nebular_continuum),
+        ("total", total),
+        ("linecont", linecont),
+        ("reflected", reflected),
+        ("reflected_linecont", reflected_linecont),
+        ("reflected_incident", reflected_incident),
     ]:
-        sed = locals()[spec_type]
         sed = sed[::-1]  # reverse array
-        sed /= 10**7  # convert from W to erg
-        sed /= nu  # convert from nu l_nu to l_nu
+        sed = sed / 10**7  # convert from W to erg
+        sed = sed / nu  # convert from nu l_nu to l_nu
         spec_dict[spec_type] = sed
 
     if return_dict:
@@ -712,10 +796,13 @@ def read_continuum(filename, return_dict=False):
         return (
             lam,
             nu,
-            incident,
-            transmitted,
-            nebular,
-            nebular_continuum,
-            total,
-            linecont,
+            spec_dict["incident"],
+            spec_dict["transmitted"],
+            spec_dict["nebular"],
+            spec_dict["nebular_continuum"],
+            spec_dict["total"],
+            spec_dict["linecont"],
+            spec_dict["reflected"],
+            spec_dict["reflected_linecont"],
+            spec_dict["reflected_incident"],
         )
