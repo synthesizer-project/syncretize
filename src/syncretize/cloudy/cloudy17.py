@@ -583,6 +583,16 @@ def read_continuum(filename, return_dict=False, geometry=None):
     .refl file raises a warning: ``reflected_incident`` is then zero and
     the reflected incident light stays in ``nebular``.
 
+    ``reflected_incident`` (albedo x incident) assumes full coverage.
+    Cloudy multiplies reflc in the .cont file by the covering factor, but
+    not the incident column or the .refl albedo, so a covering factor below
+    one would make it too large. This cannot happen for runs normalised by
+    the ionisation parameter (Cloudy forces the covering factor to one in
+    that case) or for ``sphere`` (no .refl file); it would only matter for
+    an open geometry normalised by luminosity (e.g. Q(H) and radius) with
+    ``covering factor`` < 1. Partial coverage should instead be applied
+    afterwards (e.g. via synthesizer's fesc).
+
     Args:
         filename (str):
             The cloudy filename (without the .cont extension).
@@ -597,10 +607,12 @@ def read_continuum(filename, return_dict=False, geometry=None):
             an open, plane-parallel geometry.
 
     Returns:
+        If ``return_dict`` is False, a tuple of 9 arrays, in this order:
+
         lam (np.ndarray of float):
-            The wavelength grid
+            The wavelength grid (Angstrom, ascending)
         nu (np.ndarray of float):
-            The frequency grid
+            The frequency grid (Hz)
         incident (np.ndarray of float):
             The incident spectrum
         transmitted (np.ndarray of float):
@@ -615,23 +627,25 @@ def read_continuum(filename, return_dict=False, geometry=None):
             reflected_incident)
         linecont (np.ndarray of float):
             The line contribution spectrum, both faces (outlin + reflin)
-        reflected (np.ndarray of float):
-            Light leaving the illuminated face (Cloudy's reflc)
-        reflected_linecont (np.ndarray of float):
-            Line contribution leaving the illuminated face (reflin)
         reflected_incident (np.ndarray of float):
             Incident light scattered back towards the source (zero for
             'sphere' or when no .refl file is present)
 
-        i.e. a tuple of 11 arrays, in the order above. Alternatively
-        returns a dictionary with the same quantities keyed by "lam",
-        "nu" and the spectrum names above. The outward-only spectra can
-        be recovered from these (e.g. outward nebular = nebular +
-        reflected_incident - reflected).
+        If ``return_dict`` is True, a dictionary keyed by "lam", "nu" and
+        the spectrum names above, which also holds two spectra that are
+        not in the tuple:
 
-        Note: before the reflected spectra were added this returned a
-        tuple of 8 values; code unpacking the tuple must now expect 11.
-        Prefer ``return_dict=True``.
+        reflected (np.ndarray of float):
+            Light leaving the illuminated face (Cloudy's reflc)
+        reflected_linecont (np.ndarray of float):
+            Line contribution leaving the illuminated face (reflin)
+
+        From these the outward-only spectra can be recovered (e.g. outward
+        nebular = nebular + reflected_incident - reflected).
+
+        Note: before the reflected spectra were added the tuple had 8
+        values; reflected_incident is now appended as a 9th. Prefer
+        ``return_dict=True``.
 
     """
     # ----- Open SED
