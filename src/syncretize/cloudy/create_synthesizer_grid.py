@@ -471,6 +471,18 @@ SPEC_NAMES = (
     "reflected_incident",
 )
 
+# Spectra that add_lines needs to compute the continuum quantities at each
+# line (incident, transmitted, nebular_continuum = nebular - linecont and
+# total_continuum = nebular_continuum + transmitted + reflected_incident).
+# add_spectra always stores these, whatever spec_names it is given.
+REQUIRED_SPEC_NAMES = (
+    "incident",
+    "transmitted",
+    "nebular",
+    "linecont",
+    "reflected_incident",
+)
+
 
 def _cloudy_module(cloudy_version):
     """Return the syncretize module reading this Cloudy version's outputs."""
@@ -494,6 +506,7 @@ def add_spectra(
     spec_names=SPEC_NAMES,
     norm_by_q=True,
     extensions_to_check=["emergent_elin"],
+    geometry=None,
 ):
     """
     Open cloudy spectra and add them to the grid.
@@ -512,6 +525,11 @@ def add_spectra(
         spec_names (list)
             The names of the spectra to save (default SPEC_NAMES: incident,
             transmitted, nebular, linecont and reflected_incident).
+            The spectra in REQUIRED_SPEC_NAMES (incident, transmitted,
+            nebular, linecont and reflected_incident) are always included,
+            even if not listed, since add_lines needs them for the line
+            continuum quantities (and reflected_incident for total =
+            transmitted + nebular + reflected_incident).
         shape (ndarray)
             The shape of the new grid.
         norm_by_q (bool)
@@ -519,7 +537,17 @@ def add_spectra(
             photon luminosity calculated from the incident spectrum.
         extensions_to_check (list)
             List of file extensions checked to decide if a model failed.
+        geometry (str)
+            The Cloudy geometry of the runs.
     """
+
+    # Always store the spectra add_lines relies on. reflected_incident is
+    # also needed to reconstruct the total spectrum for open geometries (it
+    # is zero for 'sphere').
+    spec_names = tuple(spec_names)
+    spec_names += tuple(
+        name for name in REQUIRED_SPEC_NAMES if name not in spec_names
+    )
 
     # Determine the cloudy version...
     cloudy_version = new_grid.read_attribute(
@@ -586,7 +614,9 @@ def add_spectra(
 
             else:
                 # Read the continuum file containing the spectra
-                spec_dict = cloudy.read_continuum(infile, return_dict=True)
+                spec_dict = cloudy.read_continuum(
+                    infile, return_dict=True, geometry=geometry
+                )
 
                 # Calculate the specific ionising photon luminosity and use
                 # this to renormalise the spectrum.
@@ -673,8 +703,9 @@ def add_lines(
             The shape of the new grid.
         lam (ndarray)
             The wavelength grid of the spectra.
-        spectra (bool)
-            The spectra.
+        spectra (dict)
+            The spectra returned by add_spectra (or None to skip the
+            continuum quantities). Must contain REQUIRED_SPEC_NAMES.
         line_type (str)
             The type of line file to use (linelist, lines)
         include_intrinsic (bool)
@@ -687,6 +718,18 @@ def add_lines(
 
     if spectra is not None:
         calculate_continuum = True
+
+        # Check we have every spectrum needed for the continuum quantities
+        # (add_spectra always provides these).
+        missing_spectra = [
+            name for name in REQUIRED_SPEC_NAMES if name not in spectra
+        ]
+        if missing_spectra:
+            raise ValueError(
+                "add_lines needs the spectra "
+                f"{', '.join(REQUIRED_SPEC_NAMES)} to compute the line "
+                f"continuum quantities; missing: {', '.join(missing_spectra)}"
+            )
     else:
         calculate_continuum = False
 
@@ -1139,6 +1182,7 @@ if __name__ == "__main__":
             spec_names=SPEC_NAMES,
             norm_by_q=True,
             extensions_to_check=extensions_to_check,
+            geometry=fixed_photoionisation_params.get("geometry"),
         )
         print("Added spectra")
         print(spectra.keys())
