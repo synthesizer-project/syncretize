@@ -650,7 +650,7 @@ def read_wavelength(filename):
     return lam
 
 
-def read_continuum(filename, return_dict=False):
+def read_continuum(filename, return_dict=False, geometry=None):
     """Extract the spectra from a cloudy .cont file (and .refl, if present).
 
     The spectra include the light leaving both faces of the cloud, so that
@@ -672,9 +672,10 @@ def read_continuum(filename, return_dict=False):
     emission, so it is separated using the albedo (reflected incident /
     incident) column of the ``{filename}.refl`` file written by
     ``save last reflected continuum``. Cloudy only predicts this for open
-    geometries; for open-geometry runs without a .refl file it stays in
-    ``nebular`` (``reflected_incident`` is then zero) and a warning is
-    raised.
+    geometries, so no .refl file is written for ``geometry="spherical"``
+    and ``reflected_incident`` is zero. For any other geometry a missing
+    .refl file raises a warning: ``reflected_incident`` is then zero and
+    the reflected incident light stays in ``nebular``.
 
     Args:
         filename (str):
@@ -682,6 +683,12 @@ def read_continuum(filename, return_dict=False):
         return_dict (bool):
             If True, return a dictionary of the spectra.
             If False, return a tuple of the spectra.
+        geometry (str, optional):
+            The Cloudy geometry of the run (the ``geometry`` parameter, e.g.
+            "planeparallel" or "spherical"). Used only to decide whether a
+            missing .refl file should raise a warning: it is expected for
+            "spherical", and anything else (including None) is treated as
+            an open, plane-parallel geometry.
 
     Returns:
         lam (np.ndarray of float):
@@ -702,12 +709,23 @@ def read_continuum(filename, return_dict=False):
             reflected_incident)
         linecont (np.ndarray of float):
             The line contribution spectrum, both faces (outlin + reflin)
+        reflected (np.ndarray of float):
+            Light leaving the illuminated face (Cloudy's reflc)
+        reflected_linecont (np.ndarray of float):
+            Line contribution leaving the illuminated face (reflin)
+        reflected_incident (np.ndarray of float):
+            Incident light scattered back towards the source (zero for
+            'sphere' or when no .refl file is present)
 
-        alternatively returns a dictionary, which also holds
-        reflected (reflc), reflected_linecont (reflin) and
-        reflected_incident, from which the outward-only spectra can be
-        recovered (e.g. outward nebular = nebular + reflected_incident -
-        reflected).
+        i.e. a tuple of 11 arrays, in the order above. Alternatively
+        returns a dictionary with the same quantities keyed by "lam",
+        "nu" and the spectrum names above. The outward-only spectra can
+        be recovered from these (e.g. outward nebular = nebular +
+        reflected_incident - reflected).
+
+        Note: before the reflected spectra were added this returned a
+        tuple of 8 values; code unpacking the tuple must now expect 11.
+        Prefer ``return_dict=True``.
 
     """
     # ----- Open SED
@@ -743,12 +761,15 @@ def read_continuum(filename, return_dict=False):
             )
         reflected_incident = refl[:, 1] * incident
     else:
-        if np.any(reflected > 0):
+        # Nothing leaves the illuminated face of a closed sphere, so no .refl
+        # file is expected there. Otherwise warn, with a fixed message (no
+        # filename) so Python's warning filter shows it once rather than
+        # once per model when building a grid.
+        if geometry != "spherical":
             warn(
-                f"{filename}.refl not found: the reflected incident "
-                "continuum cannot be separated and is included in the "
-                "nebular spectrum. Save it with 'save last reflected "
-                "continuum' (open geometries only)."
+                "No reflected spectra output from cloudy found for "
+                "plane-parallel geometry; total spectra will be "
+                "underestimated"
             )
         reflected_incident = np.zeros_like(incident)
 
@@ -802,7 +823,5 @@ def read_continuum(filename, return_dict=False):
             spec_dict["nebular_continuum"],
             spec_dict["total"],
             spec_dict["linecont"],
-            spec_dict["reflected"],
-            spec_dict["reflected_linecont"],
             spec_dict["reflected_incident"],
         )
