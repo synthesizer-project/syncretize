@@ -493,6 +493,7 @@ def add_spectra(
     new_shape,
     spec_names=SPEC_NAMES,
     norm_by_q=True,
+    extensions_to_check=["emergent_elin"],
 ):
     """
     Open cloudy spectra and add them to the grid.
@@ -516,6 +517,8 @@ def add_spectra(
         norm_by_q (bool)
             If True, the spectra are normalised by the specific ionising
             photon luminosity calculated from the incident spectrum.
+        extensions_to_check (list)
+            List of file extensions checked to decide if a model failed.
     """
 
     # Determine the cloudy version...
@@ -567,9 +570,10 @@ def add_spectra(
                 f"{incident_index}/{photoionisation_index}"
             )
 
-            # Check to see if the model failed or not, using the default
-            # extensions
-            failed = check_if_failed(infile)
+            # Check to see if the model failed or not
+            failed = check_if_failed(
+                infile, extensions_to_check=extensions_to_check
+            )
 
             # If the model has failed save the spectra as an array of zeros
             if failed:
@@ -648,6 +652,8 @@ def add_lines(
     lam=None,
     spectra=None,
     line_type="linelist",
+    include_intrinsic=False,
+    extensions_to_check=["emergent_elin"],
 ):
     """
     Open cloudy lines and add them to the HDF5 grid
@@ -671,6 +677,12 @@ def add_lines(
             The spectra.
         line_type (str)
             The type of line file to use (linelist, lines)
+        include_intrinsic (bool)
+            If True, also read the intrinsic line luminosities (the
+            'intrinsic_elin' Cloudy output) and store them as
+            lines/luminosity_intrinsic.
+        extensions_to_check (list)
+            List of file extensions checked to decide if a model failed.
     """
 
     if spectra is not None:
@@ -707,6 +719,10 @@ def add_lines(
 
     # We always save luminosity...
     lines["luminosity"] = np.empty((*new_shape, nlines))
+
+    # ... optionally the intrinsic line luminosity ...
+    if include_intrinsic:
+        lines["luminosity_intrinsic"] = np.empty((*new_shape, nlines))
 
     # ... but only save continuum values if spectra are provided.
     continuum_quantities = [
@@ -763,15 +779,18 @@ def add_lines(
                 f"{incident_index}/{photoionisation_index}"
             )
 
-            # Check to see if the model failed or not, using the default
-            # extensions
-            failed = check_if_failed(infile)
+            # Check to see if the model failed or not
+            failed = check_if_failed(
+                infile, extensions_to_check=extensions_to_check
+            )
 
             # If the model has failed save the luminosities as an array of
             # zeros
             if failed:
                 # Set the line luminosities to zero
                 lines["luminosity"][indices] = np.zeros(nlines)
+                if include_intrinsic:
+                    lines["luminosity_intrinsic"][indices] = np.zeros(nlines)
 
                 # Set the continuum luminosities to zero
                 if calculate_continuum:
@@ -814,6 +833,36 @@ def add_lines(
                 # from spectra. Units are erg/s
                 lines["luminosity"][indices] = luminosities * normalisation
 
+                # Read, sort and save the intrinsic line luminosities in the
+                # same way, using the same normalisation.
+                if include_intrinsic:
+                    (
+                        ids_intrinsic,
+                        line_wavelengths_intrinsic,
+                        luminosities_intrinsic,
+                    ) = cloudy.read_linelist(
+                        infile, extension="intrinsic_elin"
+                    )
+                    sorted_indices_intrinsic = np.argsort(
+                        line_wavelengths_intrinsic
+                    )
+                    ids_intrinsic = ids_intrinsic[sorted_indices_intrinsic]
+                    luminosities_intrinsic = luminosities_intrinsic[
+                        sorted_indices_intrinsic
+                    ]
+
+                    # Both files use the same linelist so the ordering
+                    # should match; guard against silent misalignment.
+                    if not np.array_equal(ids_intrinsic, ids):
+                        raise ValueError(
+                            "Line IDs in intrinsic_elin do not match "
+                            f"emergent_elin for model {infile}"
+                        )
+
+                    lines["luminosity_intrinsic"][indices] = (
+                        luminosities_intrinsic * normalisation
+                    )
+
                 # Calculate continuum luminosities. Units are erg/s/Hz.
                 if calculate_continuum:
                     for continuum_quantity in continuum_quantities:
@@ -828,6 +877,8 @@ def add_lines(
 
     # Apply units to the lines
     lines["luminosity"] *= erg / s
+    if include_intrinsic:
+        lines["luminosity_intrinsic"] *= erg / s
 
     # If continuum values are calculated add units
     for continuum_quantity in continuum_quantities:
@@ -880,6 +931,16 @@ if __name__ == "__main__":
         required=False,
     )
 
+    # Should we include the intrinsic line luminosities in the grid?
+    parser.add_argument(
+        "--include-intrinsic-lines",
+        action="store_true",
+        help="Also store intrinsic line luminosities (from the cloudy "
+        "'intrinsic_elin' output) as lines/luminosity_intrinsic.",
+        default=False,
+        required=False,
+    )
+
     # Should we normalise by the specific ionising luminosity?
     parser.add_argument(
         "--norm-by-Q",
@@ -900,6 +961,7 @@ if __name__ == "__main__":
     cloudy_param_file = args.cloudy_paramfile
     extra_cloudy_param_file = args.cloudy_paramfile_extra
     include_spectra = args.include_spectra
+    include_intrinsic_lines = args.include_intrinsic_lines
     machine = args.machine
     cloudy_executable_path = args.cloudy_executable_path
     verbose = args.verbose
@@ -1044,6 +1106,11 @@ if __name__ == "__main__":
         fixed_photoionisation_params,
     )
 
+    # Cloudy output files that must exist for a model to count as successful
+    extensions_to_check = ["emergent_elin"]
+    if include_intrinsic_lines:
+        extensions_to_check.append("intrinsic_elin")
+
     # Check cloudy runs and potentially replace them by the nearest grid point
     # if they fail.
     number_of_failed_models = check_cloudy_runs(
@@ -1051,6 +1118,7 @@ if __name__ == "__main__":
         cloudy_dir,
         incident_index_list,
         photoionisation_index_list,
+        extensions_to_check=extensions_to_check,
         machine=machine,
         cloudy_executable_path=cloudy_executable_path,
     )
@@ -1070,6 +1138,7 @@ if __name__ == "__main__":
             new_shape,
             spec_names=SPEC_NAMES,
             norm_by_q=True,
+            extensions_to_check=extensions_to_check,
         )
         print("Added spectra")
         print(spectra.keys())
@@ -1088,5 +1157,7 @@ if __name__ == "__main__":
         lam,
         spectra,
         line_type="linelist",
+        include_intrinsic=include_intrinsic_lines,
+        extensions_to_check=extensions_to_check,
     )
     print("Added lines")
