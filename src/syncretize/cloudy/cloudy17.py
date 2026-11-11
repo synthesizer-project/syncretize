@@ -401,9 +401,19 @@ def create_cloudy_input(
 
     # output linelist
     if params["output_linelist"]:
+        # Same output files as the Cloudy 23 writer, so that grids from either
+        # version are built the same way.
+
+        # save intrinsic lines
+        cinput.append(
+            f'save linelist column absolute last units angstroms \
+                  "{model_name}.intrinsic_elin" "linelist.dat"\n'
+        )
+
+        # save emergent lines
         cinput.append(
             f'save linelist column emergent absolute last units angstroms \
-                  "{model_name}.elin" "linelist.dat"\n'
+                  "{model_name}.emergent_elin" "linelist.dat"\n'
         )
 
         # make copy of linelist
@@ -491,14 +501,15 @@ def convert_cloudy_wavelength(x):
         return 1e4 * value
 
 
-def read_linelist(filename, extension="elin"):
+def read_linelist(filename, extension="emergent_elin"):
     """Read a line list from a cloudy output file.
 
     Args:
         filename (str):
             The cloudy filename
         extension (str):
-            The extension of the file
+            The extension of the file: "emergent_elin" (default) or
+            "intrinsic_elin", as written by the input file generator.
 
     Returns:
         line_ids (list):

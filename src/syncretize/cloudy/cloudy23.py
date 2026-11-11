@@ -581,14 +581,15 @@ def convert_cloudy_wavelength(x):
         return 1e4 * value
 
 
-def read_linelist(filename, extension="elin"):
+def read_linelist(filename, extension="emergent_elin"):
     """Read a line list from a cloudy output file.
 
     Args:
         filename (str):
             The cloudy filename
         extension (str):
-            The extension of the file
+            The extension of the file: "emergent_elin" (default) or
+            "intrinsic_elin", as written by the input file generator.
 
     Returns:
         line_ids (list):
