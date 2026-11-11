@@ -147,3 +147,6 @@ examples/cloudy/data/*
 
 # Ignore the version file
 src/syncretize/_version.py
+
+# Full Cloudy line lists: generated with create_linelist/full_linelist (see its README)
+src/syncretize/cloudy/linelist-full-*.dat
