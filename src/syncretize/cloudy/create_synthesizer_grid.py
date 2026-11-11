@@ -462,7 +462,9 @@ def check_cloudy_runs(
 # nebular_continuum = nebular - linecont. Every grid stores the same set, so
 # grids are read the same way whatever the geometry. read_continuum also
 # provides "reflected" (reflc) and "reflected_linecont" (reflin), from which
-# the outward-only spectra can be recovered.
+# the outward-only spectra can be recovered, but these are not stored by
+# default (they would add two full spectral grids). To keep them, add them to
+# spec_names when calling add_spectra.
 SPEC_NAMES = (
     "incident",
     "transmitted",
@@ -855,8 +857,9 @@ def add_lines(
                 luminosities = luminosities[sorted_indices]
                 line_wavelengths = line_wavelengths[sorted_indices]
 
-                # If we're on the first grid point save the wavelength grid
-                if (incident_index == 0) and (photoionisation_index == 0):
+                # Save the wavelength grid from the first successful model
+                # (the first grid point may have failed)
+                if "wavelength" not in lines:
                     lines["wavelength"] = line_wavelengths
                     # for id, lam in zip(ids, sorted_indices):
                     #     print(id, lam)
@@ -914,6 +917,14 @@ def add_lines(
                             lam,
                             spectra_[continuum_quantity][indices],
                         )
+
+    # Without a single successful model there are no line wavelengths or IDs
+    if "wavelength" not in lines:
+        raise ValueError(
+            f"All cloudy models in {cloudy_dir}/{new_grid_name} failed "
+            f"(checked extensions: {', '.join(extensions_to_check)}); "
+            "cannot build the lines grid."
+        )
 
     # Apply units to the wavelength
     lines["wavelength"] *= Angstrom
@@ -1154,6 +1165,15 @@ if __name__ == "__main__":
     if include_intrinsic_lines:
         extensions_to_check.append("intrinsic_elin")
 
+    # Open (non-spherical) geometries need the reflected continuum (.refl) to
+    # separate the reflected incident light from the nebular emission. Without
+    # it nebular would include scattered incident light, so treat a missing
+    # .refl as a failed model rather than storing an incorrect spectrum.
+    # Cloudy cannot write .refl for 'sphere', so it is not required there.
+    geometry = fixed_photoionisation_params.get("geometry")
+    if include_spectra and geometry != "spherical":
+        extensions_to_check.append("refl")
+
     # Check cloudy runs and potentially replace them by the nearest grid point
     # if they fail.
     number_of_failed_models = check_cloudy_runs(
@@ -1182,7 +1202,7 @@ if __name__ == "__main__":
             spec_names=SPEC_NAMES,
             norm_by_q=True,
             extensions_to_check=extensions_to_check,
-            geometry=fixed_photoionisation_params.get("geometry"),
+            geometry=geometry,
         )
         print("Added spectra")
         print(spectra.keys())
