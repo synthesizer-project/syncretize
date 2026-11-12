@@ -18,7 +18,18 @@ from synthesizer.emissions import Sed
 from synthesizer.grid import Grid
 from synthesizer.units import has_units
 from synthesizer.utils.integrate import trapezoid
-from unyt import Angstrom, Hz, cm, dimensionless, erg, eV, km, s, yr
+from unyt import (
+    Angstrom,
+    Hz,
+    cm,
+    dimensionless,
+    erg,
+    eV,
+    km,
+    s,
+    unyt_array,
+    yr,
+)
 from utils import (
     get_cloudy_params,
     get_grid_props_cloudy,
@@ -604,8 +615,20 @@ def add_spectra(
     input_spectra = None
     if incident_grid_file is not None and band.any():
         with h5py.File(incident_grid_file, "r") as incident_file:
-            input_lam = incident_file["spectra/wavelength"][...]
-            input_spectra = incident_file["spectra/incident"][...]
+            # Use the stored units (older grids without them are in
+            # Angstrom and erg/s/Hz)
+            dset = incident_file["spectra/wavelength"]
+            input_lam = (
+                unyt_array(dset[...], dset.attrs.get("Units", "Angstrom"))
+                .to("Angstrom")
+                .value
+            )
+            dset = incident_file["spectra/incident"]
+            input_spectra = (
+                unyt_array(dset[...], dset.attrs.get("Units", "erg/s/Hz"))
+                .to("erg/s/Hz")
+                .value
+            )
 
     for incident_index, incident_index_tuple in enumerate(incident_index_list):
         input_lnu = None
