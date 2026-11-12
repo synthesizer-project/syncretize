@@ -161,7 +161,7 @@ if __name__ == "__main__":
         "imf_type": "bpl",  # named IMF or bpl (broken power law)
         "imf_masses": [0.08, 0.5, 1, 120],
         "imf_slopes": [1.3, 2.3, 2.3],
-        "alpha": False,
+        "alpha_enhancement": False,
         "pyfsps_version": str(fsps.__version__),
         "sps_version": "3.2",
     }

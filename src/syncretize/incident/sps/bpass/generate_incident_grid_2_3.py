@@ -60,7 +60,7 @@ def resolve_name(original_model_name, bin, alpha=False):
         "imf_type": imf_type,  # named IMF or bpl (broken power law)
         "imf_masses": imf_masses,
         "imf_slopes": imf_slopes,
-        "alpha": alpha,
+        "alpha_enhancement": alpha,
     }
 
     print(model)

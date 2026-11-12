@@ -315,12 +315,12 @@ if __name__ == "__main__":
 
     model = {
         "sps_name": sps_name,
-        "sps_version": False,
-        "sps_variant": False,
+        "sps_version": "2003",
+        "sps_variant": "padova00",
         "imf_type": "chabrier03",  # named IMF or bpl (broken power law)
         "imf_masses": [0.1, 100],
         "imf_slopes": False,
-        "alpha": False,
+        "alpha_enhancement": False,
     }
 
     # Create synthesizer style model name

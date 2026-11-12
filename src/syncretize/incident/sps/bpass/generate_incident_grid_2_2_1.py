@@ -52,7 +52,7 @@ def resolve_name(original_model_name, bin):
         "imf_type": imf_type,  # named IMF or bpl (broken power law)
         "imf_masses": imf_masses,
         "imf_slopes": imf_slopes,
-        "alpha": False,
+        "alpha_enhancement": False,
     }
 
     return model, bpass_imf

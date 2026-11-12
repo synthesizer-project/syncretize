@@ -413,7 +413,7 @@ if __name__ == "__main__":
         "imf_type": False,  # named IMF or bpl (broken power law)
         "imf_masses": [0.1, 100],
         "imf_slopes": False,
-        "alpha": False,
+        "alpha_enhancement": False,
     }
 
     # download BC03 utility
