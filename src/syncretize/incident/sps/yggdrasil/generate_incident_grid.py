@@ -287,7 +287,7 @@ if __name__ == "__main__":
         "sps_version": "1.3.3",
         "imf_masses": imf_masses,
         "imf_type": imf_type,
-        "alpha": False,
+        "alpha_enhancement": False,
     }
 
     # Update name to include the covering fraction if run has nebular data

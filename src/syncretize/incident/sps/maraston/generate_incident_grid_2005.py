@@ -159,7 +159,7 @@ if __name__ == "__main__":
         "imf_type": "bpl",
         "imf_masses": [0.1, 100],
         "imf_slopes": [2.35],
-        "alpha": False,
+        "alpha_enhancement": False,
     }
 
     make_grid(

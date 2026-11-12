@@ -120,7 +120,7 @@ def test_variable_axis_filename_follows_canonical_prefix():
         "imf_type": "bpl",
         "imf_masses": [0.08, 0.5, 1.0, 120.0],
         "imf_slopes": [1.3, 2.3, 2.3],
-        "alpha": False,
+        "alpha_enhancement": False,
     }
 
     assert get_model_filename(model, axis_name="imf_high_mass_slope") == (

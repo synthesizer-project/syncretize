@@ -4,13 +4,14 @@ Given an SED (from an SPS model, for example), generate a cloudy atmosphere
 grid. Can optionally generate an array of input files for selected parameters.
 """
 
+import os
 import shutil
 
 import numpy as np
-from synthesizer.exceptions import UnrecognisedOption
-from unyt import angstrom, c, h, unyt_array
-
-from syncretize.photoionisation import calculate_Q_from_U
+from synthesizer.exceptions import InconsistentArguments, UnrecognisedOption
+from synthesizer.photoionisation import calculate_Q_from_U
+from synthesizer.synth_warnings import warn
+from unyt import angstrom, c, cm, h, s, unyt_array
 
 
 class ShapeCommands:
@@ -268,9 +269,14 @@ def create_cloudy_input(
             # define the reference abundances for the different grain types
             # this should be the dust-phase abundance in the particular
             # reference environment.
-            # Orion and ISM grains share the same reference dust-phase
-            # abundances; only their grain size distributions differ.
-            if params["grains"] in ("Orion", "ISM"):
+            # Orion and ISM grains share the same underlying dust-phase
+            # abundances, but Cloudy multiplies the abundance given to
+            # "grains Orion" by 0.85 (parse_grain.cpp). The Orion
+            # references include log10(0.85) to compensate.
+            if params["grains"] == "Orion":
+                reference_C_abund = -3.6259
+                reference_Si_abund = -4.5547
+            elif params["grains"] == "ISM":
                 reference_C_abund = -3.5553
                 reference_Si_abund = -4.4841
             else:
@@ -313,7 +319,9 @@ def create_cloudy_input(
         # in the spherical geometry case I think U is some average U, not U at
         # the inner face of the cloud.
         log10_specific_ionising_lum = np.log10(
-            calculate_Q_from_U(U, params["hydrogen_density"])
+            calculate_Q_from_U(
+                U, params["hydrogen_density"] * cm**-3
+            ).to_value(1 / s)
         )
         cinput.append(f"Q(H) = {log10_specific_ionising_lum}\n")
         cinput.append(f"radius {np.log10(params['radius'])} log parsecs\n")
@@ -371,6 +379,17 @@ def create_cloudy_input(
                 f"units Angstroms no clobber\n"
             )
         )
+        # reflected continuum: its albedo column separates the incident
+        # light scattered back towards the source from the nebular emission
+        # (see read_continuum). Cloudy only predicts it for open geometries
+        # (it aborts with "sphere", where nothing leaves the illuminated face).
+        if params["geometry"] != "spherical":
+            cinput.append(
+                (
+                    f'save last reflected continuum "{model_name}.refl" '
+                    f"units Angstroms no clobber\n"
+                )
+            )
     # output lines
     if params["output_lines"]:
         cinput.append(
@@ -382,9 +401,19 @@ def create_cloudy_input(
 
     # output linelist
     if params["output_linelist"]:
+        # Same output files as the Cloudy 23 writer, so that grids from either
+        # version are built the same way.
+
+        # save intrinsic lines
+        cinput.append(
+            f'save linelist column absolute last units angstroms \
+                  "{model_name}.intrinsic_elin" "linelist.dat"\n'
+        )
+
+        # save emergent lines
         cinput.append(
             f'save linelist column emergent absolute last units angstroms \
-                  "{model_name}.elin" "linelist.dat"\n'
+                  "{model_name}.emergent_elin" "linelist.dat"\n'
         )
 
         # make copy of linelist
@@ -472,14 +501,15 @@ def convert_cloudy_wavelength(x):
         return 1e4 * value
 
 
-def read_linelist(filename, extension="elin"):
+def read_linelist(filename, extension="emergent_elin"):
     """Read a line list from a cloudy output file.
 
     Args:
         filename (str):
             The cloudy filename
         extension (str):
-            The extension of the file
+            The extension of the file: "emergent_elin" (default) or
+            "intrinsic_elin", as written by the input file generator.
 
     Returns:
         line_ids (list):
@@ -537,72 +567,179 @@ def read_wavelength(filename):
     return lam
 
 
-def read_continuum(filename, return_dict=False):
-    """Extract just the spectra from a cloudy.cont file.
+def read_continuum(filename, return_dict=False, geometry=None):
+    """Extract the spectra from a cloudy .cont file (and .refl, if present).
+
+    The spectra include the light leaving both faces of the cloud, so that
+    they are consistent with the emergent line luminosities of
+    ``save line list emergent`` (which also sum both faces). The .cont
+    columns are::
+
+        0 = wavelength, 1 = incident, 2 = trans, 3 = DiffOut, 4 = net trans,
+        5 = reflc, 6 = total, 7 = reflin, 8 = outlin
+
+    with net trans = trans + DiffOut and total = net trans + reflc. reflc
+    (light leaving the illuminated face) is the sum of the reflected
+    incident continuum, the reflected diffuse continuum and the reflected
+    lines (reflin). In a closed spherical geometry (``sphere``) nothing
+    leaves the illuminated face: reflc = reflin = 0 and all emission is in
+    DiffOut and outlin.
+
+    The incident light scattered back towards the source is not nebular
+    emission, so it is separated using the albedo (reflected incident /
+    incident) column of the ``{filename}.refl`` file written by
+    ``save last reflected continuum``. Cloudy only predicts this for open
+    geometries, so no .refl file is written for ``geometry="spherical"``
+    and ``reflected_incident`` is zero. For any other geometry a missing
+    .refl file raises a warning: ``reflected_incident`` is then zero and
+    the reflected incident light stays in ``nebular``.
+
+    ``reflected_incident`` (albedo x incident) assumes full coverage.
+    Cloudy multiplies reflc in the .cont file by the covering factor, but
+    not the incident column or the .refl albedo, so a covering factor below
+    one would make it too large. This cannot happen for runs normalised by
+    the ionisation parameter (Cloudy forces the covering factor to one in
+    that case) or for ``sphere`` (no .refl file); it would only matter for
+    an open geometry normalised by luminosity (e.g. Q(H) and radius) with
+    ``covering factor`` < 1. Partial coverage should instead be applied
+    afterwards (e.g. via synthesizer's fesc).
 
     Args:
         filename (str):
-            The cloudy filename
+            The cloudy filename (without the .cont extension).
         return_dict (bool):
             If True, return a dictionary of the spectra.
             If False, return a tuple of the spectra.
+        geometry (str, optional):
+            The Cloudy geometry of the run (the ``geometry`` parameter, e.g.
+            "planeparallel" or "spherical"). Used only to decide whether a
+            missing .refl file should raise a warning: it is expected for
+            "spherical", and anything else (including None) is treated as
+            an open, plane-parallel geometry.
 
     Returns:
+        If ``return_dict`` is False, a tuple of 9 arrays, in this order:
+
         lam (np.ndarray of float):
-            The wavelength grid
+            The wavelength grid (Angstrom, ascending)
         nu (np.ndarray of float):
-            The frequency grid
+            The frequency grid (Hz)
         incident (np.ndarray of float):
             The incident spectrum
         transmitted (np.ndarray of float):
-            The transmitted spectrum
+            The transmitted spectrum (attenuated incident, outward)
         nebular (np.ndarray of float):
-            The nebular spectrum
+            The nebular spectrum, both faces, lines included
+            (DiffOut + reflc - reflected_incident)
         nebular_continuum (np.ndarray of float):
-            The nebular continuum spectrum
+            The nebular continuum spectrum (nebular - linecont)
         total (np.ndarray of float):
-            The total spectrum
+            The total spectrum (Cloudy's total = transmitted + nebular +
+            reflected_incident)
         linecont (np.ndarray of float):
-            The line contribution spectrum
+            The line contribution spectrum, both faces (outlin + reflin)
+        reflected_incident (np.ndarray of float):
+            Incident light scattered back towards the source (zero for
+            'sphere' or when no .refl file is present)
 
-        alternatively returns a dictionary
+        If ``return_dict`` is True, a dictionary keyed by "lam", "nu" and
+        the spectrum names above, which also holds two spectra that are
+        not in the tuple:
+
+        reflected (np.ndarray of float):
+            Light leaving the illuminated face (Cloudy's reflc)
+        reflected_linecont (np.ndarray of float):
+            Line contribution leaving the illuminated face (reflin)
+
+        From these the outward-only spectra can be recovered (e.g. outward
+        nebular = nebular + reflected_incident - reflected).
+
+        Note: before the reflected spectra were added the tuple had 8
+        values; reflected_incident is now appended as a 9th. Prefer
+        ``return_dict=True``.
 
     """
     # ----- Open SED
-
-    """
-    1 = incident, 2 = transmitted, 3 = nebular,
-    4 = total, 8 = contribution of lines to total
-    """
-    lam, incident, transmitted, nebular, total, linecont = np.loadtxt(
-        f"{filename}.cont", delimiter="\t", usecols=(0, 1, 2, 3, 4, 8)
+    (
+        lam,
+        incident,
+        transmitted,
+        diffout,
+        reflected,
+        total,
+        reflected_linecont,
+        outlin,
+    ) = np.loadtxt(
+        f"{filename}.cont",
+        delimiter="\t",
+        usecols=(0, 1, 2, 3, 5, 6, 7, 8),
     ).T
+
+    # reflected incident continuum = albedo x incident, from the .refl file
+    # (columns: wavelength, cont, line, total, albedo, label). The .refl
+    # "cont" column (= reflc - reflin) is not needed: the albedo is the ratio
+    # of the reflected to the incident continuum in each cell.
+    if os.path.exists(f"{filename}.refl"):
+        refl = np.loadtxt(
+            f"{filename}.refl", delimiter="\t", usecols=(0, 4), ndmin=2
+        )
+        if refl.shape[0] != lam.size or not np.allclose(
+            refl[:, 0], lam, rtol=1e-4
+        ):
+            raise InconsistentArguments(
+                f"{filename}.refl does not share the wavelength grid of "
+                f"{filename}.cont"
+            )
+        reflected_incident = refl[:, 1] * incident
+    else:
+        # Nothing leaves the illuminated face of a closed sphere, so no .refl
+        # file is expected there. Otherwise warn, with a fixed message (no
+        # filename) so Python's warning filter shows it once rather than
+        # once per model when building a grid.
+        if geometry != "spherical":
+            warn(
+                "No reflected spectra output from cloudy found for "
+                "plane-parallel geometry; total spectra will be "
+                "underestimated"
+            )
+        reflected_incident = np.zeros_like(incident)
+
+    # nebular emission leaving both faces (lines included). The reflected
+    # nebular part (reflc - reflected incident) cannot be below the reflected
+    # lines; clip there to absorb the 4-digit print precision of the files
+    # (relevant where reflc is almost all reflected incident, e.g. X-rays).
+    nebular = diffout + np.maximum(
+        reflected - reflected_incident, reflected_linecont
+    )
+
+    # line contribution leaving both faces
+    linecont = outlin + reflected_linecont
+
+    # nebular continuum is the total nebular emission (nebular)
+    # minus the line contribution (linecont)
+    nebular_continuum = nebular - linecont
 
     # --- frequency
     lam = lam[::-1]  # reverse array
     lam_m = lam * 1e-10  # m
     nu = c.value / (lam_m)
 
-    """
-    nebular continuum is the total nebular emission (nebular)
-    minus the line continuum (linecont)
-    """
-    nebular_continuum = nebular - linecont
-
     spec_dict = {"lam": lam, "nu": nu}
 
-    for spec_type in [
-        "incident",
-        "transmitted",
-        "nebular",
-        "nebular_continuum",
-        "total",
-        "linecont",
+    for spec_type, sed in [
+        ("incident", incident),
+        ("transmitted", transmitted),
+        ("nebular", nebular),
+        ("nebular_continuum", nebular_continuum),
+        ("total", total),
+        ("linecont", linecont),
+        ("reflected", reflected),
+        ("reflected_linecont", reflected_linecont),
+        ("reflected_incident", reflected_incident),
     ]:
-        sed = locals()[spec_type]
         sed = sed[::-1]  # reverse array
-        sed /= 10**7  # convert from W to erg
-        sed /= nu  # convert from nu l_nu to l_nu
+        sed = sed / 10**7  # convert from W to erg
+        sed = sed / nu  # convert from nu l_nu to l_nu
         spec_dict[spec_type] = sed
 
     if return_dict:
@@ -611,10 +748,11 @@ def read_continuum(filename, return_dict=False):
         return (
             lam,
             nu,
-            incident,
-            transmitted,
-            nebular,
-            nebular_continuum,
-            total,
-            linecont,
+            spec_dict["incident"],
+            spec_dict["transmitted"],
+            spec_dict["nebular"],
+            spec_dict["nebular_continuum"],
+            spec_dict["total"],
+            spec_dict["linecont"],
+            spec_dict["reflected_incident"],
         )

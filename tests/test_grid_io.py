@@ -1,7 +1,7 @@
 import h5py
 import numpy as np
 import pytest
-from unyt import Angstrom, Hz, erg, s, unyt_array, yr
+from unyt import Angstrom, Hz, Lsun, erg, s, unyt_array, yr
 
 from syncretize.grid_io import GridFile
 
@@ -121,6 +121,10 @@ def test_write_lines_creates_expected_datasets(simple_grid):
     with h5py.File(simple_grid["path"], "r") as hdf:
         assert hdf["lines"]["wavelength"].shape == (n_lines,)
         assert hdf["lines"]["luminosity"].shape == base_shape
+        assert hdf["lines"]["luminosity"].attrs["Units"] == "Lsun"
+        np.testing.assert_allclose(
+            hdf["lines"]["luminosity"][...], (1.0 * erg / s).to_value(Lsun)
+        )
         assert hdf["lines"]["continuum"].shape == base_shape
         assert list(map(_decode_attr, hdf["lines"]["id"][...])) == [
             "Hbeta",
