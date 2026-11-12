@@ -564,7 +564,9 @@ class GridFile:
                 and ids. Grid-shaped arrays must follow root axis order and use
                 line ID as their final dimension. Reprocessed grids should also
                 include ``nebular_continuum`` and ``transmitted`` for current
-                Synthesizer line loading.
+                Synthesizer line loading. An optional
+                ``luminosity_intrinsic`` entry (intrinsic line luminosities)
+                is written to ``lines/luminosity_intrinsic``.
             weight (str)
                 Retained for compatibility; currently has no effect.
         """
@@ -592,11 +594,26 @@ class GridFile:
             log_on_read=False,
         )
 
+        # Write out the intrinsic line luminosity array if provided
+        if "luminosity_intrinsic" in lines:
+            self.write_dataset(
+                "lines/luminosity_intrinsic",
+                lines["luminosity_intrinsic"],
+                "Intrinsic line luminosity (before radiative transfer "
+                "through the cloud)",
+                log_on_read=False,
+            )
+
         # If there are additional entries assume these are continuum
         # luminosities and save.
         if len(lines.keys()) > 3:
             for key, array in lines.items():
-                if key not in ["luminosity", "wavelength", "id"]:
+                if key not in [
+                    "luminosity",
+                    "luminosity_intrinsic",
+                    "wavelength",
+                    "id",
+                ]:
                     print(key)
                     self.write_dataset(
                         f"lines/{key}",
