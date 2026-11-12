@@ -16,6 +16,8 @@ from synthesizer.photoionisation import calculate_Q_from_U
 from synthesizer.synth_warnings import warn
 from unyt import angstrom, c, cm, h, s, unyt_array
 
+from syncretize.photoionisation import edge_is_resolved
+
 
 class ShapeCommands:
     """A class for holding different cloudy shape commands.
@@ -51,6 +53,17 @@ class ShapeCommands:
         # convert to a unyt_array
         if not isinstance(lam, unyt_array):
             lam *= angstrom
+
+        # Cloudy smears any ionisation edge the input doesn't sample closely,
+        # which biases the Q normalisation of the outputs (#151). A smooth
+        # SED has no edge to smear, so this is only a possible problem.
+        if not edge_is_resolved(lam.to("Angstrom").value):
+            warn(
+                "The input SED has no wavelength points within 1 Angstrom of "
+                "the HI ionisation edge. If it has an edge there, cloudy will "
+                "smear it; regenerate the incident grid with sharp edges "
+                "(see syncretize#151)."
+            )
 
         # define frequency
         nu = c / lam

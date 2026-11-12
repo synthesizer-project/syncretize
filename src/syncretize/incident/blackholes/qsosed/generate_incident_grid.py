@@ -15,6 +15,7 @@ installed.
 import sys
 
 import numpy as np
+from synthesizer.utils.integrate import trapezoid
 from unyt import Angstrom, Hz, Msun, c, dimensionless, erg, s
 
 from syncretize.grid_io import GridFile
@@ -163,7 +164,7 @@ if __name__ == "__main__":
                 axes_values["accretion_rates_eddington"]
             ):
                 # determine the boloe
-                bolometric_luminosity = -np.trapezoid(spec[i1, i2], nu_hz)
+                bolometric_luminosity = -trapezoid(spec[i1, i2], nu_hz)
                 spec[i1, i2] /= bolometric_luminosity
 
     # Otherwise identify the index correspinding and divide all by this
@@ -177,7 +178,7 @@ if __name__ == "__main__":
                 axes_values["accretion_rates_eddington"]
             ):
                 # Determine the bolometric luminosity
-                bolometric_luminosity = -np.trapz(
+                bolometric_luminosity = -trapezoid(
                     spec[i1, i2, isotropic_index], nu_hz
                 )
 
