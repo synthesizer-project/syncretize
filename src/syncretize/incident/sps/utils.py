@@ -36,9 +36,9 @@ def get_model_filename(model, axis_name=None):
         )
         synthesizer_model_name += "-" + imf_slopes_label
 
-    # If alpha varies then say so
-    if model["alpha"] is not False:
-        synthesizer_model_name += f"_alpha{model['alpha']}"
+    # If alpha enhancement varies then say so
+    if model["alpha_enhancement"] is not False:
+        synthesizer_model_name += f"_alpha{model['alpha_enhancement']}"
 
     # Higher-dimensional axes extend the canonical SPS/IMF name.
     if axis_name is not None:

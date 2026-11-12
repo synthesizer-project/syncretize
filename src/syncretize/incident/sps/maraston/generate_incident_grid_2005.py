@@ -135,7 +135,7 @@ if __name__ == "__main__":
     model = {
         "sps_name": sps_name,
         "sps_version": False,
-        "alpha": False,
+        "alpha_enhancement": False,
     }
 
     # append sps_name to input_dir to define where to store downloaded input
