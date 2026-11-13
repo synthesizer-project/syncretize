@@ -1,0 +1,65 @@
+
+# Default config file for NLR models. 
+
+# CLOUDY VERSION
+cloudy_version: c23.00
+
+# INCIDENT SPECTRA
+# Computed directly from the model at each Sobol sample (no incident grid).
+# Remove this block to interpolate from --incident-grid instead.
+incident:
+  model: relagn
+  params:
+    masses: [1.0e+6, 1.0e+10, 'log']  # black hole mass [Msun]
+    accretion_rates_eddington: [0.001, 200.0, 'log']  # Eddington ratio (RELAGN invalid below 1e-3)
+    spins: [0.0, 0.998, 'linear']  # black hole spin (scalar to fix)
+    cosine_inclinations: [0.09, 0.98, 'linear']  # cosine of the inclination (RELAGN Lbol spikes above ~0.98)
+
+# ABUNDANCE PATTERN AND DEPLETION
+metallicities: [0.0003, 0.03, 'log']
+# ABUNDANCE PATTERN AND DEPLETION
+reference_abundance: GalacticConcordance # the reference abundance pattern to assume
+alpha_enhancement: 0.0  # alpha element enhancement
+# abundance_scalings:
+#   nitrogen_to_oxygen: [-2.0, -0.5, 'linear'] # scaling for Nitrogen, either float relative to Solar or string defining the in-built function to use
+#   carbon_to_oxygen: [-1.5, 0.0, 'linear'] # scaling for Carbon, either float relative to Solar or string defining the in-built function to use
+
+# GRAINS
+# grains: Orion # include ISM grains
+
+depletion_model: None # Jenkins2009_Gunasekera2021 # the depletion model.
+# depletion_scale: 0.5 # [0.0, 1.0, 'linear'] # the depletion scale factor. For linearly scaled depletion models (e.g. CloudyClassic, Gutkin2016) this is by default 1.0. For Jenkins2009 this should be 0.5 (fstar).
+
+# GEOMETRY
+geometry: planeparallel
+
+# IONISATION PARAMETER 
+ionisation_parameter_model: fixed  # which ionisation parameter model to use. `ref` assumes a varying ionisation parameter at a fixed reference age and metallicity
+ionisation_parameter: [0.0001, 0.1, 'log']  # value of ionisation 
+# DENSITY
+hydrogen_density: [1.0e+1, 1.0e+6, 'log']  # hydrogen density
+
+# STOPPING CRITERIA
+stop_T: 500  # stopping temperature
+stop_efrac: -2  # limiting ratio of electron to H densities
+
+# MISC COMMANDS
+CMB: false  # include CMB heating
+T_floor: 100  # lower gas temperature floor
+cosmic_rays: true  # flag for inclusion of cosmic ray heating
+# covering_factor: 1.0  #
+turbulence: 100 # turbulence
+z: 0.0  # redshift
+
+# OUTPUT COMMANDS
+resolution: 1.0 # energy resolution relative to the default
+output_cont: true
+output_linelist: linelist-standard.dat
+iterate_to_convergence: true
+
+
+
+
+
+
+

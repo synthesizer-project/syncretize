@@ -1,16 +1,20 @@
 """
-Collect Cloudy output continuum spectra from Sobol-sampled models and add
-to the HDF5 grid created by create_cloudy_input_sobol.py.
+Collect Cloudy outputs from Sobol-sampled models and add them to the HDF5 grid
+created by create_cloudy_input_sobol.py.
 
-Reads the raw cloudy ``.cont`` files from the ``cont/`` subdirectory (one per
-sample, named ``{index}.cont``) using synthesizer's ``read_continuum`` reader,
-which fixes the column mapping, wavelength ordering and units to match the
-stored incident spectra.
+Reads, for each sample, the raw cloudy files kept in the ``cont/`` subdirectory
+by the submission script:
+  - ``{index}.cont``: continuum spectra, read with synthesizer's
+    ``read_continuum`` (column mapping, wavelength ordering and units);
+  - ``{index}.refl`` (open geometries): reflected continuum, used by
+    ``read_continuum`` to separate the reflected incident light;
+  - ``{index}.emergent_elin`` (and optionally ``.intrinsic_elin``): line
+    luminosities for the line list given by ``output_linelist``.
 
 Usage:
     python collect_sobol_outputs.py --output-dir /path/to/cloudy_output_dir
     python collect_sobol_outputs.py --output-dir /path/to/dir \
-        --spec-names nebular linecont
+        --spec-names nebular linecont --no-lines
 """
 
 import argparse
@@ -30,28 +34,96 @@ AVAILABLE_SPECTRA = (
     "nebular_continuum",
     "total",
     "linecont",
+    "reflected",
+    "reflected_linecont",
+    "reflected_incident",
 )
 
-# Base spectra to store; total and nebular_continuum are derived from these
-# within synthesizer and so are not saved by default.
+# Base spectra to store (as in create_synthesizer_grid.SPEC_NAMES); total and
+# nebular_continuum are derived from these within synthesizer
+# (total = transmitted + nebular + reflected_incident) and so are not saved by
+# default.
 DEFAULT_SPECTRA = (
     "incident",
     "transmitted",
     "nebular",
     "linecont",
+    "reflected_incident",
 )
+
+# Continuum values stored at each line wavelength (as in synthesizer grids)
+LINE_CONTINUA = (
+    "incident",
+    "transmitted",
+    "nebular_continuum",
+    "total_continuum",
+)
+
+H_PLANCK = 6.62607015e-27  # erg s
+C_AA = 2.99792458e18  # A/s
+LAM_HI = 911.76  # A, H ionisation edge
+
+
+def ionising_rate(lam, lnu):
+    """Q(H) [1/s] of L_nu [erg/s/Hz] on ascending wavelengths lam [A]."""
+    m = lam <= LAM_HI
+    nu = C_AA / lam[m]
+    return np.abs(np.trapezoid(lnu[..., m] / (H_PLANCK * nu), nu, axis=-1))
+
+
+def read_elin(path):
+    """Read a Cloudy `save line list ... column` file.
+
+    Returns the line ids (single-spaced) and luminosities, scaled like
+    synthesizer's cloudy.read_linelist (divided by 1e7) so that they are
+    consistent with read_continuum.
+    """
+    ids, lums = [], []
+    with open(path) as f:
+        for row in f:
+            parts = row.rstrip("\n").split("\t")
+            if len(parts) != 2:
+                continue
+            try:
+                lum = float(parts[1])
+            except ValueError:  # header row
+                continue
+            ids.append(" ".join(parts[0].split()))
+            lums.append(lum)
+    return ids, np.array(lums) / 1e7
+
+
+def _write(group, key, data, units, description, **dset_kw):
+    """Create dataset with synthesizer's attributes, replacing any old one."""
+    if key in group:
+        del group[key]
+    d = group.create_dataset(key, data=data, **dset_kw)
+    d.attrs["Units"] = units
+    d.attrs["Description"] = description
+    d.attrs["log_on_read"] = False
+    return d
 
 
 def collect_sobol_outputs(
-    output_dir, output_file=None, spec_names=DEFAULT_SPECTRA
+    output_dir,
+    output_file=None,
+    spec_names=DEFAULT_SPECTRA,
+    lines=True,
+    intrinsic=False,
+    normalise=True,
+    block=100,
 ):
     """
-    Collect all Sobol output spectra into the parameter HDF5.
+    Collect all Sobol output spectra (and lines) into the parameter HDF5.
 
     Args:
         output_dir (str): Path to Cloudy output directory
         output_file (str): Output HDF5 filename (optional)
         spec_names (tuple): Spectra to save (any of AVAILABLE_SPECTRA).
+        lines (bool): Also collect the line luminosities (.emergent_elin).
+        intrinsic (bool): Also store the intrinsic line luminosities.
+        normalise (bool): Normalise by the incident ionising photon rate.
+        block (int): Samples read before each write to the HDF5 file.
     """
     output_dir = Path(output_dir)
 
@@ -84,16 +156,32 @@ def collect_sobol_outputs(
 
     cloudy = get_cloudy_module(grid_params["cloudy_version"])
 
-    # Read n_samples from existing HDF5 file
+    # Read n_samples and the stored incident spectra (for the normalisation)
     with h5py.File(output_file, "r") as hf:
         n_samples = int(hf.attrs["n_samples"])
+        has_incident = "incident_lnu" in hf and "incident_lam" in hf
+        if normalise and has_incident:
+            inc_lam = hf["incident_lam"][:]
+            order = np.argsort(inc_lam)
+            inc_lam = inc_lam[order]
+            q_ref = np.concatenate(
+                [
+                    ionising_rate(
+                        inc_lam, hf["incident_lnu"][s : s + 1000][:, order]
+                    )
+                    for s in range(0, n_samples, 1000)
+                ]
+            )
+    if normalise and not has_incident:
+        print("No incident_lnu in the grid file: spectra are not normalised")
+        normalise = False
 
     print(f"Collecting {n_samples} Sobol samples from {output_dir}")
     print(f"Cloudy version: {grid_params['cloudy_version']}")
     print(f"Spectra to save: {spec_names}")
 
-    # The submission script saves the raw cloudy continuum for each sample as
-    # cont/{index}.cont (synthesizer's read_continuum appends the .cont).
+    # The submission script saves the raw cloudy files for each sample as
+    # cont/{index}.<ext> (synthesizer's read_continuum appends the .cont).
     cont_dir = output_dir / "cont"
     available = sorted(cont_dir.glob("*.cont"))
     if not available:
@@ -105,102 +193,231 @@ def collect_sobol_outputs(
     n_lambda = len(lam)
     print(f"Wavelength grid size: {n_lambda}")
 
-    # Initialise arrays for requested spectra
-    spectra = {
-        spec_name: np.zeros((n_samples, n_lambda)) for spec_name in spec_names
-    }
-
-    # Collect spectra, recording any samples we cannot use
-    missing = []  # no .cont file (failed/never-run cloudy model)
-    bad = []  # .cont present but unreadable / wrong wavelength length
-    for i in range(n_samples):
-        cont_prefix = cont_dir / str(i)
-        if not cont_prefix.with_suffix(".cont").exists():
-            missing.append(i)
-            continue
-
-        try:
-            spec_dict = cloudy.read_continuum(
-                str(cont_prefix), return_dict=True
-            )
-        except Exception as exc:  # noqa: BLE001 - want to skip any bad file
-            print(f"Warning: could not read sample {i}: {exc}")
-            bad.append(i)
-            continue
-
-        # Reject samples whose wavelength grid differs from the reference in
-        # either length or values; a same-length but shifted grid would
-        # otherwise be silently mis-aligned in the stacked arrays.
-        if len(spec_dict["lam"]) != n_lambda or not np.allclose(
-            spec_dict["lam"], lam
-        ):
-            print(
-                f"Warning: sample {i} wavelength grid does not match the "
-                "reference grid; skipping"
-            )
-            bad.append(i)
-            continue
-
-        for spec_name in spec_names:
-            spectra[spec_name][i, :] = spec_dict[spec_name]
-
-    # Build boolean mask: True only for samples with usable spectra. Both
-    # missing files and unreadable/mismatched files are excluded so all-zero
-    # rows never leak into downstream training as "valid".
-    invalid = sorted(set(missing) | set(bad))
-    valid_samples = np.ones(n_samples, dtype=bool)
-    valid_samples[invalid] = False
-    n_valid = int(valid_samples.sum())
-
-    if missing:
-        print(
-            f"\n{len(missing)} missing .cont files (failed/absent runs): "
-            f"{missing[:10]}{'...' if len(missing) > 10 else ''}"
+    # Reference line list from the first sample that has one
+    line_exts = ["emergent_elin"] + (["intrinsic_elin"] if intrinsic else [])
+    if lines:
+        elins = sorted(cont_dir.glob("*.emergent_elin"))
+        if not elins:
+            print("No .emergent_elin files in cont/: lines are not collected")
+            lines = False
+    if lines:
+        line_ids, _ = read_elin(elins[0])
+        line_lam = np.array(
+            [
+                cloudy.convert_cloudy_wavelength(i.split(" ")[-1])
+                for i in line_ids
+            ]
         )
-    if bad:
-        print(
-            f"{len(bad)} unreadable/inconsistent .cont files: "
-            f"{bad[:10]}{'...' if len(bad) > 10 else ''}"
-        )
-    print(f"\nValid samples: {n_valid}/{n_samples} ({len(invalid)} excluded)")
+        line_order = np.argsort(line_lam, kind="stable")
+        n_lines = len(line_ids)
+        print(f"Lines: {n_lines} (from {elins[0].name})")
 
-    print(f"\nAdding spectra to {output_file}")
-
-    # Append spectra to existing HDF5 file
-    # (parameters already saved by create_cloudy_input_sobol.py)
+    # Create the output datasets up front and fill them block by block
+    missing, bad = [], []
+    valid_samples = np.zeros(n_samples, dtype=bool)
+    norm_all = np.ones(n_samples)
+    spec_units = "erg/(Hz*s)" if normalise else "Cloudy units / 1e7"
     with h5py.File(output_file, "a") as hf:
-        # Create spectra group if it doesn't exist
-        if "spectra" not in hf:
-            spectra_group = hf.create_group("spectra")
-        else:
-            spectra_group = hf["spectra"]
-
-        # Save requested spectra (allow re-running by overwriting)
+        sg = hf.require_group("spectra")
+        rows = min(block, n_samples)
         for spec_name in spec_names:
-            if spec_name in spectra_group:
-                del spectra_group[spec_name]
-            spectra_group.create_dataset(
-                spec_name, data=spectra[spec_name], compression="gzip"
+            _write(
+                sg,
+                spec_name,
+                None,
+                spec_units,
+                f"{spec_name} spectrum",
+                shape=(n_samples, n_lambda),
+                dtype="f8",
+                chunks=(rows, min(n_lambda, 16384)),
+                compression="gzip",
             )
+        if lines:
+            if "lines" in hf:
+                del hf["lines"]
+            lg = hf.create_group("lines")
+            _write(
+                lg,
+                "wavelength",
+                line_lam[line_order],
+                "Å",
+                "Wavelength of each emission line",
+            )
+            ids_sorted = np.array(line_ids, dtype=object)[line_order]
+            d = lg.create_dataset(
+                "id", data=ids_sorted, dtype=h5py.string_dtype()
+            )
+            d.attrs["Description"] = "Cloudy ID of each emission line"
+            lum_units = "erg/s" if normalise else "Cloudy units / 1e7"
+            cont_units = "erg/(Hz*s)" if normalise else "Cloudy units / 1e7"
+            line_dsets = {
+                "luminosity": (lum_units, "Line luminosity"),
+                **(
+                    {
+                        "intrinsic_luminosity": (
+                            lum_units,
+                            "Intrinsic line luminosity",
+                        )
+                    }
+                    if intrinsic
+                    else {}
+                ),
+                **{
+                    k: (cont_units, f"{' '.join(k.split('_'))} luminosity")
+                    for k in LINE_CONTINUA
+                },
+            }
+            for key, (units, desc) in line_dsets.items():
+                _write(
+                    lg,
+                    key,
+                    None,
+                    units,
+                    desc,
+                    shape=(n_samples, n_lines),
+                    dtype="f8",
+                    chunks=(rows, min(n_lines, 16384)),
+                    compression="gzip",
+                )
+
+        for start in range(0, n_samples, block):
+            stop = min(start + block, n_samples)
+            buf = {k: np.zeros((stop - start, n_lambda)) for k in spec_names}
+            if lines:
+                lbuf = {
+                    k: np.zeros((stop - start, n_lines)) for k in line_dsets
+                }
+            for j, i in enumerate(range(start, stop)):
+                cont_prefix = cont_dir / str(i)
+                if not cont_prefix.with_suffix(".cont").exists() or (
+                    lines
+                    and not all(
+                        (cont_dir / f"{i}.{e}").exists() for e in line_exts
+                    )
+                ):
+                    missing.append(i)
+                    continue
+
+                try:
+                    spec_dict = cloudy.read_continuum(
+                        str(cont_prefix), return_dict=True
+                    )
+                    if lines:
+                        elin = {
+                            e: read_elin(cont_dir / f"{i}.{e}")
+                            for e in line_exts
+                        }
+                except Exception as exc:  # noqa: BLE001 - skip any bad file
+                    print(f"Warning: could not read sample {i}: {exc}")
+                    bad.append(i)
+                    continue
+
+                # Reject samples whose wavelength grid differs from the
+                # reference in either length or values; a same-length but
+                # shifted grid would otherwise be silently mis-aligned.
+                if len(spec_dict["lam"]) != n_lambda or not np.allclose(
+                    spec_dict["lam"], lam
+                ):
+                    print(
+                        f"Warning: sample {i} wavelength grid does not match "
+                        "the reference grid; skipping"
+                    )
+                    bad.append(i)
+                    continue
+                if lines and any(ids != line_ids for ids, _ in elin.values()):
+                    print(f"Warning: sample {i} line list differs; skipping")
+                    bad.append(i)
+                    continue
+
+                norm = 1.0
+                if normalise:
+                    q_cloudy = ionising_rate(lam, spec_dict["incident"])
+                    norm = q_ref[i] / q_cloudy
+                norm_all[i] = norm
+                for spec_name in spec_names:
+                    buf[spec_name][j] = spec_dict[spec_name] * norm
+
+                if lines:
+                    lbuf["luminosity"][j] = (
+                        elin["emergent_elin"][1][line_order] * norm
+                    )
+                    if intrinsic:
+                        lbuf["intrinsic_luminosity"][j] = (
+                            elin["intrinsic_elin"][1][line_order] * norm
+                        )
+                    cont = {
+                        "incident": spec_dict["incident"],
+                        "transmitted": spec_dict["transmitted"],
+                        "nebular_continuum": spec_dict["nebular_continuum"],
+                    }
+                    # As in create_synthesizer_grid: the continuum seen
+                    # from both faces includes the reflected incident light
+                    cont["total_continuum"] = (
+                        cont["nebular_continuum"]
+                        + cont["transmitted"]
+                        + spec_dict["reflected_incident"]
+                    )
+                    for k in LINE_CONTINUA:
+                        lbuf[k][j] = (
+                            np.interp(line_lam[line_order], lam, cont[k])
+                            * norm
+                        )
+                valid_samples[i] = True
+
+            for spec_name in spec_names:
+                sg[spec_name][start:stop] = buf[spec_name]
+            if lines:
+                for k in line_dsets:
+                    lg[k][start:stop] = lbuf[k]
+            print(f"  {stop}/{n_samples} samples read", flush=True)
 
         # Save wavelength grid (Angstroms, ascending)
         if "wavelength" in hf:
             del hf["wavelength"]
         hf.create_dataset("wavelength", data=lam, compression="gzip")
 
-        # Save valid samples mask
+        # Valid samples mask: missing and unreadable/mismatched files are
+        # excluded so all-zero rows never leak into downstream training.
         if "valid_samples" in hf:
             del hf["valid_samples"]
         hf.create_dataset("valid_samples", data=valid_samples)
 
+        _write(
+            hf,
+            "normalisation",
+            norm_all,
+            "dimensionless",
+            "Q(H) of incident_lnu / Q(H) of the Cloudy incident spectrum"
+            if normalise
+            else "not normalised (unity)",
+        )
+
         # Update metadata
+        n_valid = int(valid_samples.sum())
         hf.attrs["n_wavelength"] = n_lambda
         hf.attrs["n_valid_samples"] = n_valid
         hf.attrs["spec_names"] = list(spec_names)
+        hf.attrs["normalised_by_q"] = normalise
+        hf.attrs["n_lines"] = n_lines if lines else 0
 
+    if missing:
+        print(
+            f"\n{len(missing)} samples with missing files (failed/absent "
+            "runs): "
+            f"{missing[:10]}{'...' if len(missing) > 10 else ''}"
+        )
+    if bad:
+        print(
+            f"{len(bad)} unreadable/inconsistent samples: "
+            f"{bad[:10]}{'...' if len(bad) > 10 else ''}"
+        )
     print(
-        f"Successfully added spectra ({', '.join(spec_names)}) "
-        f"to {output_file}"
+        f"\nValid samples: {n_valid}/{n_samples} ({n_samples - n_valid} "
+        "excluded)"
+    )
+    print(
+        f"Successfully added spectra ({', '.join(spec_names)})"
+        f"{f' and {n_lines} lines' if lines else ''} to {output_file}"
     )
 
 
@@ -233,11 +450,38 @@ if __name__ == "__main__":
         default=list(DEFAULT_SPECTRA),
         choices=list(AVAILABLE_SPECTRA),
         help="Spectra to save (default: incident transmitted nebular "
-        "linecont).",
+        "linecont reflected_incident).",
+    )
+    parser.add_argument(
+        "--no-lines",
+        action="store_true",
+        help="Do not collect line luminosities (.emergent_elin).",
+    )
+    parser.add_argument(
+        "--intrinsic",
+        action="store_true",
+        help="Also store intrinsic line luminosities (.intrinsic_elin).",
+    )
+    parser.add_argument(
+        "--no-normalise",
+        action="store_true",
+        help="Keep raw Cloudy values instead of normalising by Q(H).",
+    )
+    parser.add_argument(
+        "--block",
+        type=int,
+        default=100,
+        help="Samples read between writes (memory ~ block x n_wavelength).",
     )
 
     args = parser.parse_args()
 
     collect_sobol_outputs(
-        args.output_dir, args.output_file, spec_names=tuple(args.spec_names)
+        args.output_dir,
+        args.output_file,
+        spec_names=tuple(args.spec_names),
+        lines=not args.no_lines,
+        intrinsic=args.intrinsic,
+        normalise=not args.no_normalise,
+        block=args.block,
     )

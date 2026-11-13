@@ -1,0 +1,15 @@
+# Outputs of the reference cloudy runs and full_linelist.py (see README.md)
+*.sed
+*.out
+*.ovr
+*.abundances
+*.cont
+*.lines
+*.labels
+*.emergent_elin
+linelist-unfiltered.dat
+linelist-standard1.dat
+linelist-vacuum1.dat
+
+# Outputs of full_linelist.py (see README.md)
+full_linelist/exclude-*.txt
