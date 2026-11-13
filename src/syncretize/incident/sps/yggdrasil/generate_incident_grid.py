@@ -267,7 +267,7 @@ if __name__ == "__main__":
     # The population (file version), its IMF and the gas covering fraction
     populations = {
         "PopIII.1": (".1", "salpeter", [50, 500]),
-        "PopIII.2": (".2", "salpeter", [10, 1, 500]),
+        "PopIII.2": (".2", "lognormal", [10, 1, 500]),
         "PopIII_kroupa": ("_kroupa_IMF", "kroupa", [0.1, 100]),
     }
     population = get_choice(params, "population", populations)

@@ -158,9 +158,6 @@ if __name__ == "__main__":
     elif max_age:
         ages = original_grid.ages[original_grid.ages <= max_age]
 
-    else:
-        raise ValueError("No reduction for any axis specified")
-
     if new_metallicities:
         metallicities = np.array(
             new_metallicities,
@@ -172,6 +169,9 @@ if __name__ == "__main__":
     # but it's possible
     if max_age:
         ages = ages[ages <= max_age]
+
+    if ages is None and metallicities is None:
+        raise ValueError("No reduction for any axis specified")
 
     # Collect which axes we are modifying
     axes = {}

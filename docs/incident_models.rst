@@ -240,5 +240,5 @@ Cloudy runs, not a separate physical model.
 
 The parameter file names the ``original_grid`` in ``--grid-dir`` and the
 ``ages`` (yr), ``max_age`` (yr), and/or ``metallicities`` to keep. Write
-values in exponent form with a decimal point (``1.0e6``, not ``1e6``) or YAML
-reads them as strings.
+exponents with a decimal point and a sign (``1.0e+6``, not ``1e6`` or
+``1.0e6``) or YAML reads them as strings.
