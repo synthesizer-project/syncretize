@@ -1,0 +1,9 @@
+# Use with --cloudy-paramfile-extra on c25.00-popIII-enriched: gas enriched by
+# faint (fallback) Pop III supernovae, which eject carbon but little of the
+# heavier elements, as inferred from carbon enhanced metal poor (CEMP-no)
+# stars. Element scalings can't be combined with an alpha enhancement, so
+# that is turned off.
+alpha_enhancement: 0.0
+abundance_scalings:
+  carbon_to_oxygen: 0.3  # log10(C/O), about 4 times solar
+  nitrogen_to_oxygen: -1.5  # log10(N/O), the primary nitrogen plateau

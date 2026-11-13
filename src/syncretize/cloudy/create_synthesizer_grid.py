@@ -54,6 +54,7 @@ axes_units = {
     "ionisation_parameter": dimensionless,
     "ages": yr,
     "metallicities": dimensionless,
+    "gas_metallicity": dimensionless,
     "hydrogen_density": cm ** (-3),
     "stop_column_density": dimensionless,
     "alpha_enhancement": dimensionless,
@@ -68,6 +69,7 @@ log_on_read_dict = {
     "depletion_scale": False,
     "z": False,
     "ionisation_parameter": True,
+    "gas_metallicity": True,
     "hydrogen_density": True,
     "stop_column_density": False,
     "alpha_enhancement": False,
@@ -78,6 +80,7 @@ log_on_read_dict = {
 pluralisation_of_axes = {
     "z": "redshifts",
     "metallicities": "metallicities",
+    "gas_metallicity": "gas_metallicities",
     "ionisation_parameter": "ionisation_parameters",
     "turbulence": "turbulences",
     "hydrogen_density": "hydrogen_densities",

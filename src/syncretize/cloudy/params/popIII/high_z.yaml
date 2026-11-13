@@ -1,0 +1,5 @@
+# Use with --cloudy-paramfile-extra on the c25.00-popIII-* files: include the
+# CMB at the redshifts Pop III stars are expected at. Compton cooling off the
+# CMB scales as (1+z)^4 and matters most for the hot, metal free gas.
+CMB: true
+z: 10.0

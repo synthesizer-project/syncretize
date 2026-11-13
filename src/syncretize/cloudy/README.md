@@ -35,9 +35,30 @@ An integral part of this process are the provision of a parameter file(s) which 
 
 It is possible to provide two parameter files, for example a default set of parameters and then a file containing a limited set of parameters to be changed. This approach is used to build a *photoionisation test suite*; this is a series of parameter files used to generate grids where we systematically vary a photoionisation parameter (e.g. the hydrogen density or ionisation parameter) or flag. 
 
+##### Gas metallicity
+
+By default the gas has the metallicity of the incident grid point. Setting `gas_metallicity` (a metal mass fraction) in the parameter file decouples the two; like any other parameter it can be a list, which adds a `gas_metallicities` axis to the reprocessed grid. A `gas_metallicity` of zero (or a metal free incident grid point with no `gas_metallicity`) gives primordial gas: every metal is turned off in `cloudy`, so `depletion_model` and `grains` must be empty and the line list must only hold hydrogen and helium lines (`linelist-primordial.dat`), since `cloudy` stops on lines of elements that are off.
+
+##### Pop III stars
+
+`c25.00-popIII-primordial` and `c25.00-popIII-enriched` reprocess Pop III incident grids (e.g. the pure stellar grids of the three Yggdrasil populations, made with `incident/sps/yggdrasil/generate_incident_grid.py`) through metal free gas and through marginally enriched gas (10^-4 to 10^-2 Zsun, alpha enhanced) respectively, over a range of ionisation parameters and densities. `popIII/carbon_enhanced` and `popIII/high_z` can be added with `--cloudy-paramfile-extra` to use a carbon rich abundance pattern or include the CMB at z = 10:
+
+```
+python create_cloudy_input_grid.py \
+    --incident-grid=yggdrasil-1.3.3-PopIII_salpeter-50,500 \
+    --grid-dir=/path/to/grids \
+    --cloudy-output-dir=/path/to/cloudy/outputs \
+    --cloudy-paramfile=c25.00-popIII-enriched \
+    --cloudy-paramfile-extra=popIII/carbon_enhanced \
+    --machine=cosma7 \
+    --cloudy-executable-path=/cosma/local/cloudy/c25/bin
+```
+
 ##### Machines
 
 If `--machine` is specified, and it is one that is recognised (e.g. Sussex's artemis system), then a job submission script will be produced. The will be an array job with each job being a single incident grid point, i.e. each jobs runs all the photoionisation models. In most cases this will be a handful of models, but for comprehensive grids this could be hundreds or even thousands of cloudy models that will take sometime to run.
+
+For `--machine=cosma7` the script is instead written to the grid's `cloudy` output directory (`cosma7.slurm`) and runs `cloudy` itself, so the next step is just `sbatch cosma7.slurm`. `--cloudy-executable-path` is then the directory holding `cloudy.exe`, with `cloudy`'s `data` directory alongside it. Each array task fills a node with the models of several incident grid points and skips any that have already finished, so resubmitting the script reruns only the models that failed or timed out.
 
 ### Run `cloudy`
 
