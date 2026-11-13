@@ -14,7 +14,8 @@ arguments say where to read and write files::
 ``--input-dir``, and those that can fetch their source data accept
 ``--download``. Every script has an example parameter file whose comments
 list the allowed values of each parameter; copy it to make other variants.
-Scripts reject values that aren't allowed. The parameter file is stored in the
+Scripts reject values that aren't allowed. :doc:`parameter_files` describes
+the formats. The parameter file is stored in the
 grid's ``ParameterFile`` group (see :doc:`grid_format`), so every grid records
 how it was made.
 
