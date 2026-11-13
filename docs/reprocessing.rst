@@ -175,10 +175,11 @@ Failures
 --------
 
 A model succeeded if its ``.out`` file ends with ``Cloudy exited OK`` and it
-wrote a sufficiently large ``.emergent_elin`` file. Failed models are marked
+wrote sufficiently large ``.emergent_elin`` and ``.cont`` files (the
+continuum is always needed to normalise the lines). Failed models are marked
 ``1`` in the ``failures`` dataset and their cells remain zero. The collector
 prints why each failed (not run, aborted, did not converge, did not finish)
-and writes the failed index pairs to
+and writes the failed index pairs, one per row, to
 ``<cloudy-output-dir>/<grid-name>/<grid-name>.failures`` for resubmission.
 
 Do not publish a grid without checking this mask. A completed HDF5 write does
@@ -217,3 +218,6 @@ Specialised paths
 ``create_cloudy_input_sobol.py`` samples incident and photoionisation
 parameters jointly for emulator or training-data generation. Its intermediate
 and collected HDF5 files are not standard Synthesizer grids.
+Job scripts (``--machine``) are only generated for ``cosma7``;
+``--cloudy-executable-path`` has the same meaning as for the regular grid
+path.

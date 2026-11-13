@@ -2,7 +2,7 @@
 # Default config file for NLR models. 
 
 # CLOUDY VERSION
-cloudy_version: c23.00
+cloudy_version: c25.00
 
 # INCIDENT SPECTRA
 # Computed directly from the model at each Sobol sample (no incident grid).

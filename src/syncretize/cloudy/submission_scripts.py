@@ -219,182 +219,12 @@ def artemis(
     print(f"Wrote {script_filename}")
 
 
-def cosma7_sobol(
-    new_grid_name,
-    n_samples,
-    cloudy_output_dir,
-    cloudy_executable_path,
-    account="dp276",
-    partition="cosma7",
-    time_per_model=15,
-    use_striding=True,
-    stride_step=1000,
-    mail_user=None,
-):
-    """
-    Create a COSMA7 SLURM job script for running Sobol-sampled Cloudy models.
-
-    Args:
-        new_grid_name (str): Name of the grid
-        n_samples (int): Total number of Sobol samples
-        cloudy_output_dir (str): Base directory containing grid outputs
-        cloudy_executable_path (str): Path to cloudy executable directory
-        account (str): SLURM account (default: dp276)
-        partition (str): SLURM partition (default: cosma7)
-        time_per_model (int): Time per model in minutes (default: 15)
-        use_striding (bool): Use strided array jobs (default: True)
-        stride_step (int): Stride step for array jobs (default: 1000)
-        mail_user (str): Email for notifications (optional)
-    """
-
-    from pathlib import Path
-
-    # Resolve to an absolute path so the generated script's repeated `cd`s and
-    # $GRID_DIR expansions are not sensitive to the job's working directory.
-    grid_dir = str(Path(cloudy_output_dir, new_grid_name).resolve())
-
-    # Determine if striding is needed based on n_samples vs stride_step
-    use_striding_actual = use_striding and n_samples > stride_step
-
-    # Determine array job configuration and models per job
-    if use_striding_actual:
-        n_array_jobs = min(stride_step, n_samples)
-        array_range = f"0-{n_array_jobs - 1}"
-        # Each array job handles every stride_step-th model
-        models_per_job = (
-            n_samples + stride_step - 1
-        ) // stride_step  # Ceiling division
-    else:
-        array_range = f"0-{n_samples - 1}"
-        models_per_job = 1
-
-    # Calculate walltime based on models per job
-    # Add 20% buffer for overhead
-    total_minutes = int(models_per_job * time_per_model * 1.2)
-    hours = total_minutes // 60
-    minutes = total_minutes % 60
-    walltime = f"{hours:02d}:{minutes:02d}:00"
-
-    print(f"Models per array job: {models_per_job}")
-    print(f"Time per model: {time_per_model} minutes")
-    print(f"Calculated walltime: {walltime}")
-
-    # Build mail directives
-    mail_directives = ""
-    if mail_user:
-        mail_directives = f"""#SBATCH --mail-type=ALL
-#SBATCH --mail-user={mail_user}"""
-
-    # Build the script
-    script_lines = [
-        "#!/bin/bash",
-        f"#SBATCH --job-name={new_grid_name[:16]}  # Truncated to 16 chars",
-        f"#SBATCH --array={array_range}",
-        f"#SBATCH -p {partition}",
-        f"#SBATCH -A {account}",
-        "#SBATCH --ntasks=1",
-        "#SBATCH --cpus-per-task=1",
-        f"#SBATCH -t {walltime}",
-        "#SBATCH --mem=4G",
-    ]
-
-    if mail_directives:
-        script_lines.append(mail_directives)
-
-    script_lines.extend(
-        [
-            "#SBATCH --output=./logs/log%A_%a.out",
-            "#SBATCH --error=./logs/log%A_%a.err",
-            "",
-            "mkdir -p logs",
-            "",
-            f"# Grid: {new_grid_name}",
-            f"TOTAL_SAMPLES={n_samples}",
-            f'GRID_DIR="{grid_dir}"',
-            f'CLOUDY_EXE="{cloudy_executable_path}/cloudy.exe"',
-            "",
-            "task_id=${SLURM_ARRAY_TASK_ID}",
-            "",
-        ]
-    )
-
-    if use_striding_actual:
-        script_lines.extend(
-            [
-                f"STEP={stride_step}",
-                "",
-                "# Process samples using striding pattern",
-                "for incident_idx in $(seq $task_id $STEP "
-                "$((TOTAL_SAMPLES - 1))); do",
-                '    sample_dir="$GRID_DIR/${incident_idx}"',
-                "",
-                '    if [ ! -d "$sample_dir" ]; then',
-                '        echo "Warning: Directory $sample_dir not found"',
-                "        continue",
-                "    fi",
-                "",
-                '    cd "$sample_dir"',
-                '    echo "Processing sample $incident_idx in $PWD"',
-                "",
-            ]
-        )
-    else:
-        script_lines.extend(
-            [
-                "incident_idx=$task_id",
-                'sample_dir="$GRID_DIR/${incident_idx}"',
-                "",
-                'if [ ! -d "$sample_dir" ]; then',
-                '    echo "Error: Directory $sample_dir not found"',
-                "    exit 1",
-                "fi",
-                "",
-                'cd "$sample_dir"',
-                'echo "Processing sample $incident_idx in $PWD"',
-                "",
-            ]
-        )
-
-    # Run Cloudy models sequentially
-    no_files_action = (
-        "        continue" if use_striding_actual else "        exit 1"
-    )
-    script_lines.extend(
-        [
-            "    # Run Cloudy models sequentially",
-            "    num_files=$(ls *.in 2>/dev/null | wc -l)",
-            "",
-            '    if [ "$num_files" -eq 0 ]; then',
-            '        echo "No .in files found in $sample_dir"',
-            no_files_action,
-            "    fi",
-            "",
-            "    for model_idx in $(seq 0 $((num_files - 1))); do",
-            '        echo "Running cloudy.exe -r $model_idx"',
-            "        $CLOUDY_EXE -r $model_idx",
-            "    done",
-        ]
-    )
-
-    if use_striding_actual:
-        script_lines.append("done")
-
-    slurm_job_script = "\n".join(script_lines) + "\n"
-
-    # Save job script
-    script_filename = f"{cloudy_output_dir}/{new_grid_name}/array.slurm"
-    with open(script_filename, "w") as f:
-        f.write(slurm_job_script)
-
-    print(f"Created SLURM job script: {script_filename}")
-    return script_filename
-
-
 def cosma7_sobol_onthefly(
     new_grid_name,
     n_samples,
     cloudy_output_dir,
     cloudy_executable_path,
+    cloudy_version,
     python_env=None,
     account="dp276",
     partition="cosma7",
@@ -423,6 +253,10 @@ def cosma7_sobol_onthefly(
     Each Cloudy run is capped at time_per_model minutes with `timeout`, so a
     stuck model frees its core instead of holding the node until walltime.
     Timed-out models leave no .cont and are rerun on resubmission.
+
+    As for run_cloudy, cloudy_executable_path is the directory holding the
+    version directories, i.e. the executable is
+    {cloudy_executable_path}/{cloudy_version}/source/cloudy.exe.
     """
     import math
     from pathlib import Path
@@ -430,6 +264,9 @@ def cosma7_sobol_onthefly(
     # Resolve to an absolute path so $GRID_DIR is stable regardless of the
     # job's working directory.
     grid_dir = str(Path(cloudy_output_dir, new_grid_name).resolve())
+
+    # SLURM needs the log directory to exist before the job starts
+    Path(grid_dir, "logs").mkdir(parents=True, exist_ok=True)
     use_striding_actual = use_striding and n_samples > stride_step
 
     if use_striding_actual:
@@ -477,14 +314,15 @@ def cosma7_sobol_onthefly(
 
     script_lines.extend(
         [
-            "#SBATCH --output=./logs/log%A_%a.out",
-            "#SBATCH --error=./logs/log%A_%a.err",
-            "",
-            "mkdir -p logs",
+            f"#SBATCH --output={grid_dir}/logs/log%A_%a.out",
+            f"#SBATCH --error={grid_dir}/logs/log%A_%a.err",
             "",
             f"TOTAL_SAMPLES={n_samples}",
             f'GRID_DIR="{grid_dir}"',
-            f'CLOUDY_EXE="{cloudy_executable_path}/cloudy.exe"',
+            f'CLOUDY_EXE="{cloudy_executable_path}/{cloudy_version}'
+            '/source/cloudy.exe"',
+            "export CLOUDY_DATA_PATH="
+            f'"{cloudy_executable_path}/{cloudy_version}/data/:./"',
             f"MODEL_TIMEOUT={time_per_model}m",
             f'SCRIPT_DIR="{script_dir}"',
             "",

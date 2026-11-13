@@ -260,6 +260,13 @@ if __name__ == "__main__":
     cloudy_executable_path = args.cloudy_executable_path
     by_photoionisation_grid_point = args.by_photoionisation_grid_point
 
+    # Script generation needs a Cloudy executable; fail fast at the CLI rather
+    # than emitting launchers that point at "None/cloudy.exe".
+    if machine and not cloudy_executable_path:
+        parser.error(
+            "--cloudy-executable-path is required when --machine is set"
+        )
+
     print(incident_grid_name)
     print(incident_grid_dir)
     print(cloudy_output_dir)

@@ -23,6 +23,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 import yaml
+from unyt import unyt_quantity
 
 from syncretize.cloudy.utils import get_cloudy_module
 
@@ -60,6 +61,9 @@ LINE_CONTINUA = (
 )
 
 H_PLANCK = 6.62607015e-27  # erg s
+
+# Normalised line luminosities are written in Lsun, as in GridFile.write_lines
+ERG_S_TO_LSUN = float(unyt_quantity(1, "erg/s").to("Lsun").value)
 C_AA = 2.99792458e18  # A/s
 LAM_HI = 911.76  # A, H ionisation edge
 
@@ -248,13 +252,13 @@ def collect_sobol_outputs(
                 "id", data=ids_sorted, dtype=h5py.string_dtype()
             )
             d.attrs["Description"] = "Cloudy ID of each emission line"
-            lum_units = "erg/s" if normalise else "Cloudy units / 1e7"
+            lum_units = "Lsun" if normalise else "Cloudy units / 1e7"
             cont_units = "erg/(Hz*s)" if normalise else "Cloudy units / 1e7"
             line_dsets = {
                 "luminosity": (lum_units, "Line luminosity"),
                 **(
                     {
-                        "intrinsic_luminosity": (
+                        "luminosity_intrinsic": (
                             lum_units,
                             "Intrinsic line luminosity",
                         )
@@ -330,20 +334,22 @@ def collect_sobol_outputs(
                     continue
 
                 norm = 1.0
+                line_norm = 1.0
                 if normalise:
                     q_cloudy = ionising_rate(lam, spec_dict["incident"])
                     norm = q_ref[i] / q_cloudy
+                    line_norm = norm * ERG_S_TO_LSUN
                 norm_all[i] = norm
                 for spec_name in spec_names:
                     buf[spec_name][j] = spec_dict[spec_name] * norm
 
                 if lines:
                     lbuf["luminosity"][j] = (
-                        elin["emergent_elin"][1][line_order] * norm
+                        elin["emergent_elin"][1][line_order] * line_norm
                     )
                     if intrinsic:
-                        lbuf["intrinsic_luminosity"][j] = (
-                            elin["intrinsic_elin"][1][line_order] * norm
+                        lbuf["luminosity_intrinsic"][j] = (
+                            elin["intrinsic_elin"][1][line_order] * line_norm
                         )
                     cont = {
                         "incident": spec_dict["incident"],

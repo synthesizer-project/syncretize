@@ -118,6 +118,7 @@ def test_write_lines_creates_expected_datasets(simple_grid):
         "wavelength": unyt_array([4861.0, 6563.0], Angstrom),
         "id": ["Hbeta", "Halpha"],
         "luminosity": unyt_array(np.ones(base_shape), erg / s),
+        "luminosity_intrinsic": unyt_array(np.ones(base_shape), erg / s),
         "continuum": unyt_array(np.full(base_shape, 2.0), erg / s),
     }
 
@@ -129,6 +130,11 @@ def test_write_lines_creates_expected_datasets(simple_grid):
         assert hdf["lines"]["luminosity"].attrs["Units"] == "Lsun"
         np.testing.assert_allclose(
             hdf["lines"]["luminosity"][...], (1.0 * erg / s).to_value(Lsun)
+        )
+        intrinsic = hdf["lines"]["luminosity_intrinsic"]
+        assert intrinsic.attrs["Units"] == "Lsun"
+        np.testing.assert_allclose(
+            intrinsic[...], (1.0 * erg / s).to_value(Lsun)
         )
         assert hdf["lines"]["continuum"].shape == base_shape
         assert list(map(_decode_attr, hdf["lines"]["id"][...])) == [

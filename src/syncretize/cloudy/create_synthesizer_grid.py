@@ -466,7 +466,7 @@ def check_cloudy_runs(
             f"{os.path.abspath(cloudy_dir)}/{new_grid_name}/"
             f"{new_grid_name}.failures"
         )
-        np.savetxt(failed_filename, np.array(failed_list).T, fmt="%d")
+        np.savetxt(failed_filename, np.array(failed_list), fmt="%d")
 
         # If a specific machine is specified run the function in
         # submission_scripts to generate a submission script.
@@ -520,6 +520,43 @@ REQUIRED_SPEC_NAMES = (
     "linecont",
     "reflected_incident",
 )
+
+
+def calculate_normalisation(new_grid, indices, lam, incident):
+    """
+    Return the factor that rescales a Cloudy run to the incident grid.
+
+    Cloudy outputs are normalised so the incident spectrum's ionising photon
+    rate matches the specific ionising luminosity stored in the new grid.
+
+    Args:
+        new_grid (GridFile)
+            The grid holding log10_specific_ionising_luminosity/HI.
+        indices (tuple)
+            The grid point of the run.
+        lam (np.ndarray)
+            The wavelength grid of the run in Angstrom.
+        incident (np.ndarray)
+            The incident spectrum of the run in erg/s/Hz.
+
+    Returns:
+        float
+            The normalisation.
+    """
+    sed = Sed(lam=lam * Angstrom, lnu=incident * erg / s / Hz)
+    ionising_photon_production_rate = (
+        sed.calculate_ionising_photon_production_rate(
+            ionisation_energy=13.6 * eV, limit=100
+        )
+    )
+
+    return 10 ** (
+        new_grid.read_dataset(
+            "log10_specific_ionising_luminosity/HI",
+            indices=indices,
+        )
+        - np.log10(ionising_photon_production_rate)
+    )
 
 
 def add_spectra(
@@ -678,27 +715,12 @@ def add_spectra(
                 # Calculate the specific ionising photon luminosity and use
                 # this to renormalise the spectrum.
                 if norm_by_q:
-                    # Create sed object
-                    sed = Sed(
-                        lam=lam * Angstrom,
-                        lnu=spec_dict["incident"] * erg / s / Hz,
-                    )
-
-                    # Calculate Q
-                    ionising_photon_production_rate = (
-                        sed.calculate_ionising_photon_production_rate(
-                            ionisation_energy=13.6 * eV, limit=100
+                    # Save normalisation for later use (rescaling lines)
+                    spectra["normalisation"][indices] = (
+                        calculate_normalisation(
+                            new_grid, indices, lam, spec_dict["incident"]
                         )
                     )
-
-                    # Calculate normalisation
-                    normalisation = new_grid.read_dataset(
-                        "log10_specific_ionising_luminosity/HI",
-                        indices=indices,
-                    ) - np.log10(ionising_photon_production_rate)
-
-                    # Save normalisation for later use (rescaling lines)
-                    spectra["normalisation"][indices] = 10**normalisation
 
                 # Save the normalised spectrum to the correct grid point
                 for spec_name in spec_names:
@@ -957,13 +979,23 @@ def add_lines(
                     # Record list of IDs
                     lines["id"] = ids
 
-                # If spectra have been calculated extract the normalisation ..
+                # If spectra have been calculated extract the normalisation,
+                # otherwise calculate it from the incident continuum. Cloudy's
+                # raw line luminosities are only meaningful once normalised.
                 if calculate_continuum:
                     normalisation = spectra["normalisation"][indices]
-
-                # Otherwise set the normalisation to unity
                 else:
-                    normalisation = 1.0
+                    # Only the incident spectrum is needed, so don't warn
+                    # about a missing .refl file
+                    spec_dict = cloudy.read_continuum(
+                        infile, return_dict=True, geometry="spherical"
+                    )
+                    normalisation = calculate_normalisation(
+                        new_grid,
+                        indices,
+                        spec_dict["lam"],
+                        spec_dict["incident"],
+                    )
 
                 # Calculate line luminosity and save it. Uses normalisation
                 # from spectra. Units are erg/s (written out in Lsun)
@@ -1112,6 +1144,13 @@ if __name__ == "__main__":
     cloudy_executable_path = args.cloudy_executable_path
     verbose = args.verbose
 
+    # Script generation needs a Cloudy executable; fail fast at the CLI rather
+    # than emitting launchers that point at "None/cloudy.exe".
+    if machine and not cloudy_executable_path:
+        parser.error(
+            "--cloudy-executable-path is required when --machine is set"
+        )
+
     print(" " * 80)
     print("-" * 80)
     print("incident_grid_name:", incident_grid_name)
@@ -1122,7 +1161,7 @@ if __name__ == "__main__":
         incident_grid_file = incident_grid_name + ".hdf5"
     else:
         incident_grid_file = incident_grid_name
-        incident_grid_name = "".join(incident_grid_name.split(".")[:-1])
+        incident_grid_name = incident_grid_name.removesuffix(".hdf5")
 
     # Get name of new grid (concatenation of incident_grid and cloudy
     # parameter file)
@@ -1234,7 +1273,8 @@ if __name__ == "__main__":
     )
 
     # Cloudy output files that must exist for a model to count as successful
-    extensions_to_check = ["emergent_elin"]
+    # (the .cont file is always needed to normalise the outputs)
+    extensions_to_check = ["emergent_elin", "cont"]
     if include_intrinsic_lines:
         extensions_to_check.append("intrinsic_elin")
 

@@ -35,7 +35,11 @@ from synthesizer.grid import Grid
 from unyt import Angstrom, Hz, erg, s
 
 import syncretize.cloudy.submission_scripts as submission_scripts
-from syncretize.cloudy.utils import get_cloudy_module
+from syncretize.cloudy.utils import (
+    get_cloudy_module,
+    resolve_linelist,
+    resolve_param_file,
+)
 from syncretize.parser import Parser
 
 
@@ -339,7 +343,7 @@ if __name__ == "__main__":
     incident_grid_name = args.incident_grid
     incident_grid_dir = args.grid_dir
     cloudy_output_dir = args.cloudy_output_dir
-    cloudy_paramfile = args.cloudy_paramfile
+    cloudy_paramfile = resolve_param_file(args.cloudy_paramfile)
     n_samples = args.n_samples
     seed = args.seed
     machine = args.machine
@@ -352,9 +356,10 @@ if __name__ == "__main__":
             "--cloudy-executable-path is required when --machine is set"
         )
 
-    # Add extensions if needed
-    if not cloudy_paramfile.endswith(".yaml"):
-        cloudy_paramfile += ".yaml"
+    # Only cosma7 has an on-the-fly job script; the other machines' scripts
+    # run run_cloudy on input files this script never writes.
+    if machine and machine != "cosma7":
+        parser.error("Sobol job scripts are only available for cosma7")
 
     # Load parameter file
     with open(cloudy_paramfile, "r") as file:
@@ -583,8 +588,10 @@ if __name__ == "__main__":
                 compression="gzip",
             )
 
-    linelist_name = fixed_params.get("output_linelist", "linelist.dat")
-    shutil.copyfile(linelist_name, f"{output_directory}/{linelist_name}")
+    linelist = resolve_linelist(
+        fixed_params.get("output_linelist", "linelist.dat")
+    )
+    shutil.copyfile(linelist, f"{output_directory}/{linelist.name}")
 
     print(f"\nSaved parameter grid and incident spectra to {grid_hdf5_file}")
     print("Cloudy input files will be generated on-the-fly during execution")
@@ -592,23 +599,13 @@ if __name__ == "__main__":
 
     # Generate submission script (on-the-fly version)
     if machine:
-        if machine == "cosma7":
-            submission_scripts.cosma7_sobol_onthefly(
-                new_grid_name=new_grid_name,
-                n_samples=n_samples,
-                cloudy_output_dir=cloudy_output_dir,
-                cloudy_executable_path=cloudy_executable_path,
-                time_per_model=args.time_per_model,
-                use_striding=not args.no_striding,
-                stride_step=args.stride_step,
-            )
-        else:
-            getattr(submission_scripts, machine)(
-                new_grid_name,
-                number_of_incident_grid_points=n_samples,
-                number_of_photoionisation_models=1,
-                cloudy_output_dir=cloudy_output_dir,
-                cloudy_executable_path=cloudy_executable_path,
-                memory="4G",
-                by_photoionisation_grid_point=False,
-            )
+        submission_scripts.cosma7_sobol_onthefly(
+            new_grid_name=new_grid_name,
+            n_samples=n_samples,
+            cloudy_output_dir=cloudy_output_dir,
+            cloudy_executable_path=cloudy_executable_path,
+            cloudy_version=cloudy_version,
+            time_per_model=args.time_per_model,
+            use_striding=not args.no_striding,
+            stride_step=args.stride_step,
+        )

@@ -48,8 +48,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--cloudy-executable-path",
         type=str,
-        required=False,
-        default=None,
+        required=True,
         help="Path to cloudy directory.",
     )
 
@@ -81,7 +80,8 @@ if __name__ == "__main__":
         type=str,
         required=False,
         default=None,
-        help="The filename of a list of indices to run.",
+        help="File with one model per row: incident_index "
+        "photoionisation_index (e.g. a .failures file).",
     )
 
     # The index in the list to run.
@@ -115,9 +115,10 @@ if __name__ == "__main__":
 
     # If a list is provided open the file containing the list
     if args.list_file is not None:
+        # One row per failed model: incident_index photoionisation_index
         incident_indices, photoionisation_indices = np.loadtxt(
-            args.list_file, dtype=int
-        )
+            args.list_file, dtype=int, ndmin=2
+        ).T
 
         # If an index is also provided just choose this model
         if args.list_index is not None:

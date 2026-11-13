@@ -745,7 +745,7 @@ class GridFile:
         if "luminosity_intrinsic" in lines:
             self.write_dataset(
                 "lines/luminosity_intrinsic",
-                lines["luminosity_intrinsic"],
+                lines["luminosity_intrinsic"].to(Lsun),
                 "Intrinsic line luminosity (before radiative transfer "
                 "through the cloud)",
                 log_on_read=False,
