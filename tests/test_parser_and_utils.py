@@ -85,3 +85,16 @@ def test_resolve_param_file_takes_paths_and_names(tmp_path):
 
     # A bare name falls back to the ready-made parameter files
     assert resolve_param_file("c23.01-sps").exists()
+
+    # With a param_dir, a file there is used, and paths and ready-made
+    # names still resolve when it isn't there
+    run_dir = tmp_path / "runs"
+    run_dir.mkdir()
+    copied = run_dir / "c23.01-sps.yaml"
+    copied.write_text("cloudy_version: c23.01\n")
+    assert resolve_param_file("c23.01-sps", param_dir=run_dir) == copied
+    assert resolve_param_file(param_file, param_dir=run_dir) == param_file
+    assert resolve_param_file("c23.01-nlr", param_dir=run_dir).exists()
+    assert resolve_param_file("missing", param_dir=run_dir) == (
+        run_dir / "missing.yaml"
+    )
