@@ -148,7 +148,7 @@ def create_cloudy_input(
     default_params = {
         # ionisation parameter
         "ionisation_parameter": 0.01,
-        # radius in log10 parsecs, only important for spherical geometry
+        # radius in parsecs (not log), only important for spherical geometry
         "radius": 0.01,
         # covering factor. Keep as 1 as it is more efficient to simply combine
         # SEDs to get != 1.0 values

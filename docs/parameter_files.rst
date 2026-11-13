@@ -326,10 +326,9 @@ Keys
      - Save the continuum; the line list to save (a bundled name such as
        ``linelist-standard.dat`` or a path); iterate until converged.
 
-**On/off options are on whenever the key has a value.** ``cosmic_rays``,
-``CMB``, ``constant_density`` and ``constant_pressure`` add their Cloudy
-command if the key is set to anything, including ``false``. To turn one off,
-leave the value blank or remove the key.
+``cosmic_rays``, ``CMB``, ``constant_density`` and ``constant_pressure`` are
+on/off options: set them to ``true`` to add their Cloudy command, and to
+``false``, leave the value blank or remove the key to leave it out.
 
 Sobol parameter files
 ^^^^^^^^^^^^^^^^^^^^^
