@@ -4,6 +4,7 @@ Create a synthesizer incident grid for a broken power-law SED.
 
 import numpy as np
 import yaml
+from synthesizer.utils.integrate import trapezoid
 from unyt import Angstrom, Hz, c, dimensionless, erg, s
 
 from syncretize.grid_io import GridFile
@@ -58,7 +59,7 @@ def broken_power_law(x, edges, indices, normalisations=False, normalise=True):
 
     # normalise
     if normalise:
-        y /= np.trapz(y[::-1], x=x[::-1])
+        y /= trapezoid(y[::-1], x=x[::-1])
 
     return y
 
