@@ -20,9 +20,12 @@ PARAM_DIR = CLOUDY_DIR / "params"
 def _parameters(name, **overrides):
     """Return one model's parameters from a ready-made parameter file."""
     fixed, variable = get_cloudy_params(f"{name}.yaml", param_dir=PARAM_DIR)
-    parameters = fixed | {key: values[0] for key, values in variable.items()}
+    parameters = {
+        **fixed,
+        **{key: values[0] for key, values in variable.items()},
+    }
     # The stars are metal free whatever the gas is
-    parameters |= {"ages": 1e6, "metallicities": 0.0} | overrides
+    parameters.update({"ages": 1e6, "metallicities": 0.0, **overrides})
     # The line lists are named relative to the cloudy directory
     parameters["output_linelist"] = str(
         CLOUDY_DIR / parameters["output_linelist"]
@@ -121,7 +124,7 @@ def test_popIII_extra_parameter_files(tmp_path, extra):
         f"popIII/{extra}.yaml", param_dir=PARAM_DIR
     )
     assert not variable
-    parameters = _parameters("c25.00-popIII-enriched") | fixed
+    parameters = {**_parameters("c25.00-popIII-enriched"), **fixed}
     lines = _create_input(tmp_path, parameters)
     if extra == "high_z":
         assert "CMB 10.0" in lines
@@ -146,6 +149,8 @@ def test_cosma7_job_script(tmp_path):
     script = Path(filename).read_text()
     # 4995 models at 4 per core on 28 cores
     assert "#SBATCH --array=0-44\n" in script
+    # The busiest tasks have 3 incident grid points: 135 models in 5 rounds
+    assert "#SBATCH -t 03:45:00\n" in script
     assert "N_INCIDENT=111\n" in script
     assert 'CLOUDY_EXE="/path/to/cloudy/bin/cloudy.exe"' in script
     assert (tmp_path / "grid" / "logs").is_dir()

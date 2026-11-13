@@ -627,8 +627,12 @@ def cosma7(
         1, min(number_of_tasks, int(number_of_incident_grid_points))
     )
 
-    # Walltime for the models of one task, with a 50% margin
-    models_per_task = -(-number_of_models // number_of_tasks)
+    # Walltime for the models of the busiest task, with a 50% margin. Tasks
+    # take whole incident grid points, so some get one more than others.
+    incident_per_task = -(
+        -int(number_of_incident_grid_points) // number_of_tasks
+    )
+    models_per_task = incident_per_task * int(number_of_photoionisation_models)
     rounds = -(-models_per_task // cpus_per_node)
     minutes = int(rounds * time_per_model * 1.5)
     walltime = f"{minutes // 60:02d}:{minutes % 60:02d}:00"
