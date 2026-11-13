@@ -1,0 +1,47 @@
+# Config file for Pop III stars (e.g. the Yggdrasil incident grids) in metal
+# free (primordial) gas: hydrogen and helium only, no depletion or grains.
+
+# CLOUDY VERSION
+cloudy_version: c25.00
+
+# ABUNDANCE PATTERN AND DEPLETION
+gas_metallicity: 0.0  # metal mass fraction of the gas. Zero turns every metal off in cloudy
+reference_abundance: GalacticConcordance  # only sets the (primordial) helium abundance here
+alpha_enhancement: 0.0
+depletion_model:  # none, there is nothing to deplete
+
+# GRAINS
+grains:  # none
+
+# GEOMETRY
+geometry: spherical
+
+# IONISATION PARAMETER
+# Fixed, since the hard Pop III spectra give a wide range of ionisation
+# parameters and there is no metallicity to anchor a reference model to.
+ionisation_parameter_model: fixed
+ionisation_parameter: [1.0e-3, 3.16e-3, 1.0e-2, 3.16e-2, 1.0e-1]
+
+# DENSITY
+# Up to 10^4 cm^-3, where collisions start to change the He I lines, the
+# two-photon continuum and Lyman alpha.
+hydrogen_density: [1.0e+2, 1.0e+3, 1.0e+4]
+constant_density: True  # flag for constant density
+
+# STOPPING CRITERIA
+stop_T: 500  # stopping temperature
+stop_efrac: -2  # limiting ratio of electron to H densities
+
+# MISC COMMANDS
+CMB:  # include CMB heating (see popIII/high_z.yaml)
+T_floor: 100  # lower gas temperature floor
+cosmic_rays: true  # flag for inclusion of cosmic ray heating
+radius: 0.01  # log of the radius of the cloud, in parsecs
+turbulence: 100  # turbulence
+z: 0.0  # redshift
+
+# OUTPUT COMMANDS
+resolution: 1.0  # energy resolution relative to the default
+output_cont: true
+output_linelist: linelist-primordial.dat  # the hydrogen and helium lines of linelist-standard.dat (cloudy stops on lines of elements that are off)
+iterate_to_convergence: true

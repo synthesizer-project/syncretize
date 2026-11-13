@@ -1,0 +1,53 @@
+# Config file for Pop III stars (e.g. the Yggdrasil incident grids) in
+# marginally enriched gas, e.g. gas polluted by the first supernovae of the
+# same population. The gas metallicity is set here and not by the (zero)
+# metallicity of the stars.
+
+# CLOUDY VERSION
+cloudy_version: c25.00
+
+# ABUNDANCE PATTERN AND DEPLETION
+# Metal mass fraction of the gas: 10^-4, 10^-3 and 10^-2 Zsun (Zsun = 0.0142).
+# One supernova enriching a 10^5-10^7 Msun halo gives values across this
+# range; the lowest is below the critical metallicity for Pop II star
+# formation (~10^-3.5 Zsun) and the highest about that of the most metal poor
+# galaxies known.
+gas_metallicity: [1.42e-6, 1.42e-5, 1.42e-4]
+reference_abundance: GalacticConcordance  # the reference abundance pattern to assume
+# The metals come from core collapse supernovae alone, so are alpha enhanced.
+# This also gives the low C/O (-0.74) and N/O (-1.37) of such ejecta. See
+# popIII/carbon_enhanced.yaml for a carbon rich alternative.
+alpha_enhancement: 0.4
+depletion_model:  # none, little dust is expected at these metallicities
+
+# GRAINS
+grains:  # none
+
+# GEOMETRY
+geometry: spherical
+
+# IONISATION PARAMETER
+ionisation_parameter_model: fixed
+ionisation_parameter: [1.0e-3, 3.16e-3, 1.0e-2, 3.16e-2, 1.0e-1]
+
+# DENSITY
+hydrogen_density: [1.0e+2, 1.0e+3, 1.0e+4]
+constant_density: True  # flag for constant density
+
+# STOPPING CRITERIA
+stop_T: 500  # stopping temperature
+stop_efrac: -2  # limiting ratio of electron to H densities
+
+# MISC COMMANDS
+CMB:  # include CMB heating (see popIII/high_z.yaml)
+T_floor: 100  # lower gas temperature floor
+cosmic_rays: true  # flag for inclusion of cosmic ray heating
+radius: 0.01  # log of the radius of the cloud, in parsecs
+turbulence: 100  # turbulence
+z: 0.0  # redshift
+
+# OUTPUT COMMANDS
+resolution: 1.0  # energy resolution relative to the default
+output_cont: true
+output_linelist: linelist-standard.dat
+iterate_to_convergence: true

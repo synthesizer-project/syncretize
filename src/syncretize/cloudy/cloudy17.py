@@ -213,7 +213,7 @@ def create_cloudy_input(
         # In this case it would be inconsistent to turn on grains, so don't.
 
     else:
-        cinput.append("element abundance he -1")
+        cinput.append(f"element abundance helium {abundances.total['He']}\n")
         for ele in abundances.metals:
             cinput.append((f"elements {abundances.element_name[ele]} off \n"))
 

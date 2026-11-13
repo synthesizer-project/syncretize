@@ -534,3 +534,164 @@ def cosma7_sobol_onthefly(
 
     print(f"Created on-the-fly SLURM script: {script_filename}")
     return script_filename
+
+
+def cosma7(
+    new_grid_name,
+    number_of_jobs=None,
+    number_of_incident_grid_points=None,
+    number_of_photoionisation_models=None,
+    cloudy_output_dir=None,
+    cloudy_executable_path=None,
+    memory=None,
+    by_photoionisation_grid_point=False,
+    from_list=None,
+    account="dp276",
+    partition="cosma7",
+    cpus_per_node=28,
+    models_per_cpu=4,
+    time_per_model=30,
+):
+    """
+    Create a COSMA7 SLURM job script for a grid of Cloudy models.
+
+    COSMA7 jobs take whole nodes, so each array task runs the models of
+    several incident grid points in parallel on one node, calling the Cloudy
+    executable directly. Models that have already finished are skipped, so
+    the script can simply be resubmitted to run any that failed or timed out
+    (which is all from_list and number_of_jobs are used for here).
+
+    The script is written to <cloudy_output_dir>/<new_grid_name>/cosma7.slurm.
+
+    Args:
+        new_grid_name (str):
+            Name of the grid.
+        number_of_jobs (int):
+            Unused, see above.
+        number_of_incident_grid_points (int):
+            The number of incident grid points. If None (when rerunning
+            failed models) it is read from the grid's grid_parameters.yaml.
+        number_of_photoionisation_models (int):
+            The number of photoionisation models at each incident grid point.
+        cloudy_output_dir (str):
+            Directory containing the grid's Cloudy inputs and outputs.
+        cloudy_executable_path (str):
+            Directory containing cloudy.exe, with Cloudy's data directory
+            alongside it (e.g. /cosma/local/cloudy/c25/bin).
+        memory (str):
+            Unused (the job has the whole node).
+        by_photoionisation_grid_point (bool):
+            Unused, tasks are always split by incident grid point.
+        from_list (str):
+            Unused, see above.
+        account (str):
+            SLURM account.
+        partition (str):
+            SLURM partition.
+        cpus_per_node (int):
+            Number of models to run at once on a node.
+        models_per_cpu (int):
+            Roughly how many models each core runs in turn, which sets the
+            number of array tasks.
+        time_per_model (int):
+            Time allowed for each model in minutes, which sets the walltime.
+
+    Returns:
+        str:
+            The path to the job script.
+    """
+    from pathlib import Path
+
+    import yaml
+
+    grid_dir = Path(cloudy_output_dir, new_grid_name).resolve()
+
+    # When rerunning failed models the grid's shape isn't passed in
+    if (
+        number_of_incident_grid_points is None
+        or number_of_photoionisation_models is None
+    ):
+        with open(grid_dir / "grid_parameters.yaml") as file:
+            grid_parameters = yaml.safe_load(file)
+        number_of_incident_grid_points = grid_parameters["incident_n_models"]
+        number_of_photoionisation_models = grid_parameters[
+            "photoionisation_n_models"
+        ]
+
+    # Enough array tasks that each core runs about models_per_cpu models
+    number_of_models = int(
+        number_of_incident_grid_points * number_of_photoionisation_models
+    )
+    number_of_tasks = -(-number_of_models // (cpus_per_node * models_per_cpu))
+    number_of_tasks = max(
+        1, min(number_of_tasks, int(number_of_incident_grid_points))
+    )
+
+    # Walltime for the models of the busiest task, with a 50% margin. Tasks
+    # take whole incident grid points, so some get one more than others.
+    incident_per_task = -(
+        -int(number_of_incident_grid_points) // number_of_tasks
+    )
+    models_per_task = incident_per_task * int(number_of_photoionisation_models)
+    rounds = -(-models_per_task // cpus_per_node)
+    minutes = int(rounds * time_per_model * 1.5)
+    walltime = f"{minutes // 60:02d}:{minutes % 60:02d}:00"
+
+    (grid_dir / "logs").mkdir(parents=True, exist_ok=True)
+
+    slurm_job_script = "\n".join(
+        [
+            "#!/bin/bash",
+            f"#SBATCH --job-name={new_grid_name[-16:]}",
+            f"#SBATCH --array=0-{number_of_tasks - 1}",
+            f"#SBATCH -p {partition}",
+            f"#SBATCH -A {account}",
+            "#SBATCH --nodes=1",
+            "#SBATCH --ntasks=1",
+            f"#SBATCH --cpus-per-task={cpus_per_node}",
+            f"#SBATCH -t {walltime}",
+            f"#SBATCH --output={grid_dir}/logs/%A_%a.out",
+            f"#SBATCH --error={grid_dir}/logs/%A_%a.err",
+            "",
+            f'GRID_DIR="{grid_dir}"',
+            f'export CLOUDY_EXE="{cloudy_executable_path}/cloudy.exe"',
+            f'export CLOUDY_DATA_PATH="{cloudy_executable_path}/../data:./"',
+            f"N_INCIDENT={number_of_incident_grid_points}",
+            f"N_TASKS={number_of_tasks}",
+            "TASK=${SLURM_ARRAY_TASK_ID:-0}",
+            "N_CPUS=${SLURM_CPUS_PER_TASK:-1}",
+            "",
+            "# Run one model (directory, name) unless it has already finished",
+            "run_model() {",
+            '    cd "$1" || exit 1',
+            '    if tail -n 2 "$2.out" 2>/dev/null | grep -q "exited OK"',
+            "    then",
+            "        return 0",
+            "    fi",
+            '    "$CLOUDY_EXE" -r "$2"',
+            "}",
+            "export -f run_model",
+            "",
+            "# This task runs every N_TASKS-th incident grid point, N_CPUS",
+            "# models at a time",
+            "for i in $(seq $TASK $N_TASKS $((N_INCIDENT - 1))); do",
+            '    for input in "$GRID_DIR/$i"/*.in; do',
+            '        echo "$GRID_DIR/$i"',
+            '        basename "$input" .in',
+            "    done",
+            "done | xargs -d '\\n' -n 2 -P $N_CPUS \\",
+            "    bash -c 'run_model \"$@\"' _",
+            "",
+        ]
+    )
+
+    script_filename = grid_dir / "cosma7.slurm"
+    with open(script_filename, "w") as f:
+        f.write(slurm_job_script)
+    print(f"Created SLURM job script: {script_filename}")
+    print(
+        f"{number_of_models} models in {number_of_tasks} array tasks, "
+        f"walltime {walltime}"
+    )
+
+    return str(script_filename)

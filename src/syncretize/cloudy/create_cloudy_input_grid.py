@@ -23,6 +23,37 @@ from syncretize.cloudy.utils import (
 )
 from syncretize.parser import Parser
 
+#: Metallicity standing in for metal free gas when building its abundances.
+#: Only the helium abundance is used, which has converged to its primordial
+#: value long before this.
+PRIMORDIAL_METALLICITY = 1e-10
+
+
+def resolve_gas_metallicity(parameters):
+    """
+    Return the metallicity (metal mass fraction) of the gas.
+
+    This is gas_metallicity if the cloudy parameter file sets it and the
+    metallicity of the incident grid point otherwise.
+
+    Args:
+        parameters (dict):
+            The incident and photoionisation parameters of a model.
+
+    Returns:
+        float:
+            The gas metallicity.
+    """
+    gas_metallicity = parameters.get("gas_metallicity")
+    if gas_metallicity is None:
+        gas_metallicity = parameters["metallicities"]
+    gas_metallicity = float(gas_metallicity)
+    if gas_metallicity < 0:
+        raise InconsistentParameter(
+            f"The gas metallicity can't be negative, got {gas_metallicity}"
+        )
+    return gas_metallicity
+
 
 def create_cloudy_input(
     incident_index,
@@ -99,7 +130,11 @@ def create_cloudy_input(
     else:
         depletion_model = None
 
-    print(f"metallicity: {parameters['metallicities']}")
+    # The gas metallicity is that of the incident (stellar) grid point unless
+    # the parameter file sets gas_metallicity, which decouples the two (e.g.
+    # zero metallicity stars in marginally enriched gas).
+    gas_metallicity = resolve_gas_metallicity(parameters)
+    print(f"gas metallicity: {gas_metallicity}")
     print(f"reference abundance: {parameters['reference_abundance']}")
     print(f"alpha enhancement: {parameters['alpha_enhancement']}")
     print(f"abundance scalings: {parameters['abundance_scalings']}")
@@ -113,9 +148,23 @@ def create_cloudy_input(
     ):
         depletion_model = None
 
+    # Metal free gas: synthesizer can't build an abundance pattern at zero
+    # metallicity, so take the (primordial) helium abundance from a
+    # negligible metallicity and turn every metal off in cloudy.
+    if gas_metallicity == 0:
+        if depletion_model is not None or parameters.get("grains"):
+            raise InconsistentParameter(
+                "The gas is metal free, so it can't have depletion or "
+                "grains: set depletion_model and grains to null."
+            )
+        parameters["metals"] = False
+        abundance_metallicity = PRIMORDIAL_METALLICITY
+    else:
+        abundance_metallicity = gas_metallicity
+
     # Create synthesizer.Abundance object
     abundances = Abundances(
-        metallicity=float(parameters["metallicities"]),
+        metallicity=abundance_metallicity,
         reference=parameters["reference_abundance"],
         alpha=parameters["alpha_enhancement"],
         abundances=parameters["abundance_scalings"]
