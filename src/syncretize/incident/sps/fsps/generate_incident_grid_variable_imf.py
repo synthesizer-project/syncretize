@@ -127,7 +127,7 @@ def generate_grid(config, grid_dir, config_file):
         log_on_read[axis["axis_name"]] = axis["log_on_read"]
 
     out_grid = GridFile(out_filename, param_file=config_file)
-    print(f"Writing {out_filename}", flush=True)
+    print(f"Writing {out_grid.filepath}", flush=True)
     out_grid.write_grid_common(
         model=model,
         axes=axes,

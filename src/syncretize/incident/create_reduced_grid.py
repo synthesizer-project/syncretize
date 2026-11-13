@@ -105,6 +105,16 @@ def reduce_grid(original_grid, param_file=None, **axes):
             for axis, log in zip(orig_axes_names, original_grid._extract_axes)
         }
 
+    # GridFile opens its file in write mode, so a grid_name matching the
+    # source grid would truncate the source
+    if param_file is not None and (
+        load_param_file(param_file).get("grid_name") == original_grid.grid_name
+    ):
+        raise ValueError(
+            f"grid_name in {param_file} is the name of the grid being "
+            "reduced; choose a different name."
+        )
+
     # Create the GridFile ready to take outputs
     out_grid = GridFile(out_path, param_file=param_file)
 
@@ -141,7 +151,7 @@ if __name__ == "__main__":
     ages = None
     metallicities = None
 
-    if new_ages is not None:
+    if new_ages:
         ages = np.array(new_ages, dtype=float) * yr
         print(f"New ages: {ages}")
 

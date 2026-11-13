@@ -79,6 +79,9 @@ def test_resolve_param_file_takes_paths_and_names(tmp_path):
     param_file.write_text("cloudy_version: c23.01\n")
     assert resolve_param_file(param_file) == param_file
     assert resolve_param_file(tmp_path / "c23.01-custom") == param_file
+    other = tmp_path / "custom.yml"
+    other.write_text("cloudy_version: c23.01\n")
+    assert resolve_param_file(other) == other
 
     # A bare name falls back to the ready-made parameter files
     assert resolve_param_file("c23.01-sps").exists()

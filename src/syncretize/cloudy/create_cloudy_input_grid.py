@@ -254,6 +254,12 @@ if __name__ == "__main__":
     extra_cloudy_paramfile = args.cloudy_paramfile_extra
     if extra_cloudy_paramfile is not None:
         extra_cloudy_paramfile = resolve_param_file(extra_cloudy_paramfile)
+        # Both files are copied into the output directory
+        if extra_cloudy_paramfile.name == cloudy_paramfile.name:
+            raise ValueError(
+                "The cloudy parameter file and the extra parameter file "
+                f"must have different names ({cloudy_paramfile.name})."
+            )
     machine = args.machine
     cloudy_executable_path = args.cloudy_executable_path
     by_photoionisation_grid_point = args.by_photoionisation_grid_point

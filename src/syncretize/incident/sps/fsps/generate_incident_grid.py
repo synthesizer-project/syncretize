@@ -135,8 +135,15 @@ if __name__ == "__main__":
 
     imf_type = get_choice(params, "imf_type", ["bpl", "chabrier03"])
     imf_masses = params["imf_masses"]
-    if imf_type == "chabrier03" and len(imf_masses) != 2:
-        raise ValueError("The chabrier03 IMF needs imf_masses [m_low, m_high]")
+    if imf_type == "chabrier03" and not (
+        len(imf_masses) == 2
+        and np.all(np.isfinite(imf_masses))
+        and 0 < imf_masses[0] < imf_masses[1]
+    ):
+        raise ValueError(
+            "The chabrier03 IMF needs finite imf_masses [m_low, m_high] "
+            "with 0 < m_low < m_high"
+        )
 
     model = {
         "sps_name": "fsps",

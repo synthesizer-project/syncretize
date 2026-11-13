@@ -26,6 +26,8 @@ def resolve_param_file(param_file, param_dir=None):
             path to the parameter file
     """
     name = str(param_file)
+    if param_dir is None and Path(name).is_file():
+        return Path(name)
     if not name.endswith(".yaml"):
         name += ".yaml"
     if param_dir is not None:

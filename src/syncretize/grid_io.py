@@ -46,7 +46,6 @@ from tqdm import tqdm
 from unyt import Lsun, dimensionless, unyt_array
 
 from syncretize._version import __version__ as syncretize_version
-from syncretize.parser import load_param_file
 from syncretize.photoionisation import EDGE_IONS, Ions, edge_wavelength
 
 #: Offset (Angstrom) of the points inserted either side of an edge.
@@ -174,8 +173,18 @@ class GridFile:
         """
         # A parameter file can fix the grid's name, so a published grid is
         # remade under its published name whatever the script would call it
+        # The file is read once, here, so the name and the stored copy agree
+        self._param_contents = None
         if param_file is not None:
-            grid_name = load_param_file(param_file).get("grid_name")
+            self._param_contents = Path(param_file).read_text()
+            params = yaml.safe_load(self._param_contents) or {}
+            # Checked before the output file is opened (and truncated)
+            if isinstance(params.get("contents"), dict):
+                raise ValueError(
+                    f"{param_file} has a 'contents' mapping, which clashes "
+                    "with the ParameterFile/contents dataset."
+                )
+            grid_name = params.get("grid_name")
             if grid_name:
                 filepath = str(Path(filepath).with_name(f"{grid_name}.hdf5"))
                 print(f"Writing {filepath} (grid_name in {param_file})")
@@ -219,7 +228,7 @@ class GridFile:
         subgroups) and the verbatim file in the ``contents`` dataset, so
         ``yaml.safe_load(hdf["ParameterFile/contents"][()])`` recovers it.
         """
-        contents = Path(self.param_file).read_text()
+        contents = self._param_contents
         grp = self.hdf.create_group("ParameterFile")
         _write_attrs(grp, yaml.safe_load(contents) or {})
         dset = grp.create_dataset(
@@ -920,6 +929,8 @@ def _write_attrs(grp, params):
             The parameters to write.
     """
     for key, value in params.items():
+        # YAML keys can be numbers, HDF5 names can't
+        key = str(key)
         if value is None:
             value = "None"
         if isinstance(value, dict):

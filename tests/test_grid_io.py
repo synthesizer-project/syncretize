@@ -205,6 +205,7 @@ def test_gridfile_stores_param_file(tmp_path):
         "  value: 1.5\n"
         "  missing: null\n"
         "imf: [{name: lower, value: 0.1}]\n"
+        "0.02: solar\n"
     )
     out_path = tmp_path / "grid.hdf5"
 
@@ -213,10 +214,11 @@ def test_gridfile_stores_param_file(tmp_path):
     with h5py.File(out_path, "r") as hdf:
         grp = hdf["ParameterFile"]
         assert grp.attrs["grid_dir"] == "grids"
+        assert grp.attrs["0.02"] == "solar"
         assert [_decode_attr(m) for m in grp.attrs["models"]] == ["a", "b"]
         assert grp["nested"].attrs["value"] == 1.5
         assert grp["nested"].attrs["missing"] == "None"
-        assert "lower" in grp.attrs["imf"]
+        assert "{'name': 'lower', 'value': 0.1}" in grp.attrs["imf"]
         assert grp["contents"][()].decode() == param_file.read_text()
         assert grp["contents"].attrs["path"] == str(param_file.resolve())
 
@@ -230,3 +232,14 @@ def test_gridfile_grid_name_sets_file_name(tmp_path):
     assert grid.filepath == str(tmp_path / "published-name_0.1,100.hdf5")
     assert (tmp_path / "published-name_0.1,100.hdf5").exists()
     assert not (tmp_path / "script-name.hdf5").exists()
+
+
+def test_gridfile_rejects_contents_mapping_before_truncating(tmp_path):
+    param_file = tmp_path / "params.yaml"
+    param_file.write_text("contents:\n  a: 1\n")
+    out_path = tmp_path / "grid.hdf5"
+    out_path.write_text("existing")
+
+    with pytest.raises(ValueError, match="contents"):
+        GridFile(str(out_path), param_file=str(param_file))
+    assert out_path.read_text() == "existing"
