@@ -101,7 +101,7 @@ def check_run(
     incident_grid = Grid(
         args.incident_grid + ".hdf5",
         grid_dir=f"{args.grid_dir}",
-        read_lines=False,
+        ignore_lines=True,
     )
     # Extract axes and axes values from the Grid
     incident_axes = incident_grid.axes
@@ -498,7 +498,7 @@ if __name__ == "__main__":
     incident_grid = Grid(
         args.incident_grid + ".hdf5",
         grid_dir=f"{args.grid_dir}",
-        read_lines=False,
+        ignore_lines=True,
     )
 
     # Load the cloudy parameters you are going to run

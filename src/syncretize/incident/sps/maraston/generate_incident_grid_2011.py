@@ -174,7 +174,7 @@ if __name__ == "__main__":
         "sps_name": sps_name,
         "sps_variant": variant,
         "sps_version": False,
-        "alpha": False,
+        "alpha_enhancement": False,
         "imf_type": imf,
         "imf_masses": [0.1, 100],
     }

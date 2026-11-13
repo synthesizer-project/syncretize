@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 import numpy as np
-from unyt import eV
+from unyt import c, eV, h
 
 
 @dataclass
@@ -35,45 +35,49 @@ class Ions:
     }
 
 
-def calculate_Q_from_U(U_avg, n_h):
-    """Calcualte Q for a given U assuming a n_h.
+#: Ions whose ionisation edges are kept sharp in incident grids (#151).
+EDGE_IONS = ("HI", "HeI", "HeII")
+
+
+def edge_wavelength(ion):
+    """Return the wavelength of an ion's ionisation edge in Angstrom.
+
+    Uses Ions.energy, the same threshold the Q calculations use.
 
     Args:
-        U_avg (float):
-            Ionisation parameter
-        n_h (float):
-            Hyodrogen density (units: cm^-3)
+        ion (str):
+            The ion, a key of Ions.energy.
 
     Returns:
         float:
-            Ionising photon luminosity (units: s^-1)
+            The edge wavelength in Angstrom.
     """
-    alpha_B = 2.59e-13  # cm^3 s^-1
-    c_cm = 2.99e8 * 100  # cm s^-1
-    epsilon = 1.0
-
-    return ((U_avg * c_cm) ** 3 / alpha_B**2) * (
-        (4 * np.pi) / (3 * epsilon**2 * n_h)
-    )
+    return float((h * c / Ions.energy[ion]).to("Angstrom").value)
 
 
-def calculate_U_from_Q(Q_avg, n_h=100):
-    """Calcualte the ionisation parameter for given Q assuming a n_h.
+def edge_is_resolved(lam, ion="HI", window=1.0):
+    """Check that a wavelength grid samples an ionisation edge closely.
+
+    Cloudy interpolates a tabulated SED log-log onto its own mesh, so an input
+    with no points close to an edge has that edge smeared out (#151).
 
     Args:
-        Q_avg (float):
-            Ionising photon luminosity (units: s^-1)
-        n_h (float):
-            Hyodrogen density (units: cm^-3)
+        lam (np.ndarray):
+            Wavelengths in Angstrom.
+        ion (str):
+            The ion whose edge to check.
+        window (float):
+            How close (Angstrom) a point must be on each side of the edge.
 
     Returns:
-        float:
-            Ionisation parameter
+        bool:
+            True if lam has a point within window of the edge on both sides,
+            or doesn't span the edge at all.
     """
-    alpha_B = 2.59e-13  # cm^3 s^-1
-    c_cm = 2.99e8 * 100  # cm s^-1
-    epsilon = 1.0
-
-    return ((alpha_B ** (2.0 / 3)) / c_cm) * (
-        (3 * Q_avg * (epsilon**2) * n_h) / (4 * np.pi)
-    ) ** (1.0 / 3)
+    lam = np.asarray(lam)
+    edge = edge_wavelength(ion)
+    if not lam.min() < edge < lam.max():
+        return True
+    blue = np.any((lam > edge - window) & (lam < edge))
+    red = np.any((lam > edge) & (lam < edge + window))
+    return bool(blue and red)

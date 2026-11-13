@@ -1,9 +1,9 @@
 import h5py
 import numpy as np
 import pytest
-from unyt import Angstrom, Hz, erg, s, unyt_array, yr
+from unyt import Angstrom, Hz, Lsun, erg, s, unyt_array, yr
 
-from syncretize.grid_io import GridFile
+from syncretize.grid_io import GridFile, add_ionisation_edges
 
 
 def _decode_attr(value):
@@ -42,12 +42,15 @@ def simple_grid(tmp_path):
         model={"model": "unit-test"},
     )
 
+    # write_grid_common adds points either side of the ionisation edges
+    written, _ = add_ionisation_edges(wavelength, spectra)
+
     return {
         "grid": grid,
         "path": out_path,
         "axes": axes,
-        "wavelength": wavelength,
-        "spectra_shape": spectra_shape,
+        "wavelength": written,
+        "spectra_shape": (*spectra_shape[:-1], len(written)),
     }
 
 
@@ -92,7 +95,9 @@ def test_write_grid_common_writes_expected_structure(simple_grid):
         metallicities_dataset = hdf["axes"]["metallicities"]
         assert not metallicities_dataset.attrs["log_on_read"]
 
-        assert hdf["spectra"]["wavelength"].shape == (3,)
+        assert hdf["spectra"]["wavelength"].shape == (
+            len(simple_grid["wavelength"]),
+        )
         assert hdf["spectra"]["incident"].shape == simple_grid["spectra_shape"]
 
         model_group = hdf["Model"]
@@ -121,6 +126,10 @@ def test_write_lines_creates_expected_datasets(simple_grid):
     with h5py.File(simple_grid["path"], "r") as hdf:
         assert hdf["lines"]["wavelength"].shape == (n_lines,)
         assert hdf["lines"]["luminosity"].shape == base_shape
+        assert hdf["lines"]["luminosity"].attrs["Units"] == "Lsun"
+        np.testing.assert_allclose(
+            hdf["lines"]["luminosity"][...], (1.0 * erg / s).to_value(Lsun)
+        )
         assert hdf["lines"]["continuum"].shape == base_shape
         assert list(map(_decode_attr, hdf["lines"]["id"][...])) == [
             "Hbeta",

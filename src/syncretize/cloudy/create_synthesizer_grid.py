@@ -17,16 +17,34 @@ import submission_scripts
 from synthesizer.emissions import Sed
 from synthesizer.grid import Grid
 from synthesizer.units import has_units
-from unyt import Angstrom, Hz, cm, dimensionless, erg, eV, km, s, yr
+from synthesizer.utils.integrate import trapezoid
+from unyt import (
+    Angstrom,
+    Hz,
+    cm,
+    dimensionless,
+    erg,
+    eV,
+    km,
+    s,
+    unyt_array,
+    yr,
+)
 from utils import (
     get_cloudy_params,
     get_grid_props_cloudy,
     resolve_param_file,
 )
 
-from syncretize.cloudy import cloudy17, cloudy23
+from syncretize.cloudy import cloudy17, cloudy23, cloudy25
 from syncretize.grid_io import GridFile
 from syncretize.parser import Parser
+
+#: Non-ionising band (Angstrom) used to check the normalised incident spectra.
+CHECK_BAND = (1500.0, 5000.0)
+
+#: Largest acceptable fractional offset of the normalised incident continuum.
+CHECK_TOLERANCE = 0.02
 
 # Create dictionary of commonly used units for grid axes
 axes_units = {
@@ -449,6 +467,56 @@ def check_cloudy_runs(
     return number_of_failed_models
 
 
+# Spectra stored in the grid by default. All are read from Cloudy by
+# read_continuum (in cloudy17/cloudy23) and include the light leaving
+# both faces of the cloud, consistent with the emergent line luminosities:
+#   incident           : the incident spectrum
+#   transmitted        : the attenuated incident spectrum (outward)
+#   nebular            : nebular emission from both faces, lines included
+#                        (DiffOut + reflc - reflected_incident)
+#   linecont           : line contribution from both faces (outlin + reflin)
+#   reflected_incident : incident light scattered back towards the source
+#                        (open geometries; zero for 'sphere')
+# so that total = transmitted + nebular + reflected_incident and
+# nebular_continuum = nebular - linecont. Every grid stores the same set, so
+# grids are read the same way whatever the geometry. read_continuum also
+# provides "reflected" (reflc) and "reflected_linecont" (reflin), from which
+# the outward-only spectra can be recovered, but these are not stored by
+# default (they would add two full spectral grids). To keep them, add them to
+# spec_names when calling add_spectra.
+SPEC_NAMES = (
+    "incident",
+    "transmitted",
+    "nebular",
+    "linecont",
+    "reflected_incident",
+)
+
+# Spectra that add_lines needs to compute the continuum quantities at each
+# line (incident, transmitted, nebular_continuum = nebular - linecont and
+# total_continuum = nebular_continuum + transmitted + reflected_incident).
+# add_spectra always stores these, whatever spec_names it is given.
+REQUIRED_SPEC_NAMES = (
+    "incident",
+    "transmitted",
+    "nebular",
+    "linecont",
+    "reflected_incident",
+)
+
+
+def _cloudy_module(cloudy_version):
+    """Return the syncretize module reading this Cloudy version's outputs."""
+    major = cloudy_version.split(".")[0]
+    if major == "c17":
+        return cloudy17
+    if major == "c23":
+        return cloudy23
+    if major == "c25":
+        return cloudy25
+    raise ValueError(f"Unsupported Cloudy version: {cloudy_version}")
+
+
 def add_spectra(
     new_grid,
     new_grid_name,
@@ -456,8 +524,11 @@ def add_spectra(
     incident_index_list,
     photoionisation_index_list,
     new_shape,
-    spec_names=("incident", "transmitted", "nebular", "linecont"),
+    spec_names=SPEC_NAMES,
     norm_by_q=True,
+    incident_grid_file=None,
+    extensions_to_check=["emergent_elin"],
+    geometry=None,
 ):
     """
     Open cloudy spectra and add them to the grid.
@@ -474,14 +545,34 @@ def add_spectra(
         photoionisation_index_list (list)
             List of photoionisation grid points
         spec_names (list)
-            The names of the spectra to save (default is incident, transmitted,
-            nebular and linecont).
+            The names of the spectra to save (default SPEC_NAMES: incident,
+            transmitted, nebular, linecont and reflected_incident).
+            The spectra in REQUIRED_SPEC_NAMES (incident, transmitted,
+            nebular, linecont and reflected_incident) are always included,
+            even if not listed, since add_lines needs them for the line
+            continuum quantities (and reflected_incident for total =
+            transmitted + nebular + reflected_incident).
         shape (ndarray)
             The shape of the new grid.
         norm_by_q (bool)
             If True, the spectra are normalised by the specific ionising
             photon luminosity calculated from the incident spectrum.
+        incident_grid_file (str)
+            Path to the incident grid file. If given, the normalised incident
+            spectra are checked against it over CHECK_BAND.
+        extensions_to_check (list)
+            List of file extensions checked to decide if a model failed.
+        geometry (str)
+            The Cloudy geometry of the runs.
     """
+
+    # Always store the spectra add_lines relies on. reflected_incident is
+    # also needed to reconstruct the total spectrum for open geometries (it
+    # is zero for 'sphere').
+    spec_names = tuple(spec_names)
+    spec_names += tuple(
+        name for name in REQUIRED_SPEC_NAMES if name not in spec_names
+    )
 
     # Determine the cloudy version...
     cloudy_version = new_grid.read_attribute(
@@ -490,10 +581,7 @@ def add_spectra(
     )
 
     # ... and use to select the correct module.
-    if cloudy_version.split(".")[0] == "c23":
-        cloudy = cloudy23
-    elif cloudy_version.split(".")[0] == "c17":
-        cloudy = cloudy17
+    cloudy = _cloudy_module(cloudy_version)
 
     # Read first spectra from the first grid point to get length and
     # wavelength grid.
@@ -520,7 +608,34 @@ def add_spectra(
     # Array for recording cloudy failures
     failures = np.zeros(new_shape)
 
+    # Ratio of the normalised incident continuum to the input SED, per run.
+    # The input is read from the file, not a loaded Grid, since synthesizer
+    # rescales luminosity weighted grids on load.
+    band = (lam > CHECK_BAND[0]) & (lam < CHECK_BAND[1])
+    continuum_ratios = []
+    input_spectra = None
+    if incident_grid_file is not None and band.any():
+        with h5py.File(incident_grid_file, "r") as incident_file:
+            # Use the stored units (older grids without them are in
+            # Angstrom and erg/s/Hz)
+            dset = incident_file["spectra/wavelength"]
+            input_lam = (
+                unyt_array(dset[...], dset.attrs.get("Units", "Angstrom"))
+                .to("Angstrom")
+                .value
+            )
+            dset = incident_file["spectra/incident"]
+            input_spectra = (
+                unyt_array(dset[...], dset.attrs.get("Units", "erg/s/Hz"))
+                .to("erg/s/Hz")
+                .value
+            )
+
     for incident_index, incident_index_tuple in enumerate(incident_index_list):
+        input_lnu = None
+        if input_spectra is not None:
+            input_lnu = input_spectra[tuple(incident_index_tuple)]
+
         for photoionisation_index, photoionisation_index_tuple in enumerate(
             photoionisation_index_list
         ):
@@ -535,9 +650,10 @@ def add_spectra(
                 f"{incident_index}/{photoionisation_index}"
             )
 
-            # Check to see if the model failed or not, using the default
-            # extensions
-            failed = check_if_failed(infile)
+            # Check to see if the model failed or not
+            failed = check_if_failed(
+                infile, extensions_to_check=extensions_to_check
+            )
 
             # If the model has failed save the spectra as an array of zeros
             if failed:
@@ -550,7 +666,9 @@ def add_spectra(
 
             else:
                 # Read the continuum file containing the spectra
-                spec_dict = cloudy.read_continuum(infile, return_dict=True)
+                spec_dict = cloudy.read_continuum(
+                    infile, return_dict=True, geometry=geometry
+                )
 
                 # Calculate the specific ionising photon luminosity and use
                 # this to renormalise the spectrum.
@@ -584,6 +702,41 @@ def add_spectra(
                         * spectra["normalisation"][indices]
                     )
 
+                # Compare the normalised incident continuum with the input
+                if input_lnu is not None:
+                    input_band = np.interp(lam[band], input_lam, input_lnu)
+                    output_band = spectra["incident"][indices][band]
+                    input_flux = trapezoid(input_band, lam[band])
+                    # An input with no flux in the band can't be compared
+                    if input_flux > 0:
+                        continuum_ratios.append(
+                            trapezoid(output_band, lam[band]) / input_flux
+                        )
+
+    # Warn if the normalisation has moved the stellar continuum (#151)
+    continuum_ratios = np.array(continuum_ratios)
+    continuum_ratios = continuum_ratios[np.isfinite(continuum_ratios)]
+    if input_spectra is not None and not continuum_ratios.size:
+        print(
+            "Could not compare the normalised incident continuum with "
+            f"the input SED over {CHECK_BAND} A: no successful run has "
+            "input flux there."
+        )
+    elif continuum_ratios.size:
+        offsets = np.abs(continuum_ratios - 1)
+        print(
+            f"Normalised incident vs input over {CHECK_BAND} A: max offset "
+            f"{offsets.max():.3f}, median {np.median(offsets):.3f}."
+        )
+        if offsets.max() > CHECK_TOLERANCE:
+            print(
+                f"WARNING: {np.sum(offsets > CHECK_TOLERANCE)} runs have a "
+                "normalised incident continuum more than "
+                f"{CHECK_TOLERANCE:.0%} from the input SED. The incident grid "
+                "probably samples the ionisation edges too coarsely; "
+                "regenerate it (see syncretize#151)."
+            )
+
     # Apply units to the spectra
     for spec in spectra:
         spectra[spec] *= erg / s / Hz
@@ -616,6 +769,8 @@ def add_lines(
     lam=None,
     spectra=None,
     line_type="linelist",
+    include_intrinsic=False,
+    extensions_to_check=["emergent_elin"],
 ):
     """
     Open cloudy lines and add them to the HDF5 grid
@@ -635,14 +790,33 @@ def add_lines(
             The shape of the new grid.
         lam (ndarray)
             The wavelength grid of the spectra.
-        spectra (bool)
-            The spectra.
+        spectra (dict)
+            The spectra returned by add_spectra (or None to skip the
+            continuum quantities). Must contain REQUIRED_SPEC_NAMES.
         line_type (str)
             The type of line file to use (linelist, lines)
+        include_intrinsic (bool)
+            If True, also read the intrinsic line luminosities (the
+            'intrinsic_elin' Cloudy output) and store them as
+            lines/luminosity_intrinsic.
+        extensions_to_check (list)
+            List of file extensions checked to decide if a model failed.
     """
 
     if spectra is not None:
         calculate_continuum = True
+
+        # Check we have every spectrum needed for the continuum quantities
+        # (add_spectra always provides these).
+        missing_spectra = [
+            name for name in REQUIRED_SPEC_NAMES if name not in spectra
+        ]
+        if missing_spectra:
+            raise ValueError(
+                "add_lines needs the spectra "
+                f"{', '.join(REQUIRED_SPEC_NAMES)} to compute the line "
+                f"continuum quantities; missing: {', '.join(missing_spectra)}"
+            )
     else:
         calculate_continuum = False
 
@@ -653,10 +827,7 @@ def add_lines(
     )
 
     # ... and use to select the correct module.
-    if cloudy_version.split(".")[0] == "c23":
-        cloudy = cloudy23
-    elif cloudy_version.split(".")[0] == "c17":
-        cloudy = cloudy17
+    cloudy = _cloudy_module(cloudy_version)
 
     # Open the first linelist and use it to populate the keys
     with open(f"{cloudy_dir}/{new_grid_name}/0/linelist.dat") as file:
@@ -678,6 +849,10 @@ def add_lines(
 
     # We always save luminosity...
     lines["luminosity"] = np.empty((*new_shape, nlines))
+
+    # ... optionally the intrinsic line luminosity ...
+    if include_intrinsic:
+        lines["luminosity_intrinsic"] = np.empty((*new_shape, nlines))
 
     # ... but only save continuum values if spectra are provided.
     continuum_quantities = [
@@ -703,8 +878,12 @@ def add_lines(
 
         # Calculate total_continuum. Note this is not the same as adding
         #  nebular and transmitted since that would include emission lines.
+        # The incident light scattered back towards the source is continuum
+        # leaving the cloud too (zero in spherical geometry).
         spectra_["total_continuum"] = (
-            spectra_["nebular_continuum"] + spectra_["transmitted"]
+            spectra_["nebular_continuum"]
+            + spectra_["transmitted"]
+            + spectra["reflected_incident"]
         )
 
         # Define output arrays
@@ -730,15 +909,18 @@ def add_lines(
                 f"{incident_index}/{photoionisation_index}"
             )
 
-            # Check to see if the model failed or not, using the default
-            # extensions
-            failed = check_if_failed(infile)
+            # Check to see if the model failed or not
+            failed = check_if_failed(
+                infile, extensions_to_check=extensions_to_check
+            )
 
             # If the model has failed save the luminosities as an array of
             # zeros
             if failed:
                 # Set the line luminosities to zero
                 lines["luminosity"][indices] = np.zeros(nlines)
+                if include_intrinsic:
+                    lines["luminosity_intrinsic"][indices] = np.zeros(nlines)
 
                 # Set the continuum luminosities to zero
                 if calculate_continuum:
@@ -760,8 +942,9 @@ def add_lines(
                 luminosities = luminosities[sorted_indices]
                 line_wavelengths = line_wavelengths[sorted_indices]
 
-                # If we're on the first grid point save the wavelength grid
-                if (incident_index == 0) and (photoionisation_index == 0):
+                # Save the wavelength grid from the first successful model
+                # (the first grid point may have failed)
+                if "wavelength" not in lines:
                     lines["wavelength"] = line_wavelengths
                     # for id, lam in zip(ids, sorted_indices):
                     #     print(id, lam)
@@ -778,8 +961,38 @@ def add_lines(
                     normalisation = 1.0
 
                 # Calculate line luminosity and save it. Uses normalisation
-                # from spectra. Units are erg/s
+                # from spectra. Units are erg/s (written out in Lsun)
                 lines["luminosity"][indices] = luminosities * normalisation
+
+                # Read, sort and save the intrinsic line luminosities in the
+                # same way, using the same normalisation.
+                if include_intrinsic:
+                    (
+                        ids_intrinsic,
+                        line_wavelengths_intrinsic,
+                        luminosities_intrinsic,
+                    ) = cloudy.read_linelist(
+                        infile, extension="intrinsic_elin"
+                    )
+                    sorted_indices_intrinsic = np.argsort(
+                        line_wavelengths_intrinsic
+                    )
+                    ids_intrinsic = ids_intrinsic[sorted_indices_intrinsic]
+                    luminosities_intrinsic = luminosities_intrinsic[
+                        sorted_indices_intrinsic
+                    ]
+
+                    # Both files use the same linelist so the ordering
+                    # should match; guard against silent misalignment.
+                    if not np.array_equal(ids_intrinsic, ids):
+                        raise ValueError(
+                            "Line IDs in intrinsic_elin do not match "
+                            f"emergent_elin for model {infile}"
+                        )
+
+                    lines["luminosity_intrinsic"][indices] = (
+                        luminosities_intrinsic * normalisation
+                    )
 
                 # Calculate continuum luminosities. Units are erg/s/Hz.
                 if calculate_continuum:
@@ -790,11 +1003,21 @@ def add_lines(
                             spectra_[continuum_quantity][indices],
                         )
 
+    # Without a single successful model there are no line wavelengths or IDs
+    if "wavelength" not in lines:
+        raise ValueError(
+            f"All cloudy models in {cloudy_dir}/{new_grid_name} failed "
+            f"(checked extensions: {', '.join(extensions_to_check)}); "
+            "cannot build the lines grid."
+        )
+
     # Apply units to the wavelength
     lines["wavelength"] *= Angstrom
 
     # Apply units to the lines
     lines["luminosity"] *= erg / s
+    if include_intrinsic:
+        lines["luminosity_intrinsic"] *= erg / s
 
     # If continuum values are calculated add units
     for continuum_quantity in continuum_quantities:
@@ -847,6 +1070,16 @@ if __name__ == "__main__":
         required=False,
     )
 
+    # Should we include the intrinsic line luminosities in the grid?
+    parser.add_argument(
+        "--include-intrinsic-lines",
+        action="store_true",
+        help="Also store intrinsic line luminosities (from the cloudy "
+        "'intrinsic_elin' output) as lines/luminosity_intrinsic.",
+        default=False,
+        required=False,
+    )
+
     # Should we normalise by the specific ionising luminosity?
     parser.add_argument(
         "--norm-by-Q",
@@ -869,6 +1102,7 @@ if __name__ == "__main__":
     if extra_cloudy_param_file is not None:
         extra_cloudy_param_file = resolve_param_file(extra_cloudy_param_file)
     include_spectra = args.include_spectra
+    include_intrinsic_lines = args.include_intrinsic_lines
     machine = args.machine
     cloudy_executable_path = args.cloudy_executable_path
     verbose = args.verbose
@@ -992,6 +1226,20 @@ if __name__ == "__main__":
         fixed_photoionisation_params,
     )
 
+    # Cloudy output files that must exist for a model to count as successful
+    extensions_to_check = ["emergent_elin"]
+    if include_intrinsic_lines:
+        extensions_to_check.append("intrinsic_elin")
+
+    # Open (non-spherical) geometries need the reflected continuum (.refl) to
+    # separate the reflected incident light from the nebular emission. Without
+    # it nebular would include scattered incident light, so treat a missing
+    # .refl as a failed model rather than storing an incorrect spectrum.
+    # Cloudy cannot write .refl for 'sphere', so it is not required there.
+    geometry = fixed_photoionisation_params.get("geometry")
+    if include_spectra and geometry != "spherical":
+        extensions_to_check.append("refl")
+
     # Check cloudy runs and potentially replace them by the nearest grid point
     # if they fail.
     number_of_failed_models = check_cloudy_runs(
@@ -999,6 +1247,7 @@ if __name__ == "__main__":
         cloudy_dir,
         incident_index_list,
         photoionisation_index_list,
+        extensions_to_check=extensions_to_check,
         machine=machine,
         cloudy_executable_path=cloudy_executable_path,
     )
@@ -1016,8 +1265,11 @@ if __name__ == "__main__":
             incident_index_list,
             photoionisation_index_list,
             new_shape,
-            spec_names=("incident", "transmitted", "nebular", "linecont"),
+            spec_names=SPEC_NAMES,
             norm_by_q=True,
+            incident_grid_file=incident_grid.grid_filename,
+            extensions_to_check=extensions_to_check,
+            geometry=geometry,
         )
         print("Added spectra")
         print(spectra.keys())
@@ -1036,5 +1288,7 @@ if __name__ == "__main__":
         lam,
         spectra,
         line_type="linelist",
+        include_intrinsic=include_intrinsic_lines,
+        extensions_to_check=extensions_to_check,
     )
     print("Added lines")

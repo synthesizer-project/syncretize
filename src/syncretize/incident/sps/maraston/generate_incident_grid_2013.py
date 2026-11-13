@@ -127,7 +127,7 @@ if __name__ == "__main__":
         "imf_type": imf,
         "imf_masses": [0.1, 100],
         "imf_slopes": False,
-        "alpha": False,
+        "alpha_enhancement": False,
     }
 
     make_grid(model, imf, input_dir, args.grid_dir, param_file=args.param_file)

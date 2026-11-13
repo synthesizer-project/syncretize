@@ -43,11 +43,79 @@ from synthesizer._version import __version__ as synthesizer_version
 from synthesizer.emissions import Sed
 from synthesizer.units import has_units
 from tqdm import tqdm
-from unyt import dimensionless, unyt_array
+from unyt import Lsun, dimensionless, unyt_array
 
 from syncretize._version import __version__ as syncretize_version
 from syncretize.parser import load_param_file
-from syncretize.photoionisation import Ions
+from syncretize.photoionisation import EDGE_IONS, Ions, edge_wavelength
+
+#: Offset (Angstrom) of the points inserted either side of an edge.
+EDGE_OFFSET = 0.01
+
+
+def add_ionisation_edges(wavelength, spectra, ions=EDGE_IONS):
+    """Insert wavelength points either side of each ionisation edge.
+
+    Cloudy interpolates a tabulated SED log-log onto its own mesh, so an input
+    grid with no points close to an edge has that edge smeared out, which
+    biases the Q normalisation of the cloudy outputs (#151). A point just
+    blueward of each edge takes the value of its nearest blueward neighbour
+    and a point just redward that of its nearest redward neighbour, so the
+    edge stays sharp without inventing flux across it. A side that already
+    has a sample within EDGE_OFFSET of the edge is left as it is.
+
+    Args:
+        wavelength (unyt_array):
+            The (increasing) wavelength array of the spectra grid.
+        spectra (dict[str, unyt_array])
+            The spectra grids, with wavelength as the final dimension.
+        ions (sequence[str])
+            The ions whose edges to insert.
+
+    Returns:
+        tuple:
+            The new wavelength array and spectra dict.
+    """
+    lam = wavelength.to("Angstrom").value
+    if np.any(np.diff(lam) <= 0):
+        raise ValueError("The wavelength array must be strictly increasing.")
+    new, blue = [], []
+    for ion in ions:
+        edge = edge_wavelength(ion)
+        sides = ((edge - EDGE_OFFSET, True), (edge + EDGE_OFFSET, False))
+        for x, is_blue in sides:
+            # Samples between x and the edge, on this side of it
+            near = (
+                (lam >= x) & (lam < edge)
+                if is_blue
+                else ((lam > edge) & (lam <= x))
+            )
+            if lam[0] < x < lam[-1] and not near.any():
+                new.append(x)
+                blue.append(is_blue)
+    if not new:
+        return wavelength, spectra
+
+    order = np.argsort(new)
+    new, blue = np.array(new)[order], np.array(blue)[order]
+    where = np.searchsorted(lam, new)
+    # Blueward points copy the point below them, redward the point above.
+    source = np.where(blue, where - 1, where)
+
+    new_wavelength = unyt_array(np.insert(lam, where, new), "Angstrom").to(
+        wavelength.units
+    )
+    new_spectra = {}
+    for key, val in spectra.items():
+        if not has_units(val):
+            # Leave it for write_spectra to reject.
+            new_spectra[key] = val
+            continue
+        arr = np.asarray(val.value)
+        new_spectra[key] = unyt_array(
+            np.insert(arr, where, arr[..., source], axis=-1), val.units
+        )
+    return new_wavelength, new_spectra
 
 
 class GridFile:
@@ -549,7 +617,9 @@ class GridFile:
                 log_on_read=log_on_read[axis_key],
             )
 
-        # Write out the spectra grids
+        # Keep the ionisation edges sharp for cloudy (#151), then write
+        # out the spectra grids
+        wavelength, spectra = add_ionisation_edges(wavelength, spectra)
         self.write_spectra(spectra, wavelength)
 
     def write_spectra(self, spectra, wavelength):
@@ -604,7 +674,9 @@ class GridFile:
                 and ids. Grid-shaped arrays must follow root axis order and use
                 line ID as their final dimension. Reprocessed grids should also
                 include ``nebular_continuum`` and ``transmitted`` for current
-                Synthesizer line loading.
+                Synthesizer line loading. An optional
+                ``luminosity_intrinsic`` entry (intrinsic line luminosities)
+                is written to ``lines/luminosity_intrinsic``.
             weight (str)
                 Retained for compatibility; currently has no effect.
         """
@@ -623,19 +695,35 @@ class GridFile:
             "Cloudy ID of each emission line",
         )
 
-        # Write out the lumminosity array
+        # Write out the luminosity array in Lsun. In erg/s the values
+        # overflow float32 once weighted by realistic stellar populations.
         self.write_dataset(
             "lines/luminosity",
-            lines["luminosity"],
+            lines["luminosity"].to(Lsun),
             "Line luminosity",
             log_on_read=False,
         )
+
+        # Write out the intrinsic line luminosity array if provided
+        if "luminosity_intrinsic" in lines:
+            self.write_dataset(
+                "lines/luminosity_intrinsic",
+                lines["luminosity_intrinsic"],
+                "Intrinsic line luminosity (before radiative transfer "
+                "through the cloud)",
+                log_on_read=False,
+            )
 
         # If there are additional entries assume these are continuum
         # luminosities and save.
         if len(lines.keys()) > 3:
             for key, array in lines.items():
-                if key not in ["luminosity", "wavelength", "id"]:
+                if key not in [
+                    "luminosity",
+                    "luminosity_intrinsic",
+                    "wavelength",
+                    "id",
+                ]:
                     print(key)
                     self.write_dataset(
                         f"lines/{key}",

@@ -147,7 +147,7 @@ if __name__ == "__main__":
         "imf_slopes": params.get("imf_slopes", [])
         if imf_type == "bpl"
         else [],
-        "alpha": False,
+        "alpha_enhancement": False,
         "pyfsps_version": str(fsps.__version__),
         "sps_version": "3.2",
     }
