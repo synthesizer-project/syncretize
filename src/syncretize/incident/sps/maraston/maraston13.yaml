@@ -1,0 +1,11 @@
+# Parameter file for maraston/generate_incident_grid_2013.py (Maraston 2013)
+#
+#   python generate_incident_grid_2013.py maraston13.yaml \
+#       --grid-dir <grid-dir> --input-dir <input-dir>
+#
+# The source data must be obtained manually and placed in
+# <input-dir>/maraston13 (the original download site no longer exists).
+#
+#   imf_type: salpeter or kroupa
+
+imf_type: salpeter

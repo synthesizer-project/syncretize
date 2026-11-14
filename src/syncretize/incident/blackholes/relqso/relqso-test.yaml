@@ -1,3 +1,14 @@
+# Parameter file for relqso/generate_incident_grid.py (needs RELAGN and XSPEC)
+#
+#   python generate_incident_grid.py relqso-test.yaml --grid-dir <grid-dir>
+#
+#   model: name of the grid; the grid is written to <grid-dir>/<model>.hdf5
+#   log10masses: list of log10(black hole mass / Msun).
+#   log10accretion_rates_eddington: list of log10(accretion rate / Eddington).
+#   spins: list of dimensionless spins in [0, 0.998].
+#   cosine_inclinations: list of cos(inclination) in [0.09, 1.0], or a single
+#     float (e.g. 0.5) for an isotropic grid (no inclination axis).
+
 model: 'relqso-test'
 log10masses: [8., 9.]
 log10accretion_rates_eddington: [-1., 0.]

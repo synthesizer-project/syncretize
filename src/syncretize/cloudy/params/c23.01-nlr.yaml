@@ -31,7 +31,7 @@ stop_T: 500  # stopping temperature
 stop_efrac: -2  # limiting ratio of electron to H densities
 
 # MISC COMMANDS
-CMB:  # include CMB heating
+CMB:  # CMB heating at redshift z (true to include; blank or false: off)
 T_floor: 100  # lower gas temperature floor
 cosmic_rays: true  # flag for inclusion of cosmic ray heating
 # covering_factor: 1.0  #

@@ -1,3 +1,8 @@
+# Parameter file for fsps/generate_incident_grid_variable_imf.py
+#
+#   python generate_incident_grid_variable_imf.py configs/variable_high_mass_slope.yaml \
+#       --grid-dir <grid-dir>
+#
 # FSPS variable-IMF grid configuration
 #
 # This file defines a contiguous broken power-law initial mass function:
@@ -54,6 +59,9 @@
 # separate from sampling spacing and defaults to false.
 # Slope axes are dimensionless; mass-boundary axis values are interpreted as
 # solar masses and written with Msun units.
+
+# model.libraries (optional) lists the [isochrones, spectra, dust] FSPS
+# must have been compiled with; the script stops if they differ.
 
 model:
   sps_version: "4.0"

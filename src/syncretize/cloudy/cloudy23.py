@@ -159,7 +159,7 @@ def create_cloudy_input(
         "iterate_to_convergence": True,
         # ionisation parameter
         "ionisation_parameter": None,
-        # radius in log10 parsecs, only important for spherical geometry
+        # radius in parsecs (not log), only important for spherical geometry
         "radius": None,
         # covering factor. Keep as 1 as it is more efficient to simply combine
         # SEDs to get != 1.0 values
@@ -400,11 +400,12 @@ def create_cloudy_input(
         cinput.append(f"radius {np.log10(params['radius'])} log parsecs\n")
         cinput.append("sphere\n")
 
+    # On/off options: blank (None) or false turns them off
     # add background continuum
-    if params["cosmic_rays"] is not None:
+    if params["cosmic_rays"]:
         cinput.append("cosmic rays, background\n")
 
-    if params["CMB"] is not None:
+    if params["CMB"]:
         cinput.append(f"CMB {params['z']}\n")
 
     # define turbulence
@@ -416,16 +417,14 @@ def create_cloudy_input(
         cinput.append(f"hden {np.log10(params['hydrogen_density'])} log\n")
 
     # constant density flag
-    if params["constant_density"] is not None:
+    if params["constant_density"]:
         cinput.append("constant density\n")
 
     # constant pressure flag
-    if params["constant_pressure"] is not None:
+    if params["constant_pressure"]:
         cinput.append("constant pressure\n")
 
-    if (params["constant_density"] is not None) and (
-        params["constant_pressure"] is not None
-    ):
+    if params["constant_density"] and params["constant_pressure"]:
         raise InconsistentArguments(
             """Cannot specify both constant pressure and density"""
         )

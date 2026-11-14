@@ -3,12 +3,11 @@ Create a synthesizer incident grid for a broken power-law SED.
 """
 
 import numpy as np
-import yaml
 from synthesizer.utils.integrate import trapezoid
 from unyt import Angstrom, Hz, c, dimensionless, erg, s
 
 from syncretize.grid_io import GridFile
-from syncretize.parser import Parser
+from syncretize.parser import incident_parser, load_param_file
 
 
 def broken_power_law(x, edges, indices, normalisations=False, normalise=True):
@@ -76,18 +75,11 @@ if __name__ == "__main__":
     # TODO: this could be set by a separate parameter file, but this model
     # is unlikely to be used much since it should be deprecated by UnifiedAGN.
 
-    # Set up the command line arguments
-    parser = Parser(description="Broken power-law AGN model creation.")
-
-    # parameter file to use
-    parser.add_argument("--config-file", type=str, required=True)
-
-    # get the arguments
+    # Load the parameter file
+    parser = incident_parser("Broken power-law AGN model creation.")
     args = parser.parse_args()
-
-    # open the config file and extract parameters
-    with open(args.config_file, "r") as file:
-        parameters = yaml.safe_load(file)
+    param_file = args.param_file
+    parameters = load_param_file(param_file)
 
     model_name = parameters["model"]
     indices = parameters["indices"]
@@ -148,7 +140,7 @@ if __name__ == "__main__":
                 spec[i] = broken_power_law(x, edges[::-1], indices_[::-1])
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=param_file)
 
     # Define which axes are logged
     log_on_read = {"alpha1": False, "alpha2": False, "alpha3": False}

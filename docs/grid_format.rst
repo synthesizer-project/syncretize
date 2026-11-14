@@ -38,10 +38,23 @@ Core layout
    |-- Model/
    |-- lines/
    |-- CloudyParams/
+   |-- ParameterFile/
    `-- log10_specific_ionising_luminosity/
 
 Only pieces needed by a particular grid must be present. ``GridFile`` writes
 the standard provenance and weighting metadata automatically.
+
+Grids made by the incident scripts include a ``ParameterFile`` group holding
+the YAML parameter file used to make them. Its attributes mirror the file's
+keys (nested mappings become subgroups) and its ``contents`` dataset holds the
+file verbatim, so a run can be reproduced with:
+
+.. code-block:: python
+
+   import h5py
+
+   with h5py.File("grid.hdf5") as hdf:
+       open("params.yaml", "w").write(hdf["ParameterFile/contents"][()].decode())
 
 New files record ``syncretize_version``. They also record the legacy
 ``synthesizer_grids_version`` key with the same value so existing grid

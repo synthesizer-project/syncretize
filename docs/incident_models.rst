@@ -3,9 +3,26 @@ Included model conversions
 
 These scripts convert model-specific data into the common :doc:`grid_format`.
 Each model has its own directory, with its generator and any model-specific
-configuration files together. All write into ``--grid-dir``. File-backed
-conversions also need ``--input-dir`` even though the shared command-line
-parser marks it as optional.
+YAML parameter files together. Each run makes one grid. The parameter file
+describes that grid (the model variant, IMF, axes and so on), and command line
+arguments say where to read and write files::
+
+   python <script>.py <params>.yaml --grid-dir <grid-dir> \
+       [--input-dir <input-dir>] [--download]
+
+``--grid-dir`` is where the grid is written. File-backed conversions also need
+``--input-dir``, and those that can fetch their source data accept
+``--download``. Every script has an example parameter file whose comments
+list the allowed values of each parameter; copy it to make other variants.
+Scripts reject values that aren't allowed. :doc:`parameter_files` describes
+the formats. The parameter file is stored in the
+grid's ``ParameterFile`` group (see :doc:`grid_format`), so every grid records
+how it was made.
+
+Each script names its grid from the model and its parameters. Setting
+``grid_name`` in the parameter file overrides this, and the grid is written
+to ``<grid-dir>/<grid_name>.hdf5``. Use it to remake a published grid under
+its published name.
 
 SPS models
 ----------
@@ -23,7 +40,7 @@ SPS models
      - ``fsps/generate_incident_grid.py``
      - Ages, metallicities
      - Working python-FSPS/FSPS installation
-     - Ready. Default BPL IMF; optional Chabrier and IMF variants.
+     - Ready. Broken power-law or Chabrier IMF.
    * - FSPS variable IMF
      - ``fsps/generate_incident_grid_variable_imf.py``
      - Ages, metallicities, optional IMF parameter
@@ -38,7 +55,7 @@ SPS models
      - ``bpass/generate_incident_grid_2_3.py``
      - Ages, metallicities, alpha enhancement
      - Manual BPASS download
-     - Constrained. Writes both separate and combined grids regardless of flags.
+     - Ready with data. One alpha enhancement, or alpha enhancement as an axis.
    * - BC03
      - ``bc03/generate_incident_grid.py``
      - Ages, metallicities
@@ -63,7 +80,7 @@ SPS models
      - ``maraston/generate_incident_grid_2013.py``
      - Ages, metallicities
      - Manual source data
-     - Blocked by known age-unit bug; do not use until fixed.
+     - Manual setup.
    * - Maraston 2024
      - ``maraston/generate_incident_grid_2024.py``
      - Ages, metallicities
@@ -79,17 +96,19 @@ SPS models
 FSPS
 ^^^^
 
-Generate the default FSPS grid and optional variants:
+Generate an FSPS grid for the IMF set in the parameter file (a broken power
+law or Chabrier IMF):
 
 .. code-block:: console
 
    python src/syncretize/incident/sps/fsps/generate_incident_grid.py \
-       --grid-dir grids \
-       --include-chabrier \
-       --include-imf-variants
+       src/syncretize/incident/sps/fsps/fsps.yaml --grid-dir grids
 
 The result depends on the libraries compiled into the local FSPS installation.
-Record that environment with the generated file.
+The grid records them in its ``fsps_libraries`` model attribute. To insist on
+particular ones, list them in the parameter file (``libraries``, or
+``model.libraries`` for the variable-IMF script), e.g. ``[mist, miles]``; the
+script stops if FSPS was compiled with others.
 
 The variable-IMF conversion adds one slope or outer mass boundary as a genuine
 grid axis:
@@ -97,9 +116,8 @@ grid axis:
 .. code-block:: console
 
    python src/syncretize/incident/sps/fsps/generate_incident_grid_variable_imf.py \
-       --grid-dir grids \
-       --config-file \
-       src/syncretize/incident/sps/fsps/configs/variable_high_mass_slope.yaml
+       src/syncretize/incident/sps/fsps/configs/variable_high_mass_slope.yaml \
+       --grid-dir grids
 
 The provided configurations demonstrate explicit axis values and generated
 ranges. The current FSPS implementation supports one variable IMF parameter at
@@ -108,41 +126,41 @@ a time and keeps internal mass breaks fixed at 0.5 and 1.0 solar masses.
 BPASS
 ^^^^^
 
-Place downloaded BPASS data beneath ``<input-dir>/bpass/``. Generate all
-supported BPASS 2.2.1 IMF variants with:
+Place downloaded BPASS data beneath ``<input-dir>/bpass/``. The parameter
+file chooses the BPASS model (IMF) and whether to use binary or single star
+populations:
 
 .. code-block:: console
 
    python src/syncretize/incident/sps/bpass/generate_incident_grid_2_2_1.py \
-       --input-dir model-data \
-       --grid-dir grids \
-       --models all
+       src/syncretize/incident/sps/bpass/bpass-2.2.1.yaml \
+       --grid-dir grids --input-dir model-data
 
-BPASS 2.3 adds alpha enhancement as a third axis in its combined grid. The
-current script writes both individual and combined outputs regardless of the
-``--individual`` and ``--full`` flags.
+BPASS 2.3 has five alpha enhancements. Set ``alpha_enhancement`` to one of
+them for a grid at that value, or to ``axis`` for a grid with alpha
+enhancement as a third axis.
 
 BC03 and Maraston
 ^^^^^^^^^^^^^^^^^
 
-``bc03/generate_incident_grid.py --download`` retrieves the original BC03 data. The 2016
-conversion also compiles a Fortran binary reader and therefore needs ``make``
-and a Fortran compiler.
+``bc03/generate_incident_grid.py --download`` retrieves the original BC03
+data. The 2016 conversion's ``--download`` also compiles a Fortran binary
+reader and therefore needs ``make`` and a Fortran compiler.
 
 Maraston source URLs used by older scripts are no longer available. Supply
-source files through ``--input-dir``. Treat the Maraston 2013 conversion as
-unsupported until its age-unit bug is corrected.
+source files through ``--input-dir``.
 
-Other file-backed SPS conversions follow this command shape:
+Other file-backed SPS conversions follow this command shape, with an
+example parameter file next to each script:
 
 .. code-block:: console
 
    python src/syncretize/incident/sps/<model>/generate_incident_grid*.py \
-       --input-dir model-data \
-       --grid-dir grids
+       src/syncretize/incident/sps/<model>/<model>.yaml \
+       --grid-dir grids --input-dir model-data
 
-Add ``--download`` only for BC03, BC03 2016, or Yggdrasil. Other scripts need
-manually obtained files in the model-specific directory beneath
+``--download`` only works for BC03, BC03 2016, and Yggdrasil. Other scripts
+need manually obtained files in the model-specific directory beneath
 ``--input-dir``.
 
 Black-hole and AGN models
@@ -196,9 +214,8 @@ Run the self-contained broken-power-law model with:
 .. code-block:: console
 
    python src/syncretize/incident/blackholes/broken_power_law/generate_incident_grid.py \
-       --grid-dir grids \
-       --config-file \
-       src/syncretize/incident/blackholes/broken_power_law/bpl-feltre16.yaml
+       src/syncretize/incident/blackholes/broken_power_law/bpl-feltre16.yaml \
+       --grid-dir grids
 
 The supplied configuration varies only its first slope. The current
 implementation does not correctly support multiple values on the second or
@@ -220,7 +237,9 @@ Cloudy runs, not a separate physical model.
 .. code-block:: console
 
    python src/syncretize/incident/create_reduced_grid.py \
-       --grid-dir grids \
-       --original-grid my-full-grid \
-       --ages 1e6 1e7 1e8 \
-       --metallicities 0.001 0.01 0.02
+       src/syncretize/incident/reduced_grid.yaml --grid-dir grids
+
+The parameter file names the ``original_grid`` in ``--grid-dir`` and the
+``ages`` (yr), ``max_age`` (yr), and/or ``metallicities`` to keep. Write
+exponents with a decimal point and a sign (``1.0e+6``, not ``1e6`` or
+``1.0e6``) or YAML reads them as strings.

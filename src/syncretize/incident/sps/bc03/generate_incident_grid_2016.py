@@ -2,12 +2,12 @@
 Download BC03 and convert to HDF5 synthesizer grid.
 
 There are three variants (using different atmospheres) and three different
-IMFs. These are all processed automatically.
+IMFs. Each run makes the grid for the variant and IMF chosen in the parameter
+file.
 
 Example:
-    python generate_incident_grid_2016.py \
-    --input-dir path/to/input/dir \
-    --grid-dir path/to/grid/dir \
+    python generate_incident_grid_2016.py bc03-2016.yaml \
+        --grid-dir path/to/grids --input-dir path/to/input [--download]
 
 """
 
@@ -26,7 +26,7 @@ from unyt import Hz, angstrom, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import Parser
+from syncretize.parser import get_choice, incident_parser, load_param_file
 
 
 def extract_and_decompress_ised_files(directory):
@@ -281,7 +281,9 @@ def convertBC03(files=None):
     )
 
 
-def make_grid(variant, imf_type, input_dir, out_filename):
+def make_grid(
+    model, variant, imf_type, input_dir, out_filename, param_file=None
+):
     """Main function to convert BC03 grids and
     produce grids used by synthesizer"""
 
@@ -330,7 +332,7 @@ def make_grid(variant, imf_type, input_dir, out_filename):
     spec *= lam / nu  # erg s^-1 Hz^-1 Msol^-1
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=param_file)
 
     # A dictionary with Boolean values for each axis, where True
     # indicates that the attribute should be interpolated in
@@ -384,69 +386,52 @@ def make_grid(variant, imf_type, input_dir, out_filename):
 
 
 if __name__ == "__main__":
-    # Set up the command line arguments
-    parser = Parser(description="BC03-2016 download and grid creation")
-
-    # Unpack the arguments
+    parser = incident_parser(
+        "BC03-2016 download and grid creation", input_dir=True, download=True
+    )
     args = parser.parse_args()
+    params = load_param_file(args.param_file)
 
-    # the directory to store downloaded input files
-    input_dir = args.input_dir
-
-    # the directory to store the grid
-    grid_dir = args.grid_dir
+    variant = get_choice(params, "variant", ["BaSeL", "Miles", "Stelib"])
+    imf_type = get_choice(
+        params, "imf_type", ["kroupa", "salpeter", "chabrier"]
+    )
 
     sps_name = "bc03-2016"
 
     # append sps_name to input_dir to define where to store downloaded input
     # files
-    input_dir += f"/{sps_name}"
+    input_dir = f"{args.input_dir}/{sps_name}"
 
     # create directory to store downloaded output if it doesn't exist
-    if not os.path.exists(input_dir):
-        os.mkdir(input_dir)
+    os.makedirs(input_dir, exist_ok=True)
 
-    default_model = {
+    if args.download:
+        # download, compile and run the BC03 utility to convert the binary
+        # ised files to ascii
+        download_utility(input_dir)
+        compile_utility(input_dir)
+        download_data(variant, imf_type, input_dir)
+        convert_to_ascii(input_dir)
+
+    model = {
         "sps_name": sps_name,
         "sps_version": False,
-        "sps_variant": False,
-        "imf_type": False,  # named IMF or bpl (broken power law)
+        "sps_variant": variant,
+        "imf_type": imf_type,
         "imf_masses": [0.1, 100],
         "imf_slopes": False,
         "alpha_enhancement": False,
     }
 
-    # download BC03 utility
-    download_utility(input_dir)
+    synthesizer_model_name = get_model_filename(model)
+    print(synthesizer_model_name)
 
-    # compile BC03 utility
-    compile_utility(input_dir)
-
-    variants = ["BaSeL", "Miles", "Stelib"]
-
-    # do not bother with the top-heavy IMF it has a different naming scheme
-    # not worth the hassle.
-    imf_types = ["kroupa", "salpeter", "chabrier"]
-
-    if args.download:
-        # download all the variant and IMF types desired
-        for variant in variants:
-            for imf_type in imf_types:
-                download_data(variant, imf_type, input_dir)
-
-        # Convert the binary ised files to ascii
-        convert_to_ascii(input_dir)
-
-    for variant in variants:
-        for imf_type in imf_types:
-            model_variations = {"sps_variant": variant, "imf_type": imf_type}
-
-            model = default_model | model_variations
-
-            synthesizer_model_name = get_model_filename(model)
-            print(synthesizer_model_name)
-
-            # this is the full path to the ultimate HDF5 grid file
-            out_filename = f"{grid_dir}/{synthesizer_model_name}.hdf5"
-
-            make_grid(variant, imf_type, input_dir, out_filename)
+    make_grid(
+        model,
+        variant,
+        imf_type,
+        input_dir,
+        f"{args.grid_dir}/{synthesizer_model_name}.hdf5",
+        param_file=args.param_file,
+    )

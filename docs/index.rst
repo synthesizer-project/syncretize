@@ -30,4 +30,5 @@ metadata describing how Synthesizer should interpret them.
    :maxdepth: 2
    :caption: Reference
 
+   parameter_files
    grid_file

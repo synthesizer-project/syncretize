@@ -1,3 +1,8 @@
+# Parameter file for fsps/generate_incident_grid_variable_imf.py
+#
+#   python generate_incident_grid_variable_imf.py configs/variable_single_slope.yaml \
+#       --grid-dir <grid-dir>
+#
 # FSPS variable single-power-law IMF configuration
 #
 # This config defines one slope across the complete IMF mass range:
@@ -19,6 +24,9 @@
 #
 # Explicit `values` and generated `range` sampling are mutually exclusive.
 # `log_on_read` controls Synthesizer interpolation coordinates, not sampling.
+
+# model.libraries (optional) lists the [isochrones, spectra, dust] FSPS
+# must have been compiled with; the script stops if they differ.
 
 model:
   sps_version: "4.0"

@@ -7,6 +7,7 @@ import yaml
 
 from syncretize.incident.sps.fsps_utils import (
     expand_fsps_slopes,
+    fsps_libraries,
     imf_values_at_axis,
     load_fsps_imf_config,
     parse_fsps_imf_config,
@@ -126,3 +127,13 @@ def test_variable_axis_filename_follows_canonical_prefix():
         "fsps-3.2-mistmiles_bpl-0.08,0.5,1.0,120.0-1.3,2.3,2.3"
         "_axis-imf_high_mass_slope"
     )
+
+
+def test_fsps_libraries_checks_expected():
+    from types import SimpleNamespace
+
+    sp = SimpleNamespace(libraries=(b"mist", b"miles", b"DL07"))
+    assert fsps_libraries(sp) == ["mist", "miles", "DL07"]
+    assert fsps_libraries(sp, ["mist", "miles"]) == ["mist", "miles", "DL07"]
+    with pytest.raises(ValueError, match="compiled with"):
+        fsps_libraries(sp, ["mist", "c3k_lr"])

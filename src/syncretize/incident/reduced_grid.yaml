@@ -1,0 +1,19 @@
+# Parameter file for create_reduced_grid.py
+#
+#   python create_reduced_grid.py reduced_grid.yaml --grid-dir <grid-dir>
+#
+# Makes a smaller grid by picking the nearest points of an existing grid in
+# <grid-dir>. Give any of ages, max_age and metallicities; axes not given
+# are kept whole.
+# Write exponents with a decimal point and a sign (1.0e+6, not 1e6 or
+# 1.0e6), otherwise YAML reads them as strings.
+#
+#   original_grid: name of the grid to reduce, without .hdf5
+#   ages: list of ages in yr
+#   max_age: drop ages above this, in yr
+#   metallicities: list of metallicities (mass fractions)
+
+original_grid: bpass-2.2.1-bin_chabrier03-0.1,300.0
+ages: [1.0e+6, 1.0e+7, 1.0e+8]
+# max_age: 1.0e+8
+metallicities: [0.001, 0.01, 0.02]

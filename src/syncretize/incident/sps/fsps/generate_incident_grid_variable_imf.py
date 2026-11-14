@@ -2,8 +2,7 @@
 
 Example:
     python generate_incident_grid_variable_imf.py \
-        --grid-dir path/to/grid/dir \
-        --config-file fsps/configs/variable_high_mass_slope.yaml
+        fsps/configs/variable_high_mass_slope.yaml --grid-dir path/to/grids
 """
 
 import fsps
@@ -13,11 +12,12 @@ from unyt import Hz, Msun, angstrom, dimensionless, erg, s, yr
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.fsps_utils import (
     expand_fsps_slopes,
+    fsps_libraries,
     imf_values_at_axis,
     load_fsps_imf_config,
 )
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import Parser
+from syncretize.parser import incident_parser
 
 
 def _axis_description(config):
@@ -55,7 +55,8 @@ def generate_grid(config, grid_dir, config_file):
         imf3=fsps_slopes[2],
     )
 
-    variant = "".join(library.decode("utf-8") for library in sp.libraries[:2])
+    libraries = fsps_libraries(sp, config["libraries"])
+    variant = "".join(libraries[:2])
     axis = config["axis"]
     model = {
         "sps_name": "fsps",
@@ -66,6 +67,7 @@ def generate_grid(config, grid_dir, config_file):
         "imf_slopes": fixed_slopes,
         "alpha_enhancement": False,
         "pyfsps_version": str(fsps.__version__),
+        "fsps_libraries": ",".join(libraries),
         "imf_config": str(config_file),
     }
     if axis is not None:
@@ -124,8 +126,8 @@ def generate_grid(config, grid_dir, config_file):
         descriptions[axis["axis_name"]] = _axis_description(config)
         log_on_read[axis["axis_name"]] = axis["log_on_read"]
 
-    out_grid = GridFile(out_filename)
-    print(f"Writing {out_filename}", flush=True)
+    out_grid = GridFile(out_filename, param_file=config_file)
+    print(f"Writing {out_grid.filepath}", flush=True)
     out_grid.write_grid_common(
         model=model,
         axes=axes,
@@ -146,19 +148,11 @@ def generate_grid(config, grid_dir, config_file):
 
 
 if __name__ == "__main__":
-    parser = Parser(description="YAML-configured FSPS IMF grid creation")
-    parser.add_argument(
-        "--config-file",
-        required=True,
-        help="Path to an FSPS IMF YAML configuration file",
-    )
+    parser = incident_parser("YAML-configured FSPS IMF grid creation")
     args = parser.parse_args()
 
-    if args.download:
-        print("FSPS is a Python package; no separate download is required")
-
     generate_grid(
-        load_fsps_imf_config(args.config_file),
+        load_fsps_imf_config(args.param_file),
         args.grid_dir,
-        args.config_file,
+        args.param_file,
     )

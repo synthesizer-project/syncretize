@@ -148,7 +148,7 @@ def create_cloudy_input(
     default_params = {
         # ionisation parameter
         "ionisation_parameter": 0.01,
-        # radius in log10 parsecs, only important for spherical geometry
+        # radius in parsecs (not log), only important for spherical geometry
         "radius": 0.01,
         # covering factor. Keep as 1 as it is more efficient to simply combine
         # SEDs to get != 1.0 values
@@ -278,6 +278,14 @@ def create_cloudy_input(
             delta_Si = (
                 10 ** abundances.total["Si"] - 10 ** abundances.gas["Si"]
             )
+
+            # Cloudy reads a scale factor <= 0 as a log, so grains without
+            # depletion would silently get near-default abundances
+            if delta_graphite <= 0 or delta_Si <= 0:
+                raise InconsistentArguments(
+                    "Can not scale grains without depletion of C and Si. "
+                    "Use a depletion model or set no_grain_scaling."
+                )
 
             # define the reference abundances for the different grain types
             # this should be the dust-phase abundance in the particular
