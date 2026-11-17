@@ -16,8 +16,12 @@ Cloudy scripts use the Parser class:
 """
 
 import argparse
+import re
+from types import SimpleNamespace
 
+import numpy as np
 import yaml
+from scipy.stats import qmc
 
 
 def incident_parser(description, input_dir=False, download=False):
@@ -75,6 +79,181 @@ def load_param_file(param_file):
     """
     with open(param_file) as file:
         return yaml.safe_load(file) or {}
+
+
+#: The sections every incident parameter file has, in order
+SECTIONS = ("Model", "Constants", "Axes", "Sampling")
+
+#: How an axis entry can be sampled
+AXIS_TYPES = ("values", "linear-range", "log-range", "sobol")
+
+
+class _Loader(yaml.SafeLoader):
+    """A YAML loader that reads 1e6 and 1.0e6 as floats, not strings."""
+
+
+_Loader.add_implicit_resolver(
+    "tag:yaml.org,2002:float",
+    re.compile(
+        r"^[-+]?(?:[0-9][0-9_]*\.[0-9_]*(?:[eE][-+]?[0-9]+)?"
+        r"|\.[0-9_]+(?:[eE][-+]?[0-9]+)?"
+        r"|[0-9][0-9_]*[eE][-+]?[0-9]+"
+        r"|\.(?:inf|Inf|INF)|[-+]\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$"
+    ),
+    list("-+0123456789."),
+)
+
+
+def load_params(
+    param_file,
+    model_keys=(),
+    constant_keys=(),
+    axis_names=(),
+    allow_sobol=False,
+):
+    """
+    Read an incident parameter file in the Model/Constants/Axes/Sampling form.
+
+    Every section must be present, but may be empty (a blank key). Keys a
+    script doesn't list are rejected, so a typo can't silently fall back to a
+    default.
+
+    Args:
+        param_file (str):
+            The path to the parameter file.
+        model_keys, constant_keys, axis_names (iterable of str):
+            The keys the script accepts in Model and Constants, and the axes
+            it can build.
+        allow_sobol (bool):
+            Can the script build a grid from Sobol-sampled points?
+
+    Returns:
+        SimpleNamespace:
+            ``model`` and ``constants`` (dicts), ``axes`` (name -> array of
+            values; for Sobol axes these are the sampled points, one per
+            model), ``axis_info`` (name -> the axis entry) and ``sampling``.
+    """
+    with open(param_file) as file:
+        raw = yaml.load(file, Loader=_Loader) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{param_file} must be a mapping of sections")
+
+    unknown = set(raw) - set(SECTIONS)
+    missing = [section for section in SECTIONS if section not in raw]
+    if unknown or missing:
+        raise ValueError(
+            f"{param_file} needs exactly the sections {list(SECTIONS)} "
+            f"(missing {missing}, unknown {sorted(unknown)}); leave a section "
+            "blank to use the defaults"
+        )
+
+    model = raw["Model"] or {}
+    constants = raw["Constants"] or {}
+    entries = raw["Axes"] or []
+    sampling = raw["Sampling"] or {}
+    _check_keys(param_file, "Model", model, model_keys)
+    _check_keys(param_file, "Constants", constants, constant_keys)
+
+    axis_info = {}
+    for entry in entries:
+        name = entry.get("name")
+        if name not in axis_names:
+            raise ValueError(
+                f"{param_file}: axis {name!r} must be one of "
+                f"{list(axis_names)}"
+            )
+        if name in axis_info or name in constants:
+            raise ValueError(f"{param_file}: {name} is given more than once")
+        if entry.get("type") not in AXIS_TYPES:
+            raise ValueError(
+                f"{param_file}: axis {name} type must be one of "
+                f"{list(AXIS_TYPES)}, got {entry.get('type')!r}"
+            )
+        axis_info[name] = entry
+
+    sobol = [name for name, e in axis_info.items() if e["type"] == "sobol"]
+    if sobol and not allow_sobol:
+        raise ValueError(f"{param_file}: this script can't use Sobol axes")
+    # Sobol points can't yet be combined with regular axes (that would need
+    # the product of the point set and the regular axes)
+    if sobol and len(sobol) != len(axis_info):
+        raise ValueError(
+            f"{param_file}: either every axis is Sobol-sampled or none is"
+        )
+
+    axes = (
+        _sobol_axes(param_file, axis_info, sampling)
+        if sobol
+        else {
+            name: _axis_values(param_file, entry)
+            for name, entry in axis_info.items()
+        }
+    )
+    return SimpleNamespace(
+        model=model,
+        constants=constants,
+        axes=axes,
+        axis_info=axis_info,
+        sampling=sampling,
+    )
+
+
+def _check_keys(param_file, section, values, allowed):
+    """Reject keys in a section that the script doesn't accept."""
+    unknown = set(values) - set(allowed)
+    if unknown:
+        raise ValueError(
+            f"{param_file}: unknown {section} keys {sorted(unknown)}; "
+            f"allowed keys are {list(allowed)}"
+        )
+
+
+def _axis_values(param_file, entry):
+    """Return the values of a regular axis entry."""
+    kind = entry["type"]
+    if kind == "values":
+        values = np.asarray(entry["values"], dtype=float)
+    else:
+        lo, hi, n = entry["min"], entry["max"], int(entry["n"])
+        if kind == "log-range":
+            if lo <= 0 or hi <= 0:
+                raise ValueError(
+                    f"{param_file}: log-range axis {entry['name']} needs "
+                    "positive limits"
+                )
+            values = np.geomspace(lo, hi, n)
+        else:
+            values = np.linspace(lo, hi, n)
+    if values.size == 0 or np.any(np.diff(values) <= 0):
+        raise ValueError(
+            f"{param_file}: axis {entry['name']} must be strictly increasing"
+        )
+    return values
+
+
+def _sobol_axes(param_file, axis_info, sampling):
+    """Sample every axis together from one Sobol sequence."""
+    if "n_samples" not in sampling:
+        raise ValueError(f"{param_file}: Sobol axes need Sampling.n_samples")
+    n_samples = int(sampling["n_samples"])
+    sampler = qmc.Sobol(
+        d=len(axis_info),
+        scramble=sampling.get("scramble", True),
+        seed=sampling.get("seed"),
+    )
+    # Sobol points balance best in powers of two; keep the first n_samples
+    unit = sampler.random(n=2 ** int(np.ceil(np.log2(n_samples))))[:n_samples]
+
+    axes = {}
+    for column, (name, entry) in zip(unit.T, axis_info.items()):
+        lo, hi = entry["min"], entry["max"]
+        if entry.get("scale", "linear") == "log":
+            axes[name] = 10 ** (
+                np.log10(lo) + column * (np.log10(hi) - np.log10(lo))
+            )
+        else:
+            axes[name] = lo + column * (hi - lo)
+    return axes
 
 
 def get_choice(params, key, options):

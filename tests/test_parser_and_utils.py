@@ -1,9 +1,10 @@
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from syncretize.cloudy.utils import get_cloudy_params, resolve_param_file
-from syncretize.parser import Parser, get_choice
+from syncretize.parser import Parser, get_choice, load_params
 
 
 def test_parser_cloudy_arguments(tmp_path):
@@ -98,3 +99,61 @@ def test_resolve_param_file_takes_paths_and_names(tmp_path):
     assert resolve_param_file("missing", param_dir=run_dir) == (
         run_dir / "missing.yaml"
     )
+
+
+def _write(tmp_path, text):
+    path = tmp_path / "params.yaml"
+    path.write_text(text)
+    return path
+
+
+def test_load_params_builds_axes_and_checks_keys(tmp_path):
+    path = _write(
+        tmp_path,
+        "Model:\n  variant: bin\n"
+        "Constants:\n  max_age: 1e8\n"
+        "Axes:\n"
+        "  - {name: a, type: values, values: [1.0, 3.0]}\n"
+        "  - {name: b, type: linear-range, min: 0, max: 1, n: 3}\n"
+        "  - {name: c, type: log-range, min: 1.0e+2, max: 1e4, n: 3}\n"
+        "Sampling:\n",
+    )
+    params = load_params(path, ["variant"], ["max_age"], ["a", "b", "c"])
+    assert params.model == {"variant": "bin"}
+    # 1e8 is a float, not the string YAML 1.1 would give
+    assert params.constants["max_age"] == 1e8
+    assert params.axes["a"].tolist() == [1.0, 3.0]
+    assert params.axes["b"].tolist() == [0.0, 0.5, 1.0]
+    np.testing.assert_allclose(params.axes["c"], [1e2, 1e3, 1e4])
+
+    with pytest.raises(ValueError, match="unknown Model keys"):
+        load_params(path, [], ["max_age"], ["a", "b", "c"])
+    with pytest.raises(ValueError, match="axis 'c' must be one of"):
+        load_params(path, ["variant"], ["max_age"], ["a", "b"])
+
+
+def test_load_params_needs_every_section(tmp_path):
+    path = _write(tmp_path, "Model:\nConstants:\nAxes:\n")
+    with pytest.raises(ValueError, match="missing \\['Sampling'\\]"):
+        load_params(path)
+
+
+def test_load_params_sobol(tmp_path):
+    path = _write(
+        tmp_path,
+        "Model:\nConstants:\n"
+        "Axes:\n"
+        "  - {name: mass, type: sobol, min: 1.0e+6, max: 1.0e+10, "
+        "scale: log}\n"
+        "  - {name: spin, type: sobol, min: 0.0, max: 0.998}\n"
+        "Sampling:\n  n_samples: 100\n  seed: 1\n",
+    )
+    params = load_params(path, axis_names=["mass", "spin"], allow_sobol=True)
+    assert params.axes["mass"].shape == params.axes["spin"].shape == (100,)
+    assert 1e6 <= params.axes["mass"].min() < params.axes["mass"].max() <= 1e10
+    assert (
+        0.0 <= params.axes["spin"].min() < params.axes["spin"].max() <= 0.998
+    )
+
+    with pytest.raises(ValueError, match="can't use Sobol"):
+        load_params(path, axis_names=["mass", "spin"])
