@@ -231,16 +231,16 @@ Cloudy parameter files
 
 Cloudy parameter files set the photoionisation model used by
 ``create_cloudy_input_grid.py`` and ``create_synthesizer_grid.py``. They are
-passed by name, and the ``.yaml`` extension is optional:
+passed by name or path:
 
 .. code-block:: console
 
    --cloudy-paramfile c23.01-sps [--cloudy-paramfile-extra my-overrides]
 
-The file is looked up in ``params/`` relative to the directory the script is
-run from (``src/syncretize/cloudy/params`` holds the ready-made files). The
-file's name (without ``.yaml``) becomes part of the reprocessed grid's name,
-e.g. ``<incident-grid>_cloudy-c23.01-sps``.
+An existing path is used as given. Otherwise ``.yaml`` is added if missing
+and the file is looked up in ``src/syncretize/cloudy/params``. The file's
+name (without ``.yaml``) becomes part of the reprocessed grid's name, e.g.
+``<incident-grid>_cloudy-c23.01-sps``.
 
 How values are read
 ^^^^^^^^^^^^^^^^^^^
@@ -318,10 +318,9 @@ Keys
      - Save the continuum; the line list to save (a bundled name such as
        ``linelist-standard.dat`` or a path); iterate until converged.
 
-**On/off options are on whenever the key has a value.** ``cosmic_rays``,
-``CMB``, ``constant_density`` and ``constant_pressure`` add their Cloudy
-command if the key is set to anything, including ``false``. To turn one off,
-leave the value blank or remove the key.
+``cosmic_rays``, ``CMB``, ``constant_density`` and ``constant_pressure`` are
+on/off options: set them to ``true`` to add their Cloudy command, and to
+``false``, leave the value blank or remove the key to leave it out.
 
 Sobol parameter files
 ^^^^^^^^^^^^^^^^^^^^^

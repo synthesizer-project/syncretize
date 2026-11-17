@@ -1,14 +1,55 @@
+from pathlib import Path
+
 import numpy as np
 import yaml
 
+# Ready-made Cloudy parameter files shipped with syncretize
+PARAM_DIR = Path(__file__).parent / "params"
 
-def get_cloudy_params(param_file="c23.01-test", param_dir="params"):
+
+def resolve_param_file(param_file, param_dir=None):
+    """
+    Find a Cloudy parameter file.
+
+    The ".yaml" extension is optional. The first of these that exists is
+    used: the path as given, the file in param_dir (e.g. the copy saved
+    beside a grid's Cloudy runs), then the ready-made parameter file of that
+    name (cloudy/params).
+
+    Arguments:
+        param_file (str or Path)
+            path or name of the parameter file
+        param_dir (str, optional)
+            directory to look in after the path as given
+
+    Returns:
+        path (Path)
+            path to the parameter file. If none exists, the last location
+            tried in param_dir (or cloudy/params), so the error names it.
+    """
+    name = str(param_file)
+    if Path(name).is_file():
+        return Path(name)
+    if not name.endswith(".yaml"):
+        name += ".yaml"
+    candidates = [Path(name)]
+    if param_dir is not None:
+        candidates.append(Path(param_dir) / name)
+    candidates.append(PARAM_DIR / name)
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[1] if param_dir is not None else candidates[-1]
+
+
+def get_cloudy_params(param_file="c23.01-test", param_dir=None):
     """
     Read parameters from a yaml parameter file
 
     Arguments:
-        param_file (str)
-            filename of the parameter file
+        param_file (str or Path)
+            path or name of the parameter file
+            (see resolve_param_file)
         param_dir (str)
             directory containing the parameter file
 
@@ -20,7 +61,7 @@ def get_cloudy_params(param_file="c23.01-test", param_dir="params"):
     """
 
     # open paramter file
-    with open(f"{param_dir}/{param_file}", "r") as stream:
+    with open(resolve_param_file(param_file, param_dir), "r") as stream:
         try:
             params = yaml.safe_load(stream)
         except yaml.YAMLError as exc:
