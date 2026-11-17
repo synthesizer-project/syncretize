@@ -9,28 +9,21 @@ create a new grid with only those models.
 Example Usage:
 
     ```bash
-    python create_reduced_grid.py reduced_grid.yaml --grid-dir /path/to/grid
-    ```
-
-    where reduced_grid.yaml contains:
-
-    ```yaml
-    original_grid: original_grid_name
-    ages: [1.0e6, 1.0e7, 1.0e8]       # yr, optional
-    max_age: 1.0e8                    # yr, optional
-    metallicities: [0.001, 0.01]      # optional
+    python create_reduced_grid.py --grid-dir /path/to/grid
+        --original-grid original_grid_name --ages 1e6 1e7 1e8
     ```
 """
+
+import argparse
 
 import numpy as np
 from synthesizer.grid import Grid
 from unyt import Hz, erg, s, yr
 
 from syncretize.grid_io import GridFile
-from syncretize.parser import incident_parser, load_param_file
 
 
-def reduce_grid(original_grid, param_file=None, **axes):
+def reduce_grid(original_grid, **axes):
     """
     Reduce the size of a grid by sampling the original axes.
 
@@ -106,7 +99,7 @@ def reduce_grid(original_grid, param_file=None, **axes):
         }
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_path, param_file=param_file)
+    out_grid = GridFile(out_path)
 
     # Write everything out thats common to all models
     out_grid.write_grid_common(
@@ -122,46 +115,82 @@ def reduce_grid(original_grid, param_file=None, **axes):
 
 
 if __name__ == "__main__":
-    parser = incident_parser("Reduce a grid")
+    parser = argparse.ArgumentParser(description="Reduce a grid")
+
+    parser.add_argument(
+        "--grid-dir",
+        type=str,
+        required=True,
+        help="path to grids",
+    )
+
+    parser.add_argument(
+        "--original-grid",
+        type=str,
+        required=True,
+        help="the name of the original_grid",
+    )
+
+    parser.add_argument(
+        "--max-age",
+        type=float,
+        required=False,
+        default=None,
+        help="max age in years",
+    )
+
+    # Create an argument which will store new ages and metallicities in a list
+    parser.add_argument(
+        "--ages",
+        nargs="+",
+        type=float,
+        required=False,
+        default=None,
+        help="Specific ages in yrs to use along the age axis "
+        "(takes a list, e.g. --ages 1e6 1e7 1e8)",
+    )
+    parser.add_argument(
+        "--metallicities",
+        nargs="+",
+        type=float,
+        required=False,
+        default=None,
+        help="Specific metallicities to use along the metallicity axis "
+        "(takes a list, e.g. --metallicities 0.001 0.01 0.02)",
+    )
+
     args = parser.parse_args()
-    param_file = args.param_file
-    params = load_param_file(param_file)
-    # PyYAML reads 1e8 (no decimal point) as a string, hence the floats
-    max_age = params.get("max_age") and float(params["max_age"])
-    new_ages = params.get("ages")
-    new_metallicities = params.get("metallicities")
 
     # open the parent incident grid
     original_grid = Grid(
-        params["original_grid"],
-        grid_dir=args.grid_dir,
+        args.original_grid,
+        grid_dir=f"{args.grid_dir}",
     )
 
     # Initialise the new axes
     ages = None
     metallicities = None
 
-    if new_ages:
-        ages = np.array(new_ages, dtype=float) * yr
+    if args.ages is not None:
+        ages = np.array(args.ages) * yr
         print(f"New ages: {ages}")
 
-    elif max_age:
-        ages = original_grid.ages[original_grid.ages <= max_age]
+    elif args.max_age:
+        ages = original_grid.ages[original_grid.ages <= args.max_age]
 
-    if new_metallicities:
+    else:
+        raise ValueError("No reduction for any axis specified")
+
+    if args.metallicities:
         metallicities = np.array(
-            new_metallicities,
-            dtype=float,
+            args.metallicities,
         )
         print(f"New metallicities: {metallicities}")
 
     # We can also impose a maximum age if new_age were set... bit pointless
     # but it's possible
-    if max_age:
-        ages = ages[ages <= max_age]
-
-    if ages is None and metallicities is None:
-        raise ValueError("No reduction for any axis specified")
+    if args.max_age:
+        ages = ages[ages <= args.max_age]
 
     # Collect which axes we are modifying
     axes = {}
@@ -171,4 +200,4 @@ if __name__ == "__main__":
         axes["metallicities"] = metallicities
 
     # Just do it...
-    reduce_grid(original_grid, param_file=param_file, **axes)
+    reduce_grid(original_grid, **axes)

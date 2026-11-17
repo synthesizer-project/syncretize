@@ -229,9 +229,7 @@ Cloudy runs, not a separate physical model.
 .. code-block:: console
 
    python src/syncretize/incident/create_reduced_grid.py \
-       src/syncretize/incident/reduced_grid.yaml --grid-dir grids
-
-The parameter file names the ``original_grid`` in ``--grid-dir`` and the
-``ages`` (yr), ``max_age`` (yr), and/or ``metallicities`` to keep. Write
-exponents with a decimal point and a sign (``1.0e+6``, not ``1e6`` or
-``1.0e6``) or YAML reads them as strings.
+       --grid-dir grids \
+       --original-grid my-full-grid \
+       --ages 1e6 1e7 1e8 \
+       --metallicities 0.001 0.01 0.02

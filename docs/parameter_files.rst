@@ -1,14 +1,12 @@
 Parameter files
 ===============
 
-Every grid is described by a YAML parameter file. There are three kinds:
+Every grid is described by a YAML parameter file. There are two kinds:
 
 * **incident parameter files**, one per run of an incident-model script, which
   choose the model variant and its axes;
 * **Cloudy parameter files**, which set the photoionisation model used to
-  reprocess an incident grid;
-* the **reduced grid** parameter file, which picks a subset of an existing
-  grid.
+  reprocess an incident grid.
 
 Each script ships with example files beside it. Their comments list the
 allowed values of every key, so the usual way to make a new grid is to copy
@@ -209,22 +207,6 @@ Every black hole parameter file has a ``model`` key, which names the grid
    * - RELAGN (``relagn/relagn.yaml``)
      - As QSOSED, plus exactly one of ``spins`` or
        ``radiative_efficiencies`` (converted to spins).
-
-Reduced grids
-^^^^^^^^^^^^^
-
-``incident/create_reduced_grid.py`` picks the nearest points of an existing
-grid in ``--grid-dir``:
-
-.. code-block:: yaml
-
-   original_grid: bpass-2.2.1-bin_chabrier03-0.1,300.0
-   ages: [1.0e+6, 1.0e+7, 1.0e+8]   # yr
-   # max_age: 1.0e+8                # yr
-   metallicities: [0.001, 0.01, 0.02]
-
-``original_grid`` is the grid name without ``.hdf5``. Give any of ``ages``,
-``max_age`` and ``metallicities``; axes that aren't given are kept whole.
 
 Cloudy parameter files
 ----------------------
