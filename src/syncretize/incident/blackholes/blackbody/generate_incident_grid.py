@@ -18,12 +18,11 @@ integrated over cloudy's full energy range (10 MHz to 100 MeV).
 """
 
 import numpy as np
-import yaml
 from synthesizer.utils.integrate import trapezoid
 from unyt import Hz, K, c, erg, s
 
 from syncretize.grid_io import GridFile
-from syncretize.parser import Parser
+from syncretize.parser import incident_parser, load_param_file
 
 # 1 Ryd in Hz and in K (cloudy's TE1RYD = h c R_inf / k)
 RYD_HZ = 3.289841960250e15
@@ -115,18 +114,11 @@ def blackbody_lnu(lam, blackbody_temperature):
 
 
 if __name__ == "__main__":
-    # Set up the command line arguments
-    parser = Parser(description="cloudy blackbody model creation.")
-
-    # parameter file to use
-    parser.add_argument("--config-file", type=str, required=True)
-
-    # get the arguments
+    # Load the parameter file
+    parser = incident_parser("cloudy blackbody model creation.")
     args = parser.parse_args()
-
-    # open the config file and extract parameters
-    with open(args.config_file, "r") as file:
-        parameters = yaml.safe_load(file)
+    param_file = args.param_file
+    parameters = load_param_file(param_file)
 
     model_name = parameters["model"]
 
@@ -158,7 +150,7 @@ if __name__ == "__main__":
     )
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=param_file)
 
     # Write everything out that's common to all models
     out_grid.write_grid_common(

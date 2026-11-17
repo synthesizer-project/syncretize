@@ -84,7 +84,6 @@ def test_grid_axis_and_ionising_luminosity(tmp_path):
         [
             sys.executable,
             SCRIPT,
-            "--config-file",
             str(config_file),
             "--grid-dir",
             str(tmp_path),
@@ -119,7 +118,6 @@ def test_rejects_temperatures_not_increasing(tmp_path):
         [
             sys.executable,
             SCRIPT,
-            "--config-file",
             str(config_file),
             "--grid-dir",
             str(tmp_path),

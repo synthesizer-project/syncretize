@@ -15,12 +15,11 @@ installed.
 import sys
 
 import numpy as np
-import yaml
 from synthesizer.utils.integrate import trapezoid
 from unyt import Angstrom, Hz, Msun, c, dimensionless, erg, s
 
 from syncretize.grid_io import GridFile
-from syncretize.parser import Parser
+from syncretize.parser import incident_parser, load_param_file
 
 sys.path.append("RELAGN/src/python_version")
 
@@ -47,18 +46,11 @@ if __name__ == "__main__":
         "cosine_inclinations": dimensionless,
     }
 
-    # Set up the command line arguments
-    parser = Parser(description="QSOSED AGN model creation.")
-
-    # parameter file to use
-    parser.add_argument("--config-file", type=str, required=True)
-
-    # get the arguments
+    # Load the parameter file
+    parser = incident_parser("QSOSED AGN model creation.")
     args = parser.parse_args()
-
-    # open the config file and extract parameters
-    with open(args.config_file, "r") as file:
-        parameters = yaml.safe_load(file)
+    param_file = args.param_file
+    parameters = load_param_file(param_file)
 
     model_name = parameters["model"]
     mass = 10 ** np.array(parameters["log10masses"])
@@ -196,7 +188,7 @@ if __name__ == "__main__":
                     spec[i1, i2, i3] /= bolometric_luminosity
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=param_file)
 
     if not isotropic:
         log_on_read["cosine_inclinations"] = False

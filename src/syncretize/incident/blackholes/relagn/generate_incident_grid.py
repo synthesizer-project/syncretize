@@ -16,7 +16,6 @@ import itertools
 from multiprocessing import Pool
 
 import numpy as np
-import yaml
 from numpy.typing import NDArray
 
 # Import relagn module
@@ -26,7 +25,7 @@ from synthesizer.exceptions import InconsistentParameter
 from unyt import Angstrom, Hz, Msun, dimensionless, erg, s
 
 from syncretize.grid_io import GridFile
-from syncretize.parser import Parser
+from syncretize.parser import incident_parser, load_param_file
 
 
 def rename_dictionary_key(
@@ -199,21 +198,14 @@ if __name__ == "__main__":
     cosine_inclination_range = [0.09, 1.0]
     spin_range = [0.0, 0.998]
 
-    # Set up the command line arguments
-    parser = Parser(description="RELAGN AGN model creation.")
-
-    # parameter file to use
-    parser.add_argument("--config-file", type=str, required=True)
-
-    # number of processes to use
-    parser.add_argument("--num-procs", type=int, default=8)
-
-    # get the arguments
+    # Load the parameter file
+    parser = incident_parser("RELAGN AGN model creation.")
+    parser.add_argument(
+        "--num-procs", type=int, default=8, help="Number of processes."
+    )
     args = parser.parse_args()
-
-    # open the config file and extract parameters
-    with open(args.config_file, "r") as file:
-        parameters = yaml.safe_load(file)
+    param_file = args.param_file
+    parameters = load_param_file(param_file)
 
     model_name = parameters["model"]
     mass = 10 ** np.array(parameters["log10masses"])
@@ -323,7 +315,7 @@ if __name__ == "__main__":
     spec = np.array(results).reshape(final_shape)
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=param_file)
 
     if not isotropic:
         log_on_read["cosine_inclinations"] = False
