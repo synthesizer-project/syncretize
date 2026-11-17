@@ -4,7 +4,14 @@ Create dust extinction curves from Draine optical properties.
 
 Parse Draine Sil_81.gz, Gra_81.gz, PAHion_30.gz, PAHneu_30.gz files,
 construct grain-size distributions (either MRN or the custom lognormal form)
-and compute A(lam)/NH (units of mag cm^2 per H).
+and compute the mass opacity of each grain component,
+kappa(lam) = integral pi a^2 Q(a, lam) n(a) da (units of cm^2 per g of dust),
+with n(a) normalised to one gram of dust over the radii where Q is defined.
+
+The extinction scales linearly with the dust mass, so no dust-to-gas grid
+is needed: for a line of sight with dust mass column Sigma_dust,c of each
+component c, the optical depth is tau(lam) = sum_c kappa_c(lam) Sigma_dust,c
+and A(lam) = 1.086 tau(lam).
 
 Two sets of curves are written:
   - extinction_curves: computed with Q_ext, i.e. every scattered photon is
@@ -18,8 +25,8 @@ and graphite, and 1 bin for PAHs (ionized and neutral).
 
 The grid can be coupled with simulations having two bins of grain
 size distribution to generate self-consistent extinction curves
-using the dust-to-gas ratio along each line-of-sight for the
-dust grain compoenent.
+using the dust mass column along each line-of-sight for each
+dust grain component.
 """
 
 import argparse
@@ -40,7 +47,7 @@ from synthesizer.utils.integrate import trapezoid
 from unyt import (
     Angstrom,
     cm,
-    dimensionless,
+    g,
     um,
 )
 
@@ -209,14 +216,15 @@ def build_mrn_component(
     a_min: float,
     a_max: float,
     power: float,
-    mass_per_H: float,
+    dust_mass: float,
     rho: float,
 ) -> NDArray:
     """
     Build a truncated MRN-like grain-size distribution component
     with dn/da propto a^power over [a_min, a_max] (micron).
-    n(a) = C * a^power, where C is a normalisation constant.
-    (C has units per H per cm^(power+1))
+    n(a) = C * a^power, where C is a normalisation constant set
+    numerically so that the mass on a_grid_micron equals dust_mass;
+    any part of [a_min, a_max] outside the grid gets no mass.
 
     Args:
         a_grid_micron (NDArray)
@@ -227,58 +235,42 @@ def build_mrn_component(
             maximum grain radius (micron)
         power (float)
             power-law exponent (dn/da ∝ a^power)
-        mass_per_H (float)
-            total mass per H for this component (g per H)
+        dust_mass (float)
+            dust mass the distribution is normalised to (g). Use 1.0 for
+            a distribution per gram of dust.
         rho (float)
             material density (g cm^-3)
     Returns:
         n(a) (NDArray)
-            grain size distribution n(a) on a_grid_micron
-            defined as number per Hydrogen nucleus in the range
-            of grain radii between a and a+da (units of per H per cm).
+            grain size distribution on a_grid_micron: number of grains
+            with radii between a and a+da, per dust_mass, per cm.
     """
     micron_to_cm = (1.0 * um).to("cm").value  # 1e-4
     a_grid_cm = a_grid_micron * micron_to_cm
-    a_min_cm = a_min * micron_to_cm
-    a_max_cm = a_max * micron_to_cm
 
-    # Compute the noramlisation C
-    numerator = 3 * mass_per_H
-    integral = ((a_max_cm ** (power + 4)) - (a_min_cm ** (power + 4))) / (
-        power + 4
-    )
-    denominator = 4 * math.pi * rho * integral
-    C = numerator / denominator
-
-    n_a = np.zeros_like(a_grid_micron)
+    shape = np.zeros_like(a_grid_micron)
     mask = (a_grid_micron >= a_min) & (a_grid_micron <= a_max)
-    # n_a in units of H per cm
-    n_a[mask] = C * (a_grid_cm[mask] ** power)
+    shape[mask] = a_grid_cm[mask] ** power
 
-    return n_a
+    return normalise_to_mass(a_grid_micron, shape, dust_mass, rho)
 
 
 def build_lognormal_component(
     a_grid_micron: NDArray,
     a0_micron: float,
     sigma_ln: float,
-    mass_per_H: float,
+    dust_mass: float,
     rho: float,
 ) -> NDArray:
     """
     Build the lognormal-type component with the form
-    n(a) = C / a^4 * exp( - (ln(a/a0))^2 / (2 sigma^2) ),
-    where a is in micron and n(a) is grain number per H per micron.
-    C is chosen so the component total mass per H = mass_per_H (g per H),
-    i.e. mu m_H DTG = integral (4/3 pi a^3 rho n(a) da) from 0 -> infinity.
-    (0 -> infinity as the function is lognormal)
-    Reference: Hirashita 2015 (https://arxiv.org/abs/1412.3866)
-    See eq 31 in that paper.
-    We already calculated mass_per_H (mu m_H DTG) using the DTG ratio.
-    This implies C = 3 * mass_per_H / (4 pi rho integral),
-    where the integral is (1/a) exp(- (ln(a/a0)^2/(2 sigma^2))) da
-    (for the lmit -infinity -> infinity, change of variable to x=ln(a/a0)
-    the gaussian integral is sqrt(2 pi) sigma_ln)
+    n(a) = C / a^4 * exp( - (ln(a/a0))^2 / (2 sigma^2) ).
+    Reference: Hirashita 2015 (https://arxiv.org/abs/1412.3866), eq 31.
+    C is chosen so that integral (4/3 pi a^3 rho n(a) da) = dust_mass,
+    with the integral taken over a_grid_micron only (not 0 -> infinity).
+    The distribution is therefore truncated to the grid and renormalised,
+    so the full dust mass sits on radii where Q is defined. The integral
+    is done numerically with the same quadrature as the kappa integral.
 
     Args:
         a_grid_micron (NDArray)
@@ -287,86 +279,161 @@ def build_lognormal_component(
             center of lognormal (micron)
         sigma_ln (float)
             width of lognormal in ln-space
-        mass_per_H (float)
-            total mass per H for this component (g per H)
+        dust_mass (float)
+            dust mass the distribution is normalised to (g). Use 1.0 for
+            a distribution per gram of dust.
         rho (float)
             material density (g cm^-3)
     Returns:
         n(a) (NDArray)
-            grain size distribution n(a) on a_grid_micron
-            defined as number per Hydrogen nucleus in the range
-            of grain radii between a and a+da (per H per cm).
+            grain size distribution on a_grid_micron: number of grains
+            with radii between a and a+da, per dust_mass, per cm.
     """
     if sigma_ln <= 0:
         raise ValueError("sigma_ln must be > 0")
 
-    # compute C using analytic integral:
-    numerator = 3 * mass_per_H
-    denominator = 4 * math.pi * rho * math.sqrt(2 * math.pi) * sigma_ln
-    if denominator <= 0:
-        raise ValueError("Denominator for C non-positive.")
-    C = numerator / denominator  # units per H per cm^(-3)
-
     exponent = -0.5 * ((np.log(a_grid_micron / a0_micron)) / sigma_ln) ** 2
 
     micron_to_cm = (1.0 * um).to("cm").value  # 1e-4
-    # n_a in units of per H per cm
-    n_a = (C / ((a_grid_micron * micron_to_cm) ** 4)) * np.exp(exponent)
+    shape = np.exp(exponent) / ((a_grid_micron * micron_to_cm) ** 4)
 
-    return n_a
+    return normalise_to_mass(a_grid_micron, shape, dust_mass, rho)
 
 
-def calculate_Alam_over_NH(
-    wav_micron: NDArray,
-    radii_micron: NDArray,
-    Qext: NDArray,
+def lognormal_mass_fraction(
+    a_lo_micron: float,
+    a_hi_micron: float,
+    a0_micron: float,
+    sigma_ln: float,
+) -> float:
+    """
+    Fraction of the (untruncated) lognormal component's mass lying in
+    [a_lo, a_hi]. With n(a) propto a^-4 exp(-(ln(a/a0))^2 / (2 sigma^2)),
+    the mass per ln(a) is a Gaussian in x = ln(a/a0) of width sigma.
+
+    Args:
+        a_lo_micron (float)
+            lower radius (micron)
+        a_hi_micron (float)
+            upper radius (micron)
+        a0_micron (float)
+            center of lognormal (micron)
+        sigma_ln (float)
+            width of lognormal in ln-space
+    Returns:
+        float
+            mass fraction in [a_lo, a_hi]
+    """
+    z_lo = math.log(a_lo_micron / a0_micron) / (sigma_ln * math.sqrt(2))
+    z_hi = math.log(a_hi_micron / a0_micron) / (sigma_ln * math.sqrt(2))
+    return 0.5 * (math.erf(z_hi) - math.erf(z_lo))
+
+
+def normalise_to_mass(
     a_grid_micron: NDArray,
-    n_a: NDArray,
+    shape: NDArray,
+    dust_mass: float,
+    rho: float,
 ) -> NDArray:
     """
-    A(lam)/N_H = 2.5 ln(e) integral pi a^2 Q_ext(a,lam) n(a) da
-    Usually the dust-to-gas ratio used to calculate Alam/N_H is
-    calculated for a line of sight, hence the N_H can be cancelled
-    out. If the dust-to-gas ratio is an average for the galaxy, then
-    this gives the average Alam over N_H.
+    Scale a size-distribution shape so that its mass on a_grid_micron,
+    integral (4/3 pi a^3 rho n(a) da), equals dust_mass. The integral
+    uses the same trapezoid quadrature as calculate_kappa.
+
+    Args:
+        a_grid_micron (NDArray)
+            radius grid (micron) where the shape is evaluated
+        shape (NDArray)
+            unnormalised n(a) on a_grid_micron (a in cm)
+        dust_mass (float)
+            dust mass to normalise to (g)
+        rho (float)
+            material density (g cm^-3)
+    Returns:
+        n(a) (NDArray)
+            normalised size distribution (per dust_mass per cm)
+    """
+    micron_to_cm = (1.0 * um).to("cm").value  # 1e-4
+    a_grid_cm = a_grid_micron * micron_to_cm
+    mass = trapezoid(
+        (4.0 / 3.0) * math.pi * rho * a_grid_cm**3 * shape, a_grid_cm
+    )
+    if not mass > 0:
+        raise ValueError(
+            "Size distribution has no mass on the integration grid; "
+            "check the bin overlaps the radii covered by the optical table."
+        )
+    return shape * (dust_mass / mass)
+
+
+def calculate_kappa(
+    wav_micron: NDArray,
+    radii_micron: NDArray,
+    Q: NDArray,
+    a_grid_micron: NDArray,
+    n_a_per_gram: NDArray,
+) -> NDArray:
+    """
+    Mass opacity of a grain component,
+    kappa(lam) = integral pi a^2 Q(a, lam) n(a) da,
+    with n(a) normalised to one gram of dust. kappa is the optical depth
+    per unit dust mass column, so for a line of sight with dust mass
+    column Sigma_dust (g cm^-2) the optical depth is
+    tau(lam) = kappa(lam) * Sigma_dust, and A(lam) = 1.086 tau(lam).
 
     Args:
         wav_micron (NDArray)
             wavelength grid (micron)
         radii_micron (NDArray)
-            radius grid (micron) corresponding to Qext
-        Qext (NDArray)
-            extinction efficiency array, shape (len(wav_micron),
-            len(radii_micron))
+            radius grid (micron) corresponding to Q
+        Q (NDArray)
+            efficiency array (Q_ext or Q_abs + (1 - g) Q_sca), shape
+            (len(wav_micron), len(radii_micron))
         a_grid_micron (NDArray)
-            radius grid (micron) where n(a) is defined
-        n_a (NDArray)
-            grain size distribution n(a) on a_grid_micron
-            defined as number per Hydrogen nucleus in the range
-            of grain radii between a and a+da (per H per cm).
+            radius grid (micron) where n(a) is defined; must lie within
+            radii_micron
+        n_a_per_gram (NDArray)
+            grain size distribution on a_grid_micron, normalised to one
+            gram of dust (grains per g per cm)
     Returns:
-        A(lam)/N_H (NDArray)
-            Attenuation curve A(lam)/N_H on wav_micron (units: mag cm^2 per H)
+        kappa (NDArray)
+            mass opacity on wav_micron (units: cm^2 g^-1)
     """
     micron_to_cm = (1.0 * um).to("cm").value  # 1e-4
     a_grid_cm = a_grid_micron * micron_to_cm
 
-    prefac = 2.5 * np.log10(np.e)
-
-    Nwav = wav_micron.size
-    Alam_by_N_H = np.zeros(Nwav, dtype=float)
-    # Fallback for older numpy
-    for iw in range(Nwav):
-        q = Qext[iw, :]
-        f_lin = interp1d(radii_micron, q, bounds_error=False, fill_value=0)
+    kappa = np.zeros(wav_micron.size, dtype=float)
+    for iw in range(wav_micron.size):
+        # The integration grid must lie within the radii where Q is
+        # defined, so never extrapolate (raise instead)
+        f_lin = interp1d(radii_micron, Q[iw, :], bounds_error=True)
         q_interp = f_lin(a_grid_micron)
-        # Integrand: pi a^2 Q * n(a) da  (a in cm, n in per H per cm,
-        # da in cm, Q is unitless)
-        integrand = math.pi * (a_grid_cm**2) * q_interp * n_a
-        # In units of mag cm^2
-        Alam_by_N_H[iw] = prefac * trapezoid(integrand, a_grid_cm)
+        # Integrand: pi a^2 Q n(a) (a in cm, n in per g per cm)
+        integrand = math.pi * (a_grid_cm**2) * q_interp * n_a_per_gram
+        kappa[iw] = trapezoid(integrand, a_grid_cm)
 
-    return Alam_by_N_H
+    return kappa
+
+
+def table_radius_grid(radii_micron: NDArray, n_points: int) -> NDArray:
+    """
+    Log-spaced grain-size integration grid spanning exactly the radii
+    covered by an optical table. The endpoints are set to the table's
+    first and last radii so the Q interpolation never falls outside
+    the table through rounding.
+
+    Args:
+        radii_micron (NDArray)
+            radius grid (micron) of the optical table, in increasing order
+        n_points (int)
+            number of points in the integration grid
+    Returns:
+        grid (NDArray)
+            integration grid (micron)
+    """
+    grid = np.geomspace(radii_micron[0], radii_micron[-1], n_points)
+    grid[0], grid[-1] = radii_micron[0], radii_micron[-1]
+    return grid
 
 
 def interp_Q_to_grid(
@@ -478,24 +545,6 @@ if __name__ == "__main__":
         help="name of the extinction curve grid file (without extension)",
     )
     parser.add_argument(
-        "--dtg-min",
-        type=float,
-        default=1e-10,
-        help="minimum of dust-to-gas mass ratio used for curve calculation",
-    )
-    parser.add_argument(
-        "--dtg-max",
-        type=float,
-        default=1e-1,
-        help="maximum of dust-to-gas mass ratio used for curve calculation",
-    )
-    parser.add_argument(
-        "--n-dtg",
-        type=int,
-        default=1000,
-        help="number of dust-to-gas mass ratio points between min and max",
-    )
-    parser.add_argument(
         "--small-centre",
         type=float,
         default=0.01,
@@ -575,34 +624,15 @@ if __name__ == "__main__":
     PAH_neu = "https://www.astro.princeton.edu/~draine/dust/diel/PAHneu_30.gz"
     savePAHneu = "./PAHneu_30.txt"  # save
 
-    # Define dust-to-gas ratio range
-    DTG_MIN = args.dtg_min
-    DTG_MAX = args.dtg_max
-    N_DTG = args.n_dtg
-    dtg_grid = np.logspace(
-        math.log10(DTG_MIN), math.log10(DTG_MAX), N_DTG, endpoint=True
-    )
-
-    N_DTG += 1  # add one more point for DTG~0 (no dust)
-    dtg_grid = np.insert(dtg_grid, 0, 1e-99)  # insert DTG~0 at the beginning
-
     # Material densities (g cm^-3)
     RHO_SIL = 3.5
     RHO_GRA = 2.24
     RHO_PAH = 2.24
 
-    # Gas mass per H (g) with helium correction
-    MU = 1.4
-    M_H = 1.6738e-24  # in grams
-    GAS_MASS_PER_H = MU * M_H  # g per H
-
-    # Integration grid for grain size in micron
-    A_INT_MIN = 3e-4
-    A_INT_MAX = 10.0
+    # Number of points in each grain-size integration grid. Each material
+    # gets its own log-spaced grid spanning exactly the radii covered by
+    # its Draine optical table (built once the tables are read)
     N_A_INT = 500
-    a_grid_int = np.logspace(
-        math.log10(A_INT_MIN), math.log10(A_INT_MAX), N_A_INT, endpoint=True
-    )
 
     # Download and process files
     if Path(saveSIL).exists():
@@ -718,136 +748,68 @@ if __name__ == "__main__":
     )
     Qeff_pahneu = Qabs_pahneu_interp + (1.0 - g_pahneu) * Qsca_pahneu_interp
 
-    # compute mass per H for each material
-    mass_per_H_grain_grid = dtg_grid * GAS_MASS_PER_H
+    # Grain-size integration grids: one per optical table, spanning exactly
+    # the radii where Q is defined
+    a_grid_sil = table_radius_grid(radii_sil, N_A_INT)
+    a_grid_gra = table_radius_grid(radii_gra, N_A_INT)
+    a_grid_pahion = table_radius_grid(radii_pah_ion, N_A_INT)
+    a_grid_pahneu = table_radius_grid(radii_pah_neu, N_A_INT)
 
-    # Define arrays to hold size distribution results
-    n_s_small = np.zeros((N_DTG, N_A_INT))  # silicate small
-    n_s_large = np.zeros((N_DTG, N_A_INT))  # silicate large
-    n_g_small = np.zeros((N_DTG, N_A_INT))  # graphite small
-    n_g_large = np.zeros((N_DTG, N_A_INT))  # graphite large
-    n_pahion = np.zeros((N_DTG, N_A_INT))  # PAH ionized
-    n_pahneu = np.zeros((N_DTG, N_A_INT))  # PAH neutral
-
-    # Compute grain size distributions for each DTG
-    # These are in units of per H per cm
+    # Size-distribution parameters for each component: (integration grid,
+    # density, then bin centre for lognormal or (a_min, a_max) for MRN).
+    # Each distribution is normalised to one gram of dust on its grid, i.e.
+    # truncated to the optical table's radii and renormalised.
     if args.mode == "lognormal":
-        for ii, mass_per_H_grain in enumerate(mass_per_H_grain_grid):
-            n_s_small[ii] = build_lognormal_component(
-                a_grid_int,
-                args.small_centre,
-                args.sigma_lognormal,
-                mass_per_H_grain,
-                RHO_SIL,
+        bins = {
+            "s_small": (a_grid_sil, RHO_SIL, args.small_centre),
+            "s_large": (a_grid_sil, RHO_SIL, args.large_centre),
+            "g_small": (a_grid_gra, RHO_GRA, args.small_centre),
+            "g_large": (a_grid_gra, RHO_GRA, args.large_centre),
+            "pahion": (a_grid_pahion, RHO_PAH, args.pah_centre),
+            "pahneu": (a_grid_pahneu, RHO_PAH, args.pah_centre),
+        }
+        n_per_gram = {}
+        for label, (a_grid, rho, centre) in bins.items():
+            frac = lognormal_mass_fraction(
+                a_grid[0], a_grid[-1], centre, args.sigma_lognormal
             )
-            n_s_large[ii] = build_lognormal_component(
-                a_grid_int,
-                args.large_centre,
-                args.sigma_lognormal,
-                mass_per_H_grain,
-                RHO_SIL,
+            print(
+                f"{label}: {100 * frac:.2f}% of the lognormal mass lies in "
+                f"the table range [{a_grid[0]:.4g}, {a_grid[-1]:.4g}] um; "
+                "renormalised to 100%"
             )
-
-            n_g_small[ii] = build_lognormal_component(
-                a_grid_int,
-                args.small_centre,
-                args.sigma_lognormal,
-                mass_per_H_grain,
-                RHO_GRA,
+            n_per_gram[label] = build_lognormal_component(
+                a_grid, centre, args.sigma_lognormal, 1.0, rho
             )
-            n_g_large[ii] = build_lognormal_component(
-                a_grid_int,
-                args.large_centre,
-                args.sigma_lognormal,
-                mass_per_H_grain,
-                RHO_GRA,
-            )
-
-            n_pahion[ii] = build_lognormal_component(
-                a_grid_int,
-                args.pah_centre,
-                args.sigma_lognormal,
-                mass_per_H_grain,
-                RHO_PAH,
-            )
-            n_pahneu[ii] = build_lognormal_component(
-                a_grid_int,
-                args.pah_centre,
-                args.sigma_lognormal,
-                mass_per_H_grain,
-                RHO_PAH,
-            )
-
     else:
-        for ii, mass_per_H_grain in enumerate(mass_per_H_grain_grid):
-            # choose MRN bin bounds around the centers specified
-            small_a_min = args.a_min_mrn
-            small_a_max = args.small_centre + (
-                args.small_centre - args.a_min_mrn
-            )
-            large_a_min = small_a_max
-            large_a_max = args.a_max_mrn
+        # choose MRN bin bounds around the centers specified
+        small_a_min = args.a_min_mrn
+        small_a_max = args.small_centre + (args.small_centre - args.a_min_mrn)
+        large_a_min = small_a_max
+        large_a_max = args.a_max_mrn
+        pah_a_min = args.a_min_mrn_pah
+        pah_a_max = args.a_max_mrn_pah
 
-            pah_a_min = args.a_min_mrn_pah
-            pah_a_max = args.a_max_mrn_pah
-
-            if ii == 0:
-                print(
-                    f"MRN bins (micron): small [{small_a_min:.4g},"
-                    f"{small_a_max:.4g}] large [{large_a_min:.4g},"
-                    f"{large_a_max:.4g}], PAH [{pah_a_min:.4g},"
-                    f"{pah_a_max:.4g}]"
-                )
-
-            n_s_small[ii] = build_mrn_component(
-                a_grid_int,
-                small_a_min,
-                small_a_max,
-                args.power_mrn,
-                mass_per_H_grain,
-                RHO_SIL,
+        bins = {
+            "s_small": (a_grid_sil, RHO_SIL, (small_a_min, small_a_max)),
+            "s_large": (a_grid_sil, RHO_SIL, (large_a_min, large_a_max)),
+            "g_small": (a_grid_gra, RHO_GRA, (small_a_min, small_a_max)),
+            "g_large": (a_grid_gra, RHO_GRA, (large_a_min, large_a_max)),
+            "pahion": (a_grid_pahion, RHO_PAH, (pah_a_min, pah_a_max)),
+            "pahneu": (a_grid_pahneu, RHO_PAH, (pah_a_min, pah_a_max)),
+        }
+        n_per_gram = {}
+        for label, (a_grid, rho, (a_min, a_max)) in bins.items():
+            lo, hi = max(a_min, a_grid[0]), min(a_max, a_grid[-1])
+            print(
+                f"{label}: MRN bin [{a_min:.4g}, {a_max:.4g}] um, "
+                f"integrated over [{lo:.4g}, {hi:.4g}] um (table range)"
             )
-            n_s_large[ii] = build_mrn_component(
-                a_grid_int,
-                large_a_min,
-                large_a_max,
-                args.power_mrn,
-                mass_per_H_grain,
-                RHO_SIL,
-            )
-            n_g_small[ii] = build_mrn_component(
-                a_grid_int,
-                small_a_min,
-                small_a_max,
-                args.power_mrn,
-                mass_per_H_grain,
-                RHO_GRA,
-            )
-            n_g_large[ii] = build_mrn_component(
-                a_grid_int,
-                large_a_min,
-                large_a_max,
-                args.power_mrn,
-                mass_per_H_grain,
-                RHO_GRA,
+            n_per_gram[label] = build_mrn_component(
+                a_grid, a_min, a_max, args.power_mrn, 1.0, rho
             )
 
-            n_pahion[ii] = build_mrn_component(
-                a_grid_int,
-                pah_a_min,
-                pah_a_max,
-                args.power_mrn,
-                mass_per_H_grain,
-                RHO_PAH,
-            )
-            n_pahneu[ii] = build_mrn_component(
-                a_grid_int,
-                pah_a_min,
-                pah_a_max,
-                args.power_mrn,
-                mass_per_H_grain,
-                RHO_PAH,
-            )
+    a_grids = {label: b[0] for label, b in bins.items()}
 
     # Two kinds of curve are written, differing only in the efficiency:
     #   extinction_curves:  Q_ext. Any scattered photon leaves the beam,
@@ -858,47 +820,43 @@ if __name__ == "__main__":
     CURVE_TYPES = {
         "extinction_curves": {
             "efficiency": "Q_ext",
-            "description": "Extinction curve A(lam)/N_H computed with Q_ext",
+            "description": "Extinction mass opacity computed with Q_ext",
         },
         "attenuation_curves": {
             "efficiency": "Q_abs + (1 - g) Q_sca",
             "description": (
-                "Effective attenuation curve A(lam)/N_H computed with "
+                "Effective attenuation mass opacity computed with "
                 "Q_abs + (1 - g) Q_sca"
             ),
         },
     }
 
     # Grain components: label -> dataset key, description, optical-table
-    # radii, efficiency for each curve type, and n(a) for each DTG
+    # radii and efficiency for each curve type
     components = {
         "g_small": {
             "key": f"graphite_a{args.small_centre}um",
             "desc": f"graphite small (bin centre {args.small_centre} um)",
             "radii": radii_gra,
             "Q": {"extinction_curves": Qs_gra, "attenuation_curves": Qeff_gra},
-            "n_a": n_g_small,
         },
         "g_large": {
             "key": f"graphite_a{args.large_centre}um",
             "desc": f"graphite large (bin centre {args.large_centre} um)",
             "radii": radii_gra,
             "Q": {"extinction_curves": Qs_gra, "attenuation_curves": Qeff_gra},
-            "n_a": n_g_large,
         },
         "s_small": {
             "key": f"silicate_a{args.small_centre}um",
             "desc": f"silicate small (bin centre {args.small_centre} um)",
             "radii": radii_sil,
             "Q": {"extinction_curves": Qs_sil, "attenuation_curves": Qeff_sil},
-            "n_a": n_s_small,
         },
         "s_large": {
             "key": f"silicate_a{args.large_centre}um",
             "desc": f"silicate large (bin centre {args.large_centre} um)",
             "radii": radii_sil,
             "Q": {"extinction_curves": Qs_sil, "attenuation_curves": Qeff_sil},
-            "n_a": n_s_large,
         },
         "pahion": {
             "key": f"pahionised_a{args.pah_centre}um",
@@ -908,7 +866,6 @@ if __name__ == "__main__":
                 "extinction_curves": Qs_pahion,
                 "attenuation_curves": Qeff_pahion,
             },
-            "n_a": n_pahion,
         },
         "pahneu": {
             "key": f"pahneutral_a{args.pah_centre}um",
@@ -918,25 +875,20 @@ if __name__ == "__main__":
                 "extinction_curves": Qs_pahneu,
                 "attenuation_curves": Qeff_pahneu,
             },
-            "n_a": n_pahneu,
         },
     }
 
-    # Alam[curve_type][component] has shape (N_DTG, len(all_wav)),
-    # in units of mag cm^2 per H
-    Alam = {
+    # kappa[curve_type][component] is the mass opacity (cm^2 per g of dust)
+    # on all_wav. For a dust mass column Sigma_dust of that component,
+    # tau(lam) = kappa(lam) * Sigma_dust.
+    kappa = {
         curve_type: {
-            label: np.array(
-                [
-                    calculate_Alam_over_NH(
-                        all_wav,
-                        comp["radii"],
-                        comp["Q"][curve_type],
-                        a_grid_int,
-                        comp["n_a"][ii],
-                    )
-                    for ii in range(N_DTG)
-                ]
+            label: calculate_kappa(
+                all_wav,
+                comp["radii"],
+                comp["Q"][curve_type],
+                a_grids[label],
+                n_per_gram[label],
             )
             for label, comp in components.items()
         }
@@ -985,18 +937,9 @@ if __name__ == "__main__":
     # Write the model metadata
     out_grid.write_model_metadata(model)
 
-    # Write axes information
-    out_grid.write_attribute("/", "axes", ["dtg"])
-    dtg_description = "Dust-to-Gas ratio of the grid"
-    out_grid.write_dataset(
-        "axes/dtg",
-        dtg_grid * dimensionless,
-        description=dtg_description,
-        log_on_read=True,
-    )
-
-    # Write out the extinction and attenuation curves (A(lam)/N_H) and
-    # their wavelengths, one group per curve type
+    # Write out the extinction and attenuation mass opacities and their
+    # wavelengths, one group per curve type. There are no grid axes: the
+    # optical depth is just tau(lam) = sum_c kappa_c(lam) * Sigma_dust,c.
     for curve_type, info in CURVE_TYPES.items():
         out_grid.write_dataset(
             key=f"{curve_type}/wavelength",
@@ -1007,11 +950,11 @@ if __name__ == "__main__":
         for label, comp in components.items():
             out_grid.write_dataset(
                 key=f"{curve_type}/{comp['key']}",
-                data=Alam[curve_type][label] * cm**2,
+                data=kappa[curve_type][label] * cm**2 / g,
                 description=(
                     f"{info['description']} for the {comp['desc']} grain "
-                    "component, technically in units of mag cm^2 per "
-                    "H nucleus"
+                    "component: optical depth per unit dust mass column "
+                    "(tau = kappa * Sigma_dust; A = 1.086 tau)"
                 ),
                 log_on_read=False,
             )
@@ -1032,17 +975,22 @@ if __name__ == "__main__":
 
         DTG_PAH = 0.0001  # example dust-to-gas ratio for plotting
 
-        idx_dtg_sil = np.argmin(np.abs(dtg_grid - DTG_sil))
-        idx_dtg_gra = np.argmin(np.abs(dtg_grid - DTG_gra))
-        idx_dtg_pah = np.argmin(np.abs(dtg_grid - DTG_PAH))
-        idx_dtg = {
-            "s_small": idx_dtg_sil,
-            "s_large": idx_dtg_sil,
-            "g_small": idx_dtg_gra,
-            "g_large": idx_dtg_gra,
-            "pahion": idx_dtg_pah,
-            "pahneu": idx_dtg_pah,
+        # Gas mass per H (g) with helium correction, used only to turn the
+        # example DTGs into dust mass per H for the Av/NH comparison
+        MU = 1.4
+        M_H = 1.6738e-24  # in grams
+        GAS_MASS_PER_H = MU * M_H  # g per H
+
+        # Dust mass per H (g per H) of each component
+        dust_mass_per_H = {
+            "s_small": DTG_sil * GAS_MASS_PER_H,
+            "s_large": DTG_sil * GAS_MASS_PER_H,
+            "g_small": DTG_gra * GAS_MASS_PER_H,
+            "g_large": DTG_gra * GAS_MASS_PER_H,
+            "pahion": DTG_PAH * GAS_MASS_PER_H,
+            "pahneu": DTG_PAH * GAS_MASS_PER_H,
         }
+        MAG_PER_TAU = 2.5 * np.log10(np.e)  # A = 1.086 tau
         plot_labels = {
             "extinction_curves": r"Extinction ($Q_{\rm ext}$)",
             "attenuation_curves": (
@@ -1051,8 +999,10 @@ if __name__ == "__main__":
         }
         curves_over_Av = {}
         for curve_type in CURVE_TYPES:
-            A_total = sum(
-                Alam[curve_type][label][idx] for label, idx in idx_dtg.items()
+            # A(lam)/N_H in mag cm^2 per H
+            A_total = MAG_PER_TAU * sum(
+                kappa[curve_type][label] * m
+                for label, m in dust_mass_per_H.items()
             )
             A_V = A_total[iv]
             curves_over_Av[plot_labels[curve_type]] = A_total / A_V
@@ -1065,46 +1015,30 @@ if __name__ == "__main__":
         plot_extinction_curve(all_wav, curves_over_Av, axs[0])
 
         micron_to_cm = (1.0 * um).to("cm").value  # 1e-4
-        a_grid_int_cm = a_grid_int * micron_to_cm
 
-        n_gra = n_g_small[idx_dtg_gra] + n_g_large[idx_dtg_gra]
-        ok = n_gra != 0
-        axs[1].loglog(
-            a_grid_int[ok],
-            (a_grid_int_cm[ok] ** 4) * n_gra[ok],
-            label="Graphite",
-            c="black",
-            ls="dashed",
-        )
-
-        n_sil = n_s_small[idx_dtg_sil] + n_s_large[idx_dtg_sil]
-        ok = n_sil != 0
-        axs[1].loglog(
-            a_grid_int[ok],
-            (a_grid_int_cm[ok] ** 4) * n_sil[ok],
-            label="Silicate",
-            c="blue",
-            ls="dashed",
-        )
-
-        ok = n_pahion[idx_dtg_pah] != 0
-        axs[1].loglog(
-            a_grid_int[ok],
-            (a_grid_int_cm[ok] ** 4) * n_pahion[idx_dtg_pah][ok],
-            label="PAH ionised",
-            c="olive",
-            ls="dotted",
-            lw=4,
-        )
-
-        ok = n_pahneu[idx_dtg_pah] != 0
-        axs[1].loglog(
-            a_grid_int[ok],
-            (a_grid_int_cm[ok] ** 4) * n_pahneu[idx_dtg_pah][ok],
-            label="PAH neutral",
-            c="red",
-            ls="dotted",
-        )
+        # (labels summed, integration grid, legend label, line style)
+        size_dists = [
+            (("g_small", "g_large"), a_grid_gra, "Graphite", {"c": "black"}),
+            (("s_small", "s_large"), a_grid_sil, "Silicate", {"c": "blue"}),
+            (("pahion",), a_grid_pahion, "PAH ionised", {"c": "olive"}),
+            (("pahneu",), a_grid_pahneu, "PAH neutral", {"c": "red"}),
+        ]
+        for labels, a_grid, name, style in size_dists:
+            # n(a) per H per cm
+            n_tot = sum(
+                n_per_gram[label] * dust_mass_per_H[label] for label in labels
+            )
+            ok = n_tot != 0
+            ls = "dotted" if name.startswith("PAH") else "dashed"
+            lw = 4 if name == "PAH ionised" else None
+            axs[1].loglog(
+                a_grid[ok],
+                ((a_grid[ok] * micron_to_cm) ** 4) * n_tot[ok],
+                label=name,
+                ls=ls,
+                lw=lw,
+                **style,
+            )
 
         axs[1].set_ylim(1e-30, 1e-26)
         axs[1].set_xlabel("a (um)", fontsize=12)
