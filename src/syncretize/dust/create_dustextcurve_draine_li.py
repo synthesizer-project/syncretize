@@ -6,6 +6,13 @@ Parse Draine Sil_81.gz, Gra_81.gz, PAHion_30.gz, PAHneu_30.gz files,
 construct grain-size distributions (either MRN or the custom lognormal form)
 and compute A(lam)/NH (units of mag cm^2 per H).
 
+Two sets of curves are written:
+  - extinction_curves: computed with Q_ext, i.e. every scattered photon is
+    removed from the beam (point source behind a dust screen).
+  - attenuation_curves: computed with Q_abs + (1 - g) Q_sca, i.e.
+    forward-scattered light is kept in the beam (transport approximation),
+    a simple stand-in for unresolved scattering geometry.
+
 Currently this is done only for 2 binsizes (small and large) for silicate
 and graphite, and 1 bin for PAHs (ionized and neutral).
 
@@ -20,7 +27,7 @@ import gzip
 import io
 import math
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -402,23 +409,26 @@ def interp_Q_to_grid(
 
 def plot_extinction_curve(
     wav_micron: NDArray,
-    A_over_Av: NDArray,
+    curves_over_Av: Dict[str, NDArray],
     ax: Optional[Axes] = None,
 ) -> Axes:
     """
-    Plot extinction curve A(λ)/A(V).
+    Plot extinction/attenuation curves A(λ)/A(V) against reference curves.
 
     Args:
         wav_micron (NDArray)
             wavelength grid (micron)
-        A_over_Av (NDArray)
-            extinction curve A(λ)/A(V)
+        curves_over_Av (dict)
+            mapping of legend label -> curve A(λ)/A(V) on wav_micron
+        ax (Axes)
+            axes to plot on (a new figure is created if None)
     """
     if ax is None:
         fig, ax = plt.subplots(figsize=(8, 5))
 
     wav_angstrom = wav_micron * 1e4
-    ax.plot(wav_angstrom, A_over_Av, label="Attenuation curve")
+    for label, A_over_Av in curves_over_Av.items():
+        ax.plot(wav_angstrom, A_over_Av, label=label)
     curve = Calzetti2000(ampl=10.0)
     ax.plot(
         wav_angstrom,
@@ -587,7 +597,7 @@ if __name__ == "__main__":
     GAS_MASS_PER_H = MU * M_H  # g per H
 
     # Integration grid for grain size in micron
-    A_INT_MIN = 1e-4
+    A_INT_MIN = 3e-4
     A_INT_MAX = 10.0
     N_A_INT = 500
     a_grid_int = np.logspace(
@@ -839,34 +849,99 @@ if __name__ == "__main__":
                 RHO_PAH,
             )
 
-    # Define array to hold extinction curves
-    Alam_s_small = np.zeros((N_DTG, len(all_wav)))
-    Alam_s_large = np.zeros((N_DTG, len(all_wav)))
-    Alam_g_small = np.zeros((N_DTG, len(all_wav)))
-    Alam_g_large = np.zeros((N_DTG, len(all_wav)))
-    Alam_pahion = np.zeros((N_DTG, len(all_wav)))
-    Alam_pahneu = np.zeros((N_DTG, len(all_wav)))
+    # Two kinds of curve are written, differing only in the efficiency:
+    #   extinction_curves:  Q_ext. Any scattered photon leaves the beam,
+    #       appropriate for a point source behind a dust screen.
+    #   attenuation_curves: Q_abs + (1 - g) Q_sca. Forward-scattered light
+    #       is kept in the beam (transport approximation), a cheap stand-in
+    #       for unresolved scattering geometry.
+    CURVE_TYPES = {
+        "extinction_curves": {
+            "efficiency": "Q_ext",
+            "description": "Extinction curve A(lam)/N_H computed with Q_ext",
+        },
+        "attenuation_curves": {
+            "efficiency": "Q_abs + (1 - g) Q_sca",
+            "description": (
+                "Effective attenuation curve A(lam)/N_H computed with "
+                "Q_abs + (1 - g) Q_sca"
+            ),
+        },
+    }
 
-    # compute sigma for each component and total
-    for ii in range(N_DTG):
-        Alam_s_small[ii] = calculate_Alam_over_NH(
-            all_wav, radii_sil, Qeff_sil, a_grid_int, n_s_small[ii]
-        )
-        Alam_s_large[ii] = calculate_Alam_over_NH(
-            all_wav, radii_sil, Qeff_sil, a_grid_int, n_s_large[ii]
-        )
-        Alam_g_small[ii] = calculate_Alam_over_NH(
-            all_wav, radii_gra, Qeff_gra, a_grid_int, n_g_small[ii]
-        )
-        Alam_g_large[ii] = calculate_Alam_over_NH(
-            all_wav, radii_gra, Qeff_gra, a_grid_int, n_g_large[ii]
-        )
-        Alam_pahion[ii] = calculate_Alam_over_NH(
-            all_wav, radii_pah_ion, Qeff_pahion, a_grid_int, n_pahion[ii]
-        )
-        Alam_pahneu[ii] = calculate_Alam_over_NH(
-            all_wav, radii_pah_neu, Qeff_pahneu, a_grid_int, n_pahneu[ii]
-        )
+    # Grain components: label -> dataset key, description, optical-table
+    # radii, efficiency for each curve type, and n(a) for each DTG
+    components = {
+        "g_small": {
+            "key": f"graphite_a{args.small_centre}um",
+            "desc": f"graphite small (bin centre {args.small_centre} um)",
+            "radii": radii_gra,
+            "Q": {"extinction_curves": Qs_gra, "attenuation_curves": Qeff_gra},
+            "n_a": n_g_small,
+        },
+        "g_large": {
+            "key": f"graphite_a{args.large_centre}um",
+            "desc": f"graphite large (bin centre {args.large_centre} um)",
+            "radii": radii_gra,
+            "Q": {"extinction_curves": Qs_gra, "attenuation_curves": Qeff_gra},
+            "n_a": n_g_large,
+        },
+        "s_small": {
+            "key": f"silicate_a{args.small_centre}um",
+            "desc": f"silicate small (bin centre {args.small_centre} um)",
+            "radii": radii_sil,
+            "Q": {"extinction_curves": Qs_sil, "attenuation_curves": Qeff_sil},
+            "n_a": n_s_small,
+        },
+        "s_large": {
+            "key": f"silicate_a{args.large_centre}um",
+            "desc": f"silicate large (bin centre {args.large_centre} um)",
+            "radii": radii_sil,
+            "Q": {"extinction_curves": Qs_sil, "attenuation_curves": Qeff_sil},
+            "n_a": n_s_large,
+        },
+        "pahion": {
+            "key": f"pahionised_a{args.pah_centre}um",
+            "desc": f"ionised PAH (bin centre {args.pah_centre} um)",
+            "radii": radii_pah_ion,
+            "Q": {
+                "extinction_curves": Qs_pahion,
+                "attenuation_curves": Qeff_pahion,
+            },
+            "n_a": n_pahion,
+        },
+        "pahneu": {
+            "key": f"pahneutral_a{args.pah_centre}um",
+            "desc": f"neutral PAH (bin centre {args.pah_centre} um)",
+            "radii": radii_pah_neu,
+            "Q": {
+                "extinction_curves": Qs_pahneu,
+                "attenuation_curves": Qeff_pahneu,
+            },
+            "n_a": n_pahneu,
+        },
+    }
+
+    # Alam[curve_type][component] has shape (N_DTG, len(all_wav)),
+    # in units of mag cm^2 per H
+    Alam = {
+        curve_type: {
+            label: np.array(
+                [
+                    calculate_Alam_over_NH(
+                        all_wav,
+                        comp["radii"],
+                        comp["Q"][curve_type],
+                        a_grid_int,
+                        comp["n_a"][ii],
+                    )
+                    for ii in range(N_DTG)
+                ]
+            )
+            for label, comp in components.items()
+        }
+        for curve_type in CURVE_TYPES
+    }
 
     # Filter and write
     if args.mode == "lognormal":
@@ -920,70 +995,28 @@ if __name__ == "__main__":
         log_on_read=True,
     )
 
-    # Write out the extinction curves and their wavelengths
-    # They are A(lam)/NH
-    key = "extinction_curves"
-    out_grid.write_dataset(
-        key=f"{key}/wavelength",
-        data=all_wav * um,
-        description="Wavelength of the extinction curve grid",
-        log_on_read=False,
-    )
-    out_grid.write_dataset(
-        key=f"{key}/graphite_a{args.small_centre}um",
-        data=Alam_g_small * cm**2,
-        description=f"""Extinction curve A(lam)/N_H for
-        graphite small (bin centre {str(args.small_centre)} um)
-        grain component, technically in
-        units of mag cm^2 per H nucleus""",
-        log_on_read=False,
-    )
-    out_grid.write_dataset(
-        key=f"{key}/graphite_a{args.large_centre}um",
-        data=Alam_g_large * cm**2,
-        description=f"""Extinction curve A(lam)/N_H for
-        graphite large (bin centre {str(args.large_centre)} um)
-        grain component, technically in
-        units of mag cm^2 per H nucleus""",
-        log_on_read=False,
-    )
-    out_grid.write_dataset(
-        key=f"{key}/silicate_a{args.small_centre}um",
-        data=Alam_s_small * cm**2,
-        description=f"""Extinction curve A(lam)/N_H for
-        silicate small (bin centre {str(args.small_centre)} um)
-        grain component, technically in
-        units of mag cm^2 per H nucleus""",
-        log_on_read=False,
-    )
-    out_grid.write_dataset(
-        key=f"{key}/silicate_a{args.large_centre}um",
-        data=Alam_s_large * cm**2,
-        description=f"""Extinction curve A(lam)/N_H for
-        silicate large (bin centre {str(args.large_centre)} um)
-        grain component, technically in
-        units of mag cm^2 per H nucleus""",
-        log_on_read=False,
-    )
-
-    out_grid.write_dataset(
-        key=f"{key}/pahionised_a{str(args.pah_centre)}um",
-        data=Alam_pahion * cm**2,
-        description=f"""Extinction curve A(lam)/N_H for
-        ionised PAH grain (bin centre {str(args.pah_centre)} um)
-        component, technically in
-        units of mag cm^2 per H nucleus""",
-        log_on_read=False,
-    )
-    out_grid.write_dataset(
-        key=f"{key}/pahneutral_a{str(args.pah_centre)}um",
-        data=Alam_pahneu * cm**2,
-        description=f"""Extinction curve A(lam)/N_H for
-        neutral PAH grain (bin centre {str(args.pah_centre)} um)
-        component, technically in
-        units of mag cm^2 per H nucleus""",
-        log_on_read=False,
-    )
+    # Write out the extinction and attenuation curves (A(lam)/N_H) and
+    # their wavelengths, one group per curve type
+    for curve_type, info in CURVE_TYPES.items():
+        out_grid.write_dataset(
+            key=f"{curve_type}/wavelength",
+            data=all_wav * um,
+            description=f"Wavelength of the {curve_type} grid",
+            log_on_read=False,
+        )
+        for label, comp in components.items():
+            out_grid.write_dataset(
+                key=f"{curve_type}/{comp['key']}",
+                data=Alam[curve_type][label] * cm**2,
+                description=(
+                    f"{info['description']} for the {comp['desc']} grain "
+                    "component, technically in units of mag cm^2 per "
+                    "H nucleus"
+                ),
+                log_on_read=False,
+            )
+        # Record which efficiency was used (the group now exists)
+        out_grid.write_attribute(curve_type, "efficiency", info["efficiency"])
 
     print(f"Saved extinction curve grid to:{args.grid_loc}/{grid_name}.hdf5")
 
@@ -1002,23 +1035,34 @@ if __name__ == "__main__":
         idx_dtg_sil = np.argmin(np.abs(dtg_grid - DTG_sil))
         idx_dtg_gra = np.argmin(np.abs(dtg_grid - DTG_gra))
         idx_dtg_pah = np.argmin(np.abs(dtg_grid - DTG_PAH))
-        A_total = (
-            Alam_s_small[idx_dtg_sil]
-            + Alam_s_large[idx_dtg_sil]
-            + Alam_g_small[idx_dtg_gra]
-            + Alam_g_large[idx_dtg_gra]
-            + Alam_pahion[idx_dtg_pah]
-            + Alam_pahneu[idx_dtg_pah]
-        )
-        A_V = A_total[iv]
-        A_over_Av = A_total / A_V
-        print("Av/NH = ", A_V, "mag cm^2")
-        print("Milky Way sightline, Rv=3.1:")
+        idx_dtg = {
+            "s_small": idx_dtg_sil,
+            "s_large": idx_dtg_sil,
+            "g_small": idx_dtg_gra,
+            "g_large": idx_dtg_gra,
+            "pahion": idx_dtg_pah,
+            "pahneu": idx_dtg_pah,
+        }
+        plot_labels = {
+            "extinction_curves": r"Extinction ($Q_{\rm ext}$)",
+            "attenuation_curves": (
+                r"Attenuation ($Q_{\rm abs} + (1-g)\,Q_{\rm sca}$)"
+            ),
+        }
+        curves_over_Av = {}
+        for curve_type in CURVE_TYPES:
+            A_total = sum(
+                Alam[curve_type][label][idx] for label, idx in idx_dtg.items()
+            )
+            A_V = A_total[iv]
+            curves_over_Av[plot_labels[curve_type]] = A_total / A_V
+            print(f"{curve_type}: Av/NH = {A_V:.3e} mag cm^2")
+        print("Milky Way sightline (extinction), Rv=3.1:")
         print("Av/NH = 5.3E-22 mag cm^2")
         out_prefix = "dust_extinction_curve"
         fig, axs = plt.subplots(figsize=(8, 8), nrows=2, ncols=1)
         axs = axs.ravel()
-        plot_extinction_curve(all_wav, A_over_Av, axs[0])
+        plot_extinction_curve(all_wav, curves_over_Av, axs[0])
 
         micron_to_cm = (1.0 * um).to("cm").value  # 1e-4
         a_grid_int_cm = a_grid_int * micron_to_cm
