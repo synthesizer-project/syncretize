@@ -265,7 +265,7 @@ if __name__ == "__main__":
     vers = np.array([".1", ".2", "_kroupa_IMF"])
     imf_type = {
         vers[0]: "salpeter",
-        vers[1]: "salpeter",
+        vers[1]: "lognormal",
         vers[2]: "kroupa",
     }
     imf_masses = {
