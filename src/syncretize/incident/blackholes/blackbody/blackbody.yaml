@@ -1,13 +1,19 @@
 # Parameter file for blackbody/generate_incident_grid.py
 #
-#   python generate_incident_grid.py blackbody.yaml --grid-dir <grid-dir>
+#   python generate_incident_grid.py --config-file blackbody.yaml --grid-dir <grid-dir>
 #
-#   model: name of the grid; the grid is written to <grid-dir>/<model>.hdf5
-#   log10blackbody_temperature: list of log10(T/K), strictly increasing.
-#     Cloudy's blackbody command accepts any T; 4.0-6.0 covers stellar and
-#     accretion disc temperatures.
+# Model:
+#   grid_name: the grid is written to <grid-dir>/<grid_name>.hdf5
+# Axes:
+#   log10blackbody_temperature: log10(T/K)
 
-model: 'blackbody'
-log10blackbody_temperature: [
-  4.0, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8, 4.9, 5.0,
-  5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8, 5.9, 6.0]
+Model:
+  grid_name: blackbody
+Constants:
+Axes:
+  - name: log10blackbody_temperature
+    type: values
+    values: [
+      4.0, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8, 4.9, 5.0,
+      5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8, 5.9, 6.0]
+Sampling:

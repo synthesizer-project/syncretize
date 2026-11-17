@@ -157,10 +157,17 @@ def test_normalised_to_unit_bolometric_luminosity():
 def test_grid_axes_and_fixed_parameters(tmp_path):
     """Lists in the config become axes and single values are fixed."""
     config = {
-        "model": "cloudy_agn-unit-test",
-        "log10blue_bump_temperature": [4.0, 5.0],
-        "alpha_ox": [-1.4, -1.0],
-        "alpha_uv": -0.5,
+        "Model": {"grid_name": "cloudy_agn-unit-test"},
+        "Constants": {"alpha_uv": -0.5},
+        "Axes": [
+            {
+                "name": "log10blue_bump_temperature",
+                "type": "values",
+                "values": [4.0, 5.0],
+            },
+            {"name": "alpha_ox", "type": "values", "values": [-1.4, -1.0]},
+        ],
+        "Sampling": None,
     }
     config_file = tmp_path / "config.yaml"
     config_file.write_text(yaml.safe_dump(config))
@@ -169,6 +176,7 @@ def test_grid_axes_and_fixed_parameters(tmp_path):
         [
             sys.executable,
             SCRIPT,
+            "--config-file",
             str(config_file),
             "--grid-dir",
             str(tmp_path),
@@ -184,7 +192,6 @@ def test_grid_axes_and_fixed_parameters(tmp_path):
         )
         assert hf["Model"].attrs["alpha_uv"] == -0.5
         assert hf["Model"].attrs["alpha_x"] == -1.0
-        assert hf["ParameterFile"].attrs["alpha_uv"] == -0.5
         assert (
             yaml.safe_load(hf["ParameterFile/contents"][()].decode()) == config
         )
@@ -198,9 +205,17 @@ def test_grid_axes_and_fixed_parameters(tmp_path):
 def test_rejects_axis_not_increasing(tmp_path):
     """An axis with repeated or decreasing values stops the script."""
     config = {
-        "model": "cloudy_agn-unit-test",
-        "log10blue_bump_temperature": [4.0, 5.0],
-        "alpha_ox": [-1.0, -1.4],
+        "Model": {"grid_name": "cloudy_agn-unit-test"},
+        "Constants": None,
+        "Axes": [
+            {
+                "name": "log10blue_bump_temperature",
+                "type": "values",
+                "values": [4.0, 5.0],
+            },
+            {"name": "alpha_ox", "type": "values", "values": [-1.0, -1.4]},
+        ],
+        "Sampling": None,
     }
     config_file = tmp_path / "config.yaml"
     config_file.write_text(yaml.safe_dump(config))
@@ -209,6 +224,7 @@ def test_rejects_axis_not_increasing(tmp_path):
         [
             sys.executable,
             SCRIPT,
+            "--config-file",
             str(config_file),
             "--grid-dir",
             str(tmp_path),

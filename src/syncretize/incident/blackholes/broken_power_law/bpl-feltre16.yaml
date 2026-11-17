@@ -1,13 +1,28 @@
 # Parameter file for broken_power_law/generate_incident_grid.py
 #
-#   python generate_incident_grid.py bpl-feltre16.yaml --grid-dir <grid-dir>
+#   python generate_incident_grid.py --config-file bpl-feltre16.yaml --grid-dir <grid-dir>
 #
-#   model: name of the grid; the grid is written to <grid-dir>/<model>.hdf5
-#   edges: the four wavelengths (Angstrom) bounding the three power laws.
-#   indices: three lists of slopes alpha_i, where L_nu ~ nu^alpha_i between
-#     consecutive edges. Each list becomes a grid axis (alpha1, alpha2,
-#     alpha3). Only the first list may currently hold more than one value.
+# Model:
+#   grid_name: the grid is written to <grid-dir>/<grid_name>.hdf5
+# Constants:
+#   edges: the four wavelengths (Angstrom) bounding the three power laws
+# Axes:
+#   alpha1, alpha2, alpha3: the slopes alpha_i, where L_nu ~ nu^alpha_i
+#     between consecutive edges. All three are axes; only alpha1 may
+#     currently hold more than one value.
 
-model: 'bpl-feltre16'
-indices: [[-2.0, -1.8, -1.6, -1.4, -1.2, -1.0], [-0.5], [2.0]]
-edges: [10.0, 2500.0, 100000.0, 1000000.0] # Angstrom
+Model:
+  grid_name: bpl-feltre16
+Constants:
+  edges: [10.0, 2500.0, 100000.0, 1000000.0] # Angstrom
+Axes:
+  - name: alpha1
+    type: values
+    values: [-2.0, -1.8, -1.6, -1.4, -1.2, -1.0]
+  - name: alpha2
+    type: values
+    values: [-0.5]
+  - name: alpha3
+    type: values
+    values: [2.0]
+Sampling:

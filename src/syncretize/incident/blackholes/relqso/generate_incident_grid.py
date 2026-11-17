@@ -18,7 +18,7 @@ import numpy as np
 from unyt import Angstrom, Hz, Msun, dimensionless, erg, s
 
 from syncretize.grid_io import GridFile
-from syncretize.parser import incident_parser, load_param_file
+from syncretize.parser import Parser, load_params
 
 sys.path.append("RELAGN/src/python_version")
 
@@ -60,13 +60,31 @@ if __name__ == "__main__":
         "spins": False,
     }
 
-    # Load the parameter file
-    parser = incident_parser("RELQSO AGN model creation.")
-    args = parser.parse_args()
-    param_file = args.param_file
-    parameters = load_param_file(param_file)
+    # Set up the command line arguments
+    parser = Parser(description="RELQSO AGN model creation.")
 
-    model_name = parameters["model"]
+    # parameter file to use
+    parser.add_argument("--config-file", type=str, required=True)
+
+    # get the arguments
+    args = parser.parse_args()
+
+    # open the config file and extract parameters; fixed values and axes
+    # are read the same way below
+    config = load_params(
+        args.config_file,
+        model_keys=["grid_name"],
+        constant_keys=["cosine_inclinations"],
+        axis_names=[
+            "log10masses",
+            "log10accretion_rates_eddington",
+            "spins",
+            "cosine_inclinations",
+        ],
+    )
+    parameters = {**config.constants, **config.axes}
+
+    model_name = config.model["grid_name"]
     mass = 10 ** np.array(parameters["log10masses"])
     accretion_rate_eddington = 10 ** np.array(
         parameters["log10accretion_rates_eddington"]
@@ -160,7 +178,7 @@ if __name__ == "__main__":
                         spec[i1, i2, i3, i4] = lnu[::-1]
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename, param_file=param_file)
+    out_grid = GridFile(out_filename, param_file=args.config_file)
 
     if not isotropic:
         log_on_read["cosine_inclinations"] = False

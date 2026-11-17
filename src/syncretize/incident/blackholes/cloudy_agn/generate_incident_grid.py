@@ -29,7 +29,7 @@ from synthesizer.utils.integrate import trapezoid
 from unyt import Hz, K, c, dimensionless, erg, s
 
 from syncretize.grid_io import GridFile
-from syncretize.parser import incident_parser, load_param_file
+from syncretize.parser import Parser, load_params
 
 # 1 Ryd in Hz and in K (cloudy's TE1RYD = h c R_inf / k)
 RYD_HZ = 3.289841960250e15
@@ -196,13 +196,36 @@ if __name__ == "__main__":
         "alpha_x": False,
     }
 
-    # Load the parameter file
-    parser = incident_parser("cloudy agn continuum model creation.")
-    args = parser.parse_args()
-    param_file = args.param_file
-    parameters = load_param_file(param_file)
+    # Set up the command line arguments
+    parser = Parser(description="cloudy agn continuum model creation.")
 
-    model_name = parameters["model"]
+    # parameter file to use
+    parser.add_argument("--config-file", type=str, required=True)
+
+    # get the arguments
+    args = parser.parse_args()
+
+    # open the config file and extract parameters; fixed values and axes
+    # are read the same way below
+    config = load_params(
+        args.config_file,
+        model_keys=["grid_name"],
+        constant_keys=[
+            "log10blue_bump_temperature",
+            "alpha_ox",
+            "alpha_uv",
+            "alpha_x",
+        ],
+        axis_names=[
+            "log10blue_bump_temperature",
+            "alpha_ox",
+            "alpha_uv",
+            "alpha_x",
+        ],
+    )
+    parameters = {**config.constants, **config.axes}
+
+    model_name = config.model["grid_name"]
 
     # Each parameter is an axis if given as a list and fixed otherwise
     values = {
@@ -250,7 +273,7 @@ if __name__ == "__main__":
         spec[index] = agn_lnu(lam, **point)
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename, param_file=param_file)
+    out_grid = GridFile(out_filename, param_file=args.config_file)
 
     # Write everything out that's common to all models
     out_grid.write_grid_common(

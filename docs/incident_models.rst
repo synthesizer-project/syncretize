@@ -206,8 +206,9 @@ Run the self-contained broken-power-law model with:
 .. code-block:: console
 
    python src/syncretize/incident/blackholes/broken_power_law/generate_incident_grid.py \
-       src/syncretize/incident/blackholes/broken_power_law/bpl-feltre16.yaml \
-       --grid-dir grids
+       --grid-dir grids \
+       --config-file \
+       src/syncretize/incident/blackholes/broken_power_law/bpl-feltre16.yaml
 
 The supplied configuration varies only its first slope. The current
 implementation does not correctly support multiple values on the second or

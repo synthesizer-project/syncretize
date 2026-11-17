@@ -22,7 +22,7 @@ from synthesizer.utils.integrate import trapezoid
 from unyt import Hz, K, c, erg, s
 
 from syncretize.grid_io import GridFile
-from syncretize.parser import incident_parser, load_param_file
+from syncretize.parser import Parser, load_params
 
 # 1 Ryd in Hz and in K (cloudy's TE1RYD = h c R_inf / k)
 RYD_HZ = 3.289841960250e15
@@ -114,13 +114,26 @@ def blackbody_lnu(lam, blackbody_temperature):
 
 
 if __name__ == "__main__":
-    # Load the parameter file
-    parser = incident_parser("cloudy blackbody model creation.")
-    args = parser.parse_args()
-    param_file = args.param_file
-    parameters = load_param_file(param_file)
+    # Set up the command line arguments
+    parser = Parser(description="cloudy blackbody model creation.")
 
-    model_name = parameters["model"]
+    # parameter file to use
+    parser.add_argument("--config-file", type=str, required=True)
+
+    # get the arguments
+    args = parser.parse_args()
+
+    # open the config file and extract parameters; fixed values and axes
+    # are read the same way below
+    config = load_params(
+        args.config_file,
+        model_keys=["grid_name"],
+        constant_keys=[],
+        axis_names=["log10blackbody_temperature"],
+    )
+    parameters = {**config.constants, **config.axes}
+
+    model_name = config.model["grid_name"]
 
     temperatures = 10 ** np.array(
         parameters["log10blackbody_temperature"], dtype=float
@@ -150,7 +163,7 @@ if __name__ == "__main__":
     )
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename, param_file=param_file)
+    out_grid = GridFile(out_filename, param_file=args.config_file)
 
     # Write everything out that's common to all models
     out_grid.write_grid_common(
