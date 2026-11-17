@@ -796,28 +796,8 @@ class GridFile:
         # Open the file
         self._open_file()
 
-        # Create the CloudyParams group if it doesn't exist
-        if "CloudyParams" not in self.hdf:
-            self.hdf.create_group("CloudyParams")
-        cloudy_grp = self.hdf["CloudyParams"]
-
-        # Add other parameters as attributes
-        for k, v in params.items():
-            # If v is None then convert to string None for saving in the
-            # HDF5 file.
-            if v is None:
-                v = "None"
-
-            # If the parameter is a dictionary (e.g. as used for abundances)
-            if isinstance(v, dict):
-                # Create group for this key
-                nested_grp = cloudy_grp.create_group(k)
-
-                for k2, v2 in v.items():
-                    nested_grp.attrs[k2] = v2
-
-            else:
-                cloudy_grp.attrs[k] = v
+        # Write the parameters to the CloudyParams group
+        _write_attrs(self.hdf.require_group("CloudyParams"), params)
 
         # Close the file
         self._close_file()
@@ -883,6 +863,34 @@ class GridFile:
             print(index_list)
 
         return n_axes, shape, n_models, mesh, model_list, index_list
+
+
+def _write_attrs(grp, params):
+    """
+    Write a dictionary of parameters as attributes of an HDF5 group.
+
+    Nested dictionaries become subgroups and None becomes "None". Values
+    HDF5 can't store as attributes (e.g. lists of dictionaries) are stored
+    as their string representation.
+
+    Args:
+        grp (h5py.Group)
+            The group to write to.
+        params (dict)
+            The parameters to write.
+    """
+    for key, value in params.items():
+        # YAML keys can be numbers, HDF5 names can't
+        key = str(key)
+        if value is None:
+            value = "None"
+        if isinstance(value, dict):
+            _write_attrs(grp.require_group(key), value)
+            continue
+        try:
+            grp.attrs[key] = value
+        except (TypeError, ValueError):
+            grp.attrs[key] = str(value)
 
 
 def read_params(param_file):
