@@ -406,11 +406,12 @@ if __name__ == "__main__":
     # create directory to store downloaded output if it doesn't exist
     os.makedirs(input_dir, exist_ok=True)
 
+    # download and compile the BC03 utility
+    download_utility(input_dir)
+    compile_utility(input_dir)
+
     if args.download:
-        # download, compile and run the BC03 utility to convert the binary
-        # ised files to ascii
-        download_utility(input_dir)
-        compile_utility(input_dir)
+        # download the data and convert the binary ised files to ascii
         download_data(variant, imf_type, input_dir)
         convert_to_ascii(input_dir)
 
