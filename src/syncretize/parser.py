@@ -1,14 +1,103 @@
 """A module for parsing command line arguments in a standardised way.
 
-Example Usage:
-    parser = Parser("A description of the program")
-    parser.add_argument("--flag", "-f", action="store_true", help="A flag")
-    parser.add_argument("--value", "-v", type=int, help="A value")
-    args = parser.parse()
+Incident grid scripts take a YAML parameter file describing the grid, and
+command line arguments for where to read and write files:
+
+    parser = incident_parser("A description", input_dir=True)
+    args = parser.parse_args()
+    params = load_param_file(args.param_file)
+    grid = GridFile(f"{args.grid_dir}/name.hdf5", param_file=args.param_file)
+
+Cloudy scripts use the Parser class:
+
+    parser = Parser("A description of the program", cloudy_args=True)
+    args = parser.parse_args()
 
 """
 
 import argparse
+
+import yaml
+
+
+def incident_parser(description, input_dir=False, download=False):
+    """
+    Create the command line parser for an incident grid script.
+
+    Args:
+        description (str):
+            A description of the program.
+        input_dir (bool):
+            Does the script read source data from --input-dir?
+        download (bool):
+            Can the script download its source data (--download)?
+
+    Returns:
+        argparse.ArgumentParser:
+            The parser, so scripts can add their own arguments.
+    """
+    parser = argparse.ArgumentParser(description=description)
+    parser.add_argument(
+        "param_file",
+        help="Path to the YAML parameter file describing the grid.",
+    )
+    parser.add_argument(
+        "--grid-dir",
+        required=True,
+        help="The directory to write the grid to.",
+    )
+    if input_dir:
+        parser.add_argument(
+            "--input-dir",
+            required=True,
+            help="The directory containing (or to contain) the source data.",
+        )
+    if download:
+        parser.add_argument(
+            "--download",
+            action="store_true",
+            help="Download the source data into --input-dir first.",
+        )
+    return parser
+
+
+def load_param_file(param_file):
+    """
+    Read a YAML parameter file.
+
+    Args:
+        param_file (str):
+            The path to the parameter file.
+
+    Returns:
+        dict:
+            The parameters.
+    """
+    with open(param_file) as file:
+        return yaml.safe_load(file) or {}
+
+
+def get_choice(params, key, options):
+    """
+    Return a required parameter, checking it is one of the allowed options.
+
+    Args:
+        params (dict):
+            The parameters.
+        key (str):
+            The parameter to return.
+        options (iterable):
+            The allowed values.
+
+    Returns:
+        The value of the parameter.
+    """
+    value = params.get(key)
+    if value not in options:
+        raise ValueError(
+            f"{key} must be one of {list(options)}, got {value!r}"
+        )
+    return value
 
 
 class Parser(argparse.ArgumentParser):
@@ -23,15 +112,15 @@ class Parser(argparse.ArgumentParser):
             The parser instance.
     """
 
-    def __init__(self, description, with_alpha=False, cloudy_args=False):
+    def __init__(self, description, cloudy_args=False):
         """
         Create the parser instance.
 
         Args:
             description (str):
                 A description of the program.
-            with_alpha (bool):
-                Should the parser accept alpha arguments?
+            cloudy_args (bool):
+                Add the cloudy arguments instead of the incident ones.
         """
         # Create the parser
         super(Parser, self).__init__(description=description)
@@ -59,10 +148,6 @@ class Parser(argparse.ArgumentParser):
             self._add_incident_args()
         else:
             self._add_cloudy_args()
-
-        # Add alpha flag if necessary
-        if with_alpha:
-            self._add_alpha_args()
 
     def _add_incident_args(self):
         """Add arguments for incident grids."""
@@ -164,24 +249,6 @@ class Parser(argparse.ArgumentParser):
         #     help="Should the grid be normalised by the specific "
         #     "ionising luminosity? (default is True)",
         # )
-
-    def _add_alpha_args(self):
-        """Add arguments for alpha enhancement."""
-        self.add_argument(
-            "--individual",
-            "-i",
-            action="store_true",
-            help=(
-                "Should individual grids be made for a range of "
-                "alpha enhancements?"
-            ),
-        )
-        self.add_argument(
-            "--full",
-            "-f",
-            action="store_true",
-            help="Should a 3D grid be made with an alpha enhancement axis?",
-        )
 
     def __str__(self):
         """Summarise the command line arguments."""
