@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from syncretize.cloudy.utils import get_cloudy_params
+from syncretize.cloudy.utils import get_cloudy_params, resolve_param_file
 from syncretize.parser import Parser
 
 
@@ -73,3 +73,30 @@ def test_get_cloudy_params_splits_fixed_and_grid(tmp_path):
 
     assert grid["hydrogen_density"].tolist() == [1.0, 2.0]
     assert grid["abundance_scalings.carbon_to_oxygen"].tolist() == [0.1, 0.2]
+
+
+def test_resolve_param_file_takes_paths_and_names(tmp_path):
+    # A path is used as given, with or without the extension
+    param_file = tmp_path / "c23.01-custom.yaml"
+    param_file.write_text("cloudy_version: c23.01\n")
+    assert resolve_param_file(param_file) == param_file
+    assert resolve_param_file(tmp_path / "c23.01-custom") == param_file
+    other = tmp_path / "custom.yml"
+    other.write_text("cloudy_version: c23.01\n")
+    assert resolve_param_file(other) == other
+
+    # A bare name falls back to the ready-made parameter files
+    assert resolve_param_file("c23.01-sps").exists()
+
+    # With a param_dir, a file there is used, and paths and ready-made
+    # names still resolve when it isn't there
+    run_dir = tmp_path / "runs"
+    run_dir.mkdir()
+    copied = run_dir / "c23.01-sps.yaml"
+    copied.write_text("cloudy_version: c23.01\n")
+    assert resolve_param_file("c23.01-sps", param_dir=run_dir) == copied
+    assert resolve_param_file(param_file, param_dir=run_dir) == param_file
+    assert resolve_param_file("c23.01-nlr", param_dir=run_dir).exists()
+    assert resolve_param_file("missing", param_dir=run_dir) == (
+        run_dir / "missing.yaml"
+    )

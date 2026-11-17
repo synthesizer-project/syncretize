@@ -510,7 +510,9 @@ if __name__ == "__main__":
     # parameters with these.
     if args.extra_cloudy_paramfile is not None:
         (fixed_photoionisation_params_, variable_photoionisation_params_) = (
-            get_cloudy_params(args.extra_cloudy_paramfile)
+            get_cloudy_params(
+                args.extra_cloudy_paramfile, param_dir=args.cloudy_dir
+            )
         )
         fixed_photoionisation_params |= fixed_photoionisation_params_
         variable_photoionisation_params |= variable_photoionisation_params_
