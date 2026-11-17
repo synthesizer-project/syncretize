@@ -63,7 +63,7 @@ SPS models
      - ``maraston/generate_incident_grid_2013.py``
      - Ages, metallicities
      - Manual source data
-     - Blocked by known age-unit bug; do not use until fixed.
+     - Manual setup.
    * - Maraston 2024
      - ``maraston/generate_incident_grid_2024.py``
      - Ages, metallicities
@@ -130,8 +130,7 @@ conversion also compiles a Fortran binary reader and therefore needs ``make``
 and a Fortran compiler.
 
 Maraston source URLs used by older scripts are no longer available. Supply
-source files through ``--input-dir``. Treat the Maraston 2013 conversion as
-unsupported until its age-unit bug is corrected.
+source files through ``--input-dir``.
 
 Other file-backed SPS conversions follow this command shape:
 
