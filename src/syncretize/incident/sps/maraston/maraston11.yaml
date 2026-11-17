@@ -1,0 +1,18 @@
+# Parameter file for maraston/generate_incident_grid_2011.py (Maraston 2011)
+#
+#   python generate_incident_grid_2011.py maraston11.yaml \
+#       --grid-dir <grid-dir> --input-dir <input-dir>
+#
+# The source data must be obtained manually and placed in
+# <input-dir>/maraston11 (the original download URL no longer exists).
+# These models are for solar metallicity only.
+#
+#   variant: the Pickles library variant, one of
+#     standard
+#     nearIRextended
+#     UVtheoretical                  (salpeter only)
+#     UVtheoretical_nearIRextended   (salpeter only)
+#   imf_type: one of salpeter, kroupa, chabrier
+
+variant: standard
+imf_type: salpeter

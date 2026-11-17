@@ -1,0 +1,17 @@
+# Parameter file for bc03/generate_incident_grid_2016.py (BC03, 2016 release)
+#
+#   python generate_incident_grid_2016.py bc03-2016.yaml \
+#       --grid-dir <grid-dir> --input-dir <input-dir> [--download]
+#
+# Source data are read from (or downloaded to) <input-dir>/bc03-2016.
+# --download also compiles the BC03 binary reader, which needs make and a
+# Fortran compiler.
+#
+#   variant: stellar spectral library, one of
+#     BaSeL   (low resolution theoretical)
+#     Miles   (high resolution empirical)
+#     Stelib  (high resolution empirical)
+#   imf_type: one of kroupa, salpeter, chabrier
+
+variant: BaSeL
+imf_type: chabrier

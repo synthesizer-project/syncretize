@@ -2,20 +2,16 @@
 Convert BPASS v2.2.1 outputs to synthesizer grid.
 
 There are two model variants available (with or without binary stars) and
-various IMFs.
-
-Individual models can be specified with --model, or all models can be
-processed by setting --model=all.
+various IMFs. Each run makes the grid for the model and variant chosen in the
+parameter file.
 
 Note: there is no automatic download available so models need to be downloaded
 manually from:
 https://warwick.ac.uk/fac/sci/physics/research/astro/research/catalogues/bpass/v2p2
 
 Example:
-    python generate_incident_grid_2_2_1.py \
-    --input-dir path/to/input/dir \
-    --grid-dir path/to/grid/dir \
-    --models=all
+    python generate_incident_grid_2_2_1.py bpass-2.2.1.yaml \
+        --grid-dir path/to/grids --input-dir path/to/input
 """
 
 import os
@@ -26,7 +22,7 @@ from unyt import Hz, angstrom, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import Parser
+from syncretize.parser import get_choice, incident_parser, load_param_file
 
 
 def resolve_name(original_model_name, bin):
@@ -91,7 +87,7 @@ def untar_data(model, filename, input_dir):
     os.remove(filename)
 
 
-def make_grid(original_model_name, bin, input_dir, grid_dir):
+def make_grid(original_model_name, bin, input_dir, grid_dir, param_file=None):
     # returns a dictionary containing the sps model parameters
     model, bpass_imf = resolve_name(original_model_name, bin)
 
@@ -171,7 +167,7 @@ def make_grid(original_model_name, bin, input_dir, grid_dir):
     ages = 10**log10ages
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=param_file)
 
     # A dictionary with Boolean values for each axis, where True
     # indicates that the attribute should be interpolated in
@@ -211,41 +207,14 @@ def make_grid(original_model_name, bin, input_dir, grid_dir):
 
 
 if __name__ == "__main__":
-    # Set up the command line arguments
-    parser = Parser(description="BPASS_2.2.1 download and grid creation")
-
-    # add argument to specify the specific bpass model/IMF
-    parser.add_argument(
-        "-models",
-        "--models",
-        help="""list of models to process, separated by ','.
-        By default uses 'bpass_v2.2.1_imf_chab100'.
-        Use 'all' to process all models.""",
-        default="bpass_v2.2.1_imf_chab100",
-    )
-
-    # Unpack the arguments
+    parser = incident_parser("BPASS v2.2.1 grid creation", input_dir=True)
     args = parser.parse_args()
+    params = load_param_file(args.param_file)
 
-    # the directory to store downloaded input files
-    input_dir = args.input_dir
-
-    # the directory to store the grid
-    grid_dir = args.grid_dir
-
-    # define base sps model
-    sps_name = "bpass"
-
-    # append sps_name to input_dir to define where to store downloaded input
-    # files
-    input_dir += f"/{sps_name}"
-
-    # get list of models
-    models = args.models
-
-    # If all models are specified
-    if models == "all":
-        models = [
+    model = get_choice(
+        params,
+        "model",
+        [
             "bpass_v2.2.1_imf_chab100",
             "bpass_v2.2.1_imf_chab300",
             "bpass_v2.2.1_imf100_300",
@@ -254,13 +223,15 @@ if __name__ == "__main__":
             "bpass_v2.2.1_imf100_100",
             "bpass_v2.2.1_imf135_100",
             "bpass_v2.2.1_imf170_100",
-        ]
-    else:
-        models = models.split(",")
+        ],
+    )
+    variant = get_choice(params, "variant", ["bin", "sin"])
 
-    # loop over all models
-    for model in models:
-        print("-" * 50)
-        print(model)
-        for bin in ["bin", "sin"]:
-            make_grid(model, bin, input_dir, grid_dir)
+    # Source data are in <input-dir>/bpass/<model>
+    make_grid(
+        model,
+        variant,
+        f"{args.input_dir}/bpass",
+        args.grid_dir,
+        param_file=args.param_file,
+    )

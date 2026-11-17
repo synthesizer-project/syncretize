@@ -1,0 +1,21 @@
+# Parameter file for yggdrasil/generate_incident_grid.py (Yggdrasil Pop III)
+#
+#   python generate_incident_grid.py yggdrasil.yaml \
+#       --grid-dir <grid-dir> --input-dir <input-dir> [--download]
+#
+# Source data are read from (or downloaded to) <input-dir>/yggdrasil. The
+# covering_fraction 1 data are always needed, since every grid uses their
+# wavelengths.
+#
+#   population: one of
+#     PopIII.1       (Salpeter slope, 50-500 Msun)
+#     PopIII.2       (log-normal, M_c = 10 Msun, 1-500 Msun)
+#     PopIII_kroupa  (Kroupa 2001, 0.1-100 Msun)
+#   covering_fraction: gas covering fraction, one of
+#     0    (no nebular emission; writes the incident spectra)
+#     0.5  (writes the model's own nebular spectra)
+#     1    (writes the model's own nebular spectra)
+#   Use 0 for grids to reprocess with cloudy.
+
+population: PopIII.1
+covering_fraction: 0
