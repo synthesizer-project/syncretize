@@ -42,7 +42,8 @@ Parameter files and added axes
 
 The base YAML file defines Cloudy version, abundances, geometry, density,
 ionisation parameter treatment, stopping conditions, and outputs. A second
-file can override or extend it through ``--cloudy-paramfile-extra``.
+file can override or extend it through ``--cloudy-paramfile-extra``. See
+:doc:`parameter_files` for every key.
 
 A numeric list in the YAML becomes a grid axis. Nested lists become dotted
 axis names, such as ``abundance_scalings.nitrogen_to_oxygen``. Scalars remain
