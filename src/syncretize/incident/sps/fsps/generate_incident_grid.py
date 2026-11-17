@@ -24,7 +24,9 @@ def generate_grid(model):
 
     # set up StellarPopulation grid
     imf_type = model["imf_type"]
-    imf_masses = model["imf_masses"]
+    # Floats, so the grid name reads e.g. 1.0,120.0 however they were given
+    imf_masses = [float(m) for m in model["imf_masses"]]
+    model["imf_masses"] = imf_masses
 
     if imf_type == "chabrier03":
         sp = fsps.StellarPopulation(
