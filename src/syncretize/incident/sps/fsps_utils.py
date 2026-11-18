@@ -232,11 +232,44 @@ def parse_fsps_imf_config(config):
 
     return {
         "sps_version": str(model["sps_version"]),
+        "libraries": model.get("libraries"),
         "imf_type": model["imf_type"],
         "boundaries": fixed_boundaries,
         "slopes": fixed_slopes,
         "axis": active,
     }
+
+
+def fsps_libraries(sp, expected=None):
+    """Return the libraries FSPS was compiled with, checking them.
+
+    FSPS output depends on its compiled isochrone, spectral and dust
+    libraries, which cannot be chosen at run time. A parameter file can
+    list the ones it expects, in that order (trailing ones may be left
+    out); a different installation then raises rather than silently
+    making a different grid.
+
+    Args:
+        sp (fsps.StellarPopulation)
+            The stellar population; its ``libraries`` are read.
+        expected (list of str, optional)
+            The libraries the parameter file expects.
+
+    Returns:
+        list of str
+            The isochrone, spectral and dust library names.
+    """
+    libraries = [
+        lib.decode("utf-8") if isinstance(lib, bytes) else str(lib)
+        for lib in sp.libraries
+    ]
+    if expected and [str(e) for e in expected] != libraries[: len(expected)]:
+        raise ValueError(
+            f"FSPS was compiled with libraries {libraries}, but the "
+            f"parameter file expects {list(expected)}. Rebuild FSPS with "
+            "the expected libraries."
+        )
+    return libraries
 
 
 def load_fsps_imf_config(path):

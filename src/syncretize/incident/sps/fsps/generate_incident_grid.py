@@ -13,6 +13,7 @@ import numpy as np
 from unyt import Hz, angstrom, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
+from syncretize.incident.sps.fsps_utils import fsps_libraries
 from syncretize.incident.sps.utils import get_model_filename
 from syncretize.parser import get_choice, incident_parser, load_param_file
 
@@ -22,7 +23,9 @@ def generate_grid(model, grid_dir, param_file=None):
 
     # set up StellarPopulation grid
     imf_type = model["imf_type"]
-    imf_masses = model["imf_masses"]
+    # Floats, so the grid name reads e.g. 1.0,120.0 however they were given
+    imf_masses = [float(m) for m in model["imf_masses"]]
+    model["imf_masses"] = imf_masses
 
     if imf_type == "chabrier03":
         sp = fsps.StellarPopulation(
@@ -54,12 +57,11 @@ def generate_grid(model, grid_dir, param_file=None):
             imf3=imf_slopes[2],
         )
 
-    # include the isochrones/spectra as the sps_variant name
-    # model['sps_variant'] = '-'.join(map(lambda x: str(x), sp.libraries[:2]))
-
-    model["sps_variant"] = "-".join(
-        map(lambda x: x.decode("utf-8"), sp.libraries[:2])
-    )
+    # Record the compiled libraries; the isochrones and spectra name the
+    # variant
+    libraries = fsps_libraries(sp)
+    model["fsps_libraries"] = ",".join(libraries)
+    model["sps_variant"] = "".join(libraries[:2])
     print(model["sps_variant"])
 
     # generate the synthesizer_model_name

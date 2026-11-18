@@ -60,6 +60,9 @@
 # Slope axes are dimensionless; mass-boundary axis values are interpreted as
 # solar masses and written with Msun units.
 
+# model.libraries (optional) lists the [isochrones, spectra, dust] FSPS
+# must have been compiled with; the script stops if they differ.
+
 model:
   sps_version: "4.0"
   imf_type: bpl
