@@ -1,0 +1,35 @@
+# MRN power law (dn/da ∝ a^-3.5) split into small/large bins for
+# silicate/graphite, plus one PAH range, matching the previous MRN defaults.
+# The same "powerlaw" kind describes the discrete bins of a binned
+# grain-size model: list the bin edges and the slope assumed within a bin.
+#
+# Run: python create_dustextcurve_draine_li.py params/draine_li_mrn.yaml
+
+output:
+  # Defaults to GRID_DIR in synthesizer
+  # grid_loc: .
+  grid_name: dust_extcurve_draine_li_mrn
+
+data_dir: .
+n_a_int: 500
+
+components:
+  # One component per [edge_i, edge_i+1] (micron)
+  - material: silicate
+    kind: powerlaw
+    edges: [0.001, 0.019, 0.25]
+    power: -3.5
+  - material: graphite
+    kind: powerlaw
+    edges: [0.001, 0.019, 0.25]
+    power: -3.5
+  # Or explicit (possibly disjoint) ranges, one component each. Parts of a
+  # range outside the optical table (PAH: 3.548e-4 - 0.01 um) are dropped.
+  - material: pah_ionised
+    kind: powerlaw
+    ranges: [[0.0001, 0.01]]
+    power: -3.5
+  - material: pah_neutral
+    kind: powerlaw
+    ranges: [[0.0001, 0.01]]
+    power: -3.5
