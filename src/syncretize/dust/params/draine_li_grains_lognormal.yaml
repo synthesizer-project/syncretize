@@ -1,37 +1,28 @@
-# Two-size lognormal silicate/graphite plus a single PAH size, matching the
-# previous script defaults (Hirashita 2015 form, centres are mass medians).
+# Lognormal silicate/graphite at two mass-median radii and one width,
+# matching the previous script defaults (Hirashita 2015 form, centres are
+# mass medians).
 #
-# Run: python create_dustextcurve_draine_li.py --paramfile params/draine_li_lognormal.yaml
+# Run: python create_dustextcurve_draine_li.py --paramfile params/draine_li_grains_lognormal.yaml
 
 output:
   # Defaults to GRID_DIR in synthesizer
   # grid_loc: .
-  grid_name: dust_extcurve_draine_li_lognormal
+  grid_name: dust_extcurve_draine_li_grains_lognormal
 
 data_dir: .        # where the Draine tables are cached (downloaded if absent)
-n_a_int: 500       # grain-size integration points per material
+n_a_int: 500       # log-spaced grain-size integration points per material
 
 # Optional density overrides (g cm^-3); defaults: silicate 3.5, others 2.24
 # densities:
 #   silicate: 3.5
 
-components:
-  # Lognormal in number: n(a) ∝ (1/a) exp(-(ln a - mu)^2 / (2 sigma^2)).
-  # Give medians as number_median (a_n = e^mu) or mass_median
-  # (a_n exp(3 sigma^2)), in micron. sigma may be a scalar or one per median.
-  - material: silicate
-    shape: lognormal
-    mass_median: [0.01, 0.1]
-    sigma: 0.75
-  - material: graphite
-    shape: lognormal
-    mass_median: [0.01, 0.1]
-    sigma: 0.75
-  - material: pah_ionised
-    shape: lognormal
-    mass_median: [0.001]
-    sigma: 0.75
-  - material: pah_neutral
-    shape: lognormal
-    mass_median: [0.001]
-    sigma: 0.75
+# The lognormal is defined in number,
+#   n(a) = M0 / (sqrt(2 pi) sigma a) exp(-(ln a - mu)^2 / (2 sigma^2)),
+# and the a axis is its mass-median radius in micron, so
+# mu = ln(a / 1 micron) - 3 sigma^2. Axes are a value, an increasing list,
+# or {min, max, n} (log-spaced for a, linear for sigma).
+shape: lognormal
+materials: [silicate, graphite]
+axes:
+  a: [0.01, 0.1]
+  sigma: 0.75

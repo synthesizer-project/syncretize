@@ -1,0 +1,29 @@
+# MRN power law (dn/da propto a^-3.5) for ionised/neutral PAHs over
+# 0.0001 - 0.01 um, matching the previous MRN defaults. The PAH optical
+# tables start at 3.548e-4 um, so the range is clipped to it.
+#
+# Run: python create_dustextcurve_draine_li.py --paramfile params/draine_li_pah_mrn.yaml
+
+output:
+  # Defaults to GRID_DIR in synthesizer
+  # grid_loc: .
+  grid_name: dust_extcurve_draine_li_pah_mrn
+
+data_dir: .        # where the Draine tables are cached (downloaded if absent)
+n_a_int: 500       # log-spaced grain-size integration points per material
+
+# Optional density overrides (g cm^-3); defaults: silicate 3.5, others 2.24
+# densities:
+#   silicate: 3.5
+
+# dn/da propto a^power on [a_min, a_max] (micron), computed for every
+# (a_min, a_max) pair. Cells with a_min >= a_max, or whose range misses the
+# optical table, are NaN; ranges partly outside the table are clipped to it
+# and the mass renormalised. Axes are a value, an increasing list, or
+# {min, max, n} (log-spaced).
+shape: powerlaw
+materials: [pah_ionised, pah_neutral]
+power: -3.5
+axes:
+  a_min: 0.0001
+  a_max: 0.01

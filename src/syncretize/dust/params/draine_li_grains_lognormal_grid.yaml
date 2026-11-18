@@ -1,36 +1,29 @@
-# Opacity tables for moment-based lognormal modes. Each mode of a material
-# looks up kappa(lam; a_n, sigma) in that material's table, where the
-# lognormal is defined in number,
-#   n(a) = M0 / (sqrt(2 pi) sigma a) exp(-(ln a - mu)^2 / (2 sigma^2)),
-# and the axis is log10 of the number-median radius a_n = e^mu in micron.
-# The table also stores the fraction of each lognormal's mass lying inside
-# the optical table's radius range (the rest is renormalised onto it).
+# Opacity table for moment-based lognormal modes of silicate/graphite:
+# each mode looks up kappa(lam; a, sigma). The file also stores the fraction
+# of each lognormal's mass inside the optical table's radius range
+# (0.001 - 10 um); the rest is renormalised onto it.
 #
-# Run: python create_dustextcurve_draine_li.py --paramfile params/draine_li_lognormal_grid.yaml
+# Run: python create_dustextcurve_draine_li.py --paramfile params/draine_li_grains_lognormal_grid.yaml
 
 output:
   # Defaults to GRID_DIR in synthesizer
   # grid_loc: .
-  grid_name: dust_extcurve_draine_li_lognormal_grid
+  grid_name: dust_extcurve_draine_li_grains_lognormal_grid
 
-data_dir: .
-n_a_int: 500
+data_dir: .        # where the Draine tables are cached (downloaded if absent)
+n_a_int: 500       # log-spaced grain-size integration points per material
 
-components:
-  # Axes as {min, max, n} (linearly spaced) or an explicit increasing list
-  - material: silicate
-    shape: lognormal_table
-    log10_number_median: {min: -3.0, max: 0.0, n: 31}
-    sigma: {min: 0.1, max: 1.5, n: 15}
-  - material: graphite
-    shape: lognormal_table
-    log10_number_median: {min: -3.0, max: 0.0, n: 31}
-    sigma: {min: 0.1, max: 1.5, n: 15}
-  - material: pah_ionised
-    shape: lognormal_table
-    log10_number_median: {min: -3.4, max: -2.0, n: 15}
-    sigma: {min: 0.1, max: 1.0, n: 10}
-  - material: pah_neutral
-    shape: lognormal_table
-    log10_number_median: {min: -3.4, max: -2.0, n: 15}
-    sigma: {min: 0.1, max: 1.0, n: 10}
+# Optional density overrides (g cm^-3); defaults: silicate 3.5, others 2.24
+# densities:
+#   silicate: 3.5
+
+# The lognormal is defined in number,
+#   n(a) = M0 / (sqrt(2 pi) sigma a) exp(-(ln a - mu)^2 / (2 sigma^2)),
+# and the a axis is its mass-median radius in micron, so
+# mu = ln(a / 1 micron) - 3 sigma^2. Axes are a value, an increasing list,
+# or {min, max, n} (log-spaced for a, linear for sigma).
+shape: lognormal
+materials: [silicate, graphite]
+axes:
+  a: {min: 0.001, max: 1.0, n: 31}
+  sigma: {min: 0.1, max: 1.5, n: 15}
