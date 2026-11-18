@@ -254,20 +254,35 @@ def test_write_grid_layout(synthetic_tables, tmp_path):
     dl.write_grid(str(path), params, results)
 
     with h5py.File(path, "r") as hf:
+        assert set(hf) == {
+            "Model",
+            "wavelength",
+            "extinction_curves",
+            "attenuation_curves",
+        }
         n_wav = hf["wavelength"].shape[0]
-        fixed = hf["components/silicate_a0.1um"]
+        for group in ("extinction_curves", "attenuation_curves"):
+            link = hf[group].get("wavelength", getlink=True)
+            assert isinstance(link, h5py.SoftLink)
+            assert link.path == "/wavelength"
+            np.testing.assert_array_equal(
+                hf[f"{group}/wavelength"][()], hf["wavelength"][()]
+            )
+        assert hf["extinction_curves"].attrs["efficiency"] == "Q_ext"
+        fixed = hf["extinction_curves/silicate_a0.1um"]
         assert list(fixed.attrs["axes"]) == []
         assert fixed.attrs["shape"] == "lognormal"
         assert fixed.attrs["mass_median_um"] == pytest.approx(0.1)
-        assert fixed["extinction"].shape == (n_wav,)
-        assert fixed["extinction"].attrs["Units"] == "cm**2/g"
+        assert fixed.shape == (n_wav,)
+        assert fixed.attrs["Units"] == "cm**2/g"
 
-        table = hf["components/pahneutral_lognormal_table"]
+        table = hf["attenuation_curves/pahneutral_lognormal_table"]
         axes = [
             a.decode() if isinstance(a, bytes) else a
             for a in table.attrs["axes"]
         ]
         assert axes == ["log10_number_median_um", "sigma"]
-        assert table["attenuation"].shape == (3, 4, n_wav)
-        assert table["untruncated_mass_fraction"].shape == (3, 4)
+        assert table.shape == (3, 4, n_wav)
+        np.testing.assert_allclose(table.attrs["sigma"], [0.2, 0.4, 0.6, 0.8])
+        assert table.attrs["untruncated_mass_fraction"].shape == (3, 4)
         assert "paramfile" in hf["Model"].attrs

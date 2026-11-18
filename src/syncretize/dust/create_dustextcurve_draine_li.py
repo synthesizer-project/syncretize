@@ -36,17 +36,19 @@ Component shapes (see params/*.yaml for examples):
     moment-based lognormal modes whose parameters vary continuously.
 
 Output layout:
-  /wavelength                        (micron)
-  /components/<name>/extinction      kappa, (*axes, n_wavelength)
-  /components/<name>/attenuation     kappa, (*axes, n_wavelength)
-  /components/<name>/axes/<axis>     only for tabulated components
-  Each component group carries attributes describing its material, shape,
-  axes (empty for fixed components) and size-distribution parameters.
+  /wavelength                  (micron), shared by both curve types
+  /<type>_curves/wavelength    soft link to /wavelength
+  /extinction_curves/<name>    kappa from Q_ext, (*axes, n_wavelength)
+  /attenuation_curves/<name>   kappa from Q_abs + (1 - g) Q_sca, same shape
+  Each dataset carries attributes describing its component: material,
+  shape, size-distribution parameters and axes (the axis names, empty for
+  fixed components). Tabulated components also store each axis's values
+  as an attribute named after the axis.
 
 Usage:
   python create_dustextcurve_draine_li.py \
       --paramfile params/draine_li_lognormal.yaml \
-      [--plot_example] [--show_plot]
+      [--plot-example] [--show-plot]
 """
 
 import argparse
@@ -67,7 +69,7 @@ from scipy.interpolate import interp1d
 from scipy.special import erf
 from synthesizer import GRID_DIR
 from synthesizer.emission_models.attenuation import Calzetti2000, GrainModels
-from unyt import Angstrom, cm, dimensionless, g, um
+from unyt import Angstrom, cm, g, um
 
 from syncretize.grid_io import GridFile
 
@@ -762,8 +764,7 @@ def compute_component(
             material density (g cm^-3)
     Returns:
         dict with n_per_gram (shape (*axes, n_a)), axes (dict name ->
-        values), attrs (dict) and datasets (dict name -> (array,
-        description)) to write alongside the opacities
+        values) and attrs (dict) to write alongside the opacities
     """
     lo, hi = a_grid[0], a_grid[-1]
     attrs: Dict[str, Any] = {
@@ -774,7 +775,6 @@ def compute_component(
         "table_a_max_um": hi,
     }
     axes: Dict[str, NDArray] = {}
-    datasets: Dict[str, Tuple[NDArray, str]] = {}
 
     if spec["shape"] == "lognormal":
         a_n, sigma = spec["number_median_um"], spec["sigma"]
@@ -819,11 +819,8 @@ def compute_component(
         shape = lognormal_shape(a_grid, a_n_mesh, sig_mesh)
         frac = lognormal_mass_fraction(lo, hi, a_n_mesh, sig_mesh)
         axes = {"log10_number_median_um": log10_a_n, "sigma": sigmas}
-        datasets["untruncated_mass_fraction"] = (
-            frac,
-            "Fraction of the untruncated lognormal's mass within the "
-            "table's radius range (before renormalisation)",
-        )
+        # shape (n_log10_number_median, n_sigma)
+        attrs["untruncated_mass_fraction"] = frac
         print(
             f"{spec['name']}: table of {log10_a_n.size} x {sigmas.size} "
             f"(log10 a_n, sigma); untruncated mass fraction in table range "
@@ -834,7 +831,6 @@ def compute_component(
         "n_per_gram": normalise_per_gram(a_grid, shape, rho),
         "axes": axes,
         "attrs": attrs,
-        "datasets": datasets,
     }
 
 
@@ -947,18 +943,19 @@ def write_grid(
         log_on_read=False,
     )
 
-    for name, comp in results["components"].items():
-        group = f"components/{name}"
-        for axis, values in comp["axes"].items():
-            out_grid.write_dataset(
-                key=f"{group}/axes/{axis}",
-                data=values * dimensionless,
-                description=f"{axis} axis of the opacity table",
-                log_on_read=False,
+    # One group per curve type, as in the original layout. Each dataset is
+    # self-describing: its attributes hold the component's metadata and,
+    # for tabulated components, the axis names and values.
+    for ct, info in CURVE_TYPES.items():
+        group = f"{ct}_curves"
+        for name, comp in results["components"].items():
+            meta: Dict[str, Any] = dict(comp["attrs"])
+            meta["axes"] = np.array(
+                list(comp["axes"]), dtype=h5py.string_dtype()
             )
-        for ct, info in CURVE_TYPES.items():
+            meta.update(comp["axes"])
             out_grid.write_dataset(
-                key=f"{group}/{ct}",
+                key=f"{group}/{name}",
                 data=comp["kappa"][ct] * cm**2 / g,
                 description=(
                     f"{info['description']} for component {name}: optical "
@@ -966,23 +963,16 @@ def write_grid(
                     "Sigma_dust; A = 1.086 tau), shape (*axes, wavelength)"
                 ),
                 log_on_read=False,
-                efficiency=info["efficiency"],
-            )
-        for dset, (values, description) in comp["datasets"].items():
-            out_grid.write_dataset(
-                key=f"{group}/{dset}",
-                data=values * dimensionless,
-                description=description,
-                log_on_read=False,
+                **meta,
             )
         # Attributes go on the group, which now exists
-        out_grid.write_attribute(
-            group,
-            "axes",
-            np.array(list(comp["axes"]), dtype=h5py.string_dtype()),
-        )
-        for key, value in comp["attrs"].items():
-            out_grid.write_attribute(group, key, value)
+        out_grid.write_attribute(group, "efficiency", info["efficiency"])
+
+    # Each curve group also exposes the shared wavelength through a soft
+    # link to /wavelength, so the data is stored only once
+    with h5py.File(path, "a") as hf:
+        for ct in CURVE_TYPES:
+            hf[f"{ct}_curves/wavelength"] = h5py.SoftLink("/wavelength")
 
 
 def plot_extinction_curve(
@@ -1150,12 +1140,12 @@ if __name__ == "__main__":
         help="path to the YAML parameter file (see params/)",
     )
     parser.add_argument(
-        "--plot_example",
+        "--plot-example",
         action="store_true",
         help="plot the curves for an example dust mix (EXAMPLE_DTG)",
     )
     parser.add_argument(
-        "--show_plot",
+        "--show-plot",
         action="store_true",
         help="show the extinction curve plot",
     )
