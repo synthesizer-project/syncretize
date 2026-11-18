@@ -643,14 +643,33 @@ def expand_components(config: Dict[str, Any]) -> List[Dict[str, Any]]:
             if "power" not in entry:
                 raise ValueError(f"{where}: power is required")
             if "edges" in entry:
-                edges = [float(e) for e in entry["edges"]]
+                edges = entry["edges"]
+                if not isinstance(edges, list) or any(
+                    isinstance(e, (list, tuple)) for e in edges
+                ):
+                    raise ValueError(
+                        f"{where}: edges must be a flat list of bin edges, "
+                        "e.g. [0.001, 0.01, 0.1]; use ranges for a list of "
+                        "[min, max] pairs"
+                    )
+                edges = [float(e) for e in edges]
                 if len(edges) < 2 or np.any(np.diff(edges) <= 0):
                     raise ValueError(
                         f"{where}: edges must be strictly increasing"
                     )
                 ranges = list(zip(edges[:-1], edges[1:]))
             else:
-                ranges = [(float(lo), float(hi)) for lo, hi in entry["ranges"]]
+                ranges = entry["ranges"]
+                if not isinstance(ranges, list) or not all(
+                    isinstance(r, (list, tuple)) and len(r) == 2
+                    for r in ranges
+                ):
+                    raise ValueError(
+                        f"{where}: ranges must be a list of [min, max] pairs, "
+                        "e.g. [[0.001, 0.01], [0.1, 1.0]]; use edges for a "
+                        "flat list of bin edges"
+                    )
+                ranges = [(float(lo), float(hi)) for lo, hi in ranges]
                 if any(not hi > lo for lo, hi in ranges):
                     raise ValueError(f"{where}: each range needs max > min")
             names = entry.get("names") or [
