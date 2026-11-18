@@ -23,7 +23,7 @@ Two opacities are written for every component:
     light is kept in the beam, a simple stand-in for unresolved scattering
     geometry.
 
-Component kinds (see params/*.yaml for examples):
+Component shapes (see params/*.yaml for examples):
   - lognormal: fixed lognormal components, one per median radius. The
     lognormal is defined in number,
         n(a) = M0 / (sqrt(2 pi) sigma a) exp(-(ln a - mu)^2 / (2 sigma^2)),
@@ -37,10 +37,10 @@ Component kinds (see params/*.yaml for examples):
 
 Output layout:
   /wavelength                        (micron)
-  /components/<name>/extinction      kappa, shape (*axes, n_wavelength)
-  /components/<name>/attenuation     kappa, shape (*axes, n_wavelength)
+  /components/<name>/extinction      kappa, (*axes, n_wavelength)
+  /components/<name>/attenuation     kappa, (*axes, n_wavelength)
   /components/<name>/axes/<axis>     only for tabulated components
-  Each component group carries attributes describing its material, kind,
+  Each component group carries attributes describing its material, shape,
   axes (empty for fixed components) and size-distribution parameters.
 
 Usage:
@@ -101,7 +101,7 @@ CURVE_TYPES = {
 
 MICRON_TO_CM = (1.0 * um).to("cm").value  # 1e-4
 
-# Allowed keys for each component kind (besides "kind" and "material")
+# Allowed keys for each component shape (besides "shape" and "material")
 COMPONENT_KEYS = {
     "lognormal": {"number_median", "mass_median", "sigma", "names"},
     "powerlaw": {"edges", "ranges", "power", "names"},
@@ -590,8 +590,8 @@ def expand_components(params: Dict[str, Any]) -> List[Dict[str, Any]]:
         params (dict)
             parsed YAML parameter file
     Returns:
-        list of component specs, each a dict with name, material, kind and
-        the kind's parameters
+        list of component specs, each a dict with name, material, shape and
+        the shape's parameters
     """
     unknown = set(params) - TOP_LEVEL_KEYS
     if unknown:
@@ -604,22 +604,22 @@ def expand_components(params: Dict[str, Any]) -> List[Dict[str, Any]]:
     specs = []
     for i, entry in enumerate(params["components"]):
         where = f"components[{i}]"
-        kind = entry.get("kind")
+        shape = entry.get("shape")
         material = entry.get("material")
-        if kind not in COMPONENT_KEYS:
+        if shape not in COMPONENT_KEYS:
             raise ValueError(
-                f"{where}: kind must be one of {sorted(COMPONENT_KEYS)}"
+                f"{where}: shape must be one of {sorted(COMPONENT_KEYS)}"
             )
         if material not in MATERIALS:
             raise ValueError(
                 f"{where}: material must be one of {sorted(MATERIALS)}"
             )
-        unknown = set(entry) - COMPONENT_KEYS[kind] - {"kind", "material"}
+        unknown = set(entry) - COMPONENT_KEYS[shape] - {"shape", "material"}
         if unknown:
             raise ValueError(f"{where}: unknown keys {sorted(unknown)}")
         label = MATERIALS[material]["label"]
 
-        if kind == "lognormal":
+        if shape == "lognormal":
             has_n = "number_median" in entry
             has_m = "mass_median" in entry
             if has_n == has_m:
@@ -645,14 +645,14 @@ def expand_components(params: Dict[str, Any]) -> List[Dict[str, Any]]:
                     {
                         "name": name,
                         "material": material,
-                        "kind": kind,
+                        "shape": shape,
                         "number_median_um": a_n,
                         "mass_median_um": a_n * factor,
                         "sigma": sigma,
                     }
                 )
 
-        elif kind == "powerlaw":
+        elif shape == "powerlaw":
             if ("edges" in entry) == ("ranges" in entry):
                 raise ValueError(f"{where}: give exactly one of edges/ranges")
             if "power" not in entry:
@@ -700,7 +700,7 @@ def expand_components(params: Dict[str, Any]) -> List[Dict[str, Any]]:
                     {
                         "name": name,
                         "material": material,
-                        "kind": kind,
+                        "shape": shape,
                         "a_min_um": lo,
                         "a_max_um": hi,
                         "include_a_max": hi == top,
@@ -724,7 +724,7 @@ def expand_components(params: Dict[str, Any]) -> List[Dict[str, Any]]:
                 {
                     "name": entry.get("name", f"{label}_lognormal_table"),
                     "material": material,
-                    "kind": kind,
+                    "shape": shape,
                     "log10_number_median_um": log10_a_n,
                     "sigma": sigmas,
                 }
@@ -768,7 +768,7 @@ def compute_component(
     lo, hi = a_grid[0], a_grid[-1]
     attrs: Dict[str, Any] = {
         "material": spec["material"],
-        "kind": spec["kind"],
+        "shape": spec["shape"],
         "rho_g_cm3": rho,
         "table_a_min_um": lo,
         "table_a_max_um": hi,
@@ -776,7 +776,7 @@ def compute_component(
     axes: Dict[str, NDArray] = {}
     datasets: Dict[str, Tuple[NDArray, str]] = {}
 
-    if spec["kind"] == "lognormal":
+    if spec["shape"] == "lognormal":
         a_n, sigma = spec["number_median_um"], spec["sigma"]
         shape = lognormal_shape(a_grid, a_n, sigma)
         frac = float(lognormal_mass_fraction(lo, hi, a_n, sigma))
@@ -791,7 +791,7 @@ def compute_component(
             f"in the table range [{lo:.4g}, {hi:.4g}] um; renormalised"
         )
 
-    elif spec["kind"] == "powerlaw":
+    elif spec["shape"] == "powerlaw":
         a_min, a_max = spec["a_min_um"], spec["a_max_um"]
         # nothing lies above the table's last radius, so keep it
         include_a_max = bool(spec["include_a_max"] or a_max >= hi)
