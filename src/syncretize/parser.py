@@ -123,7 +123,7 @@ def load_params(
             The path to the parameter file.
         model_keys, constant_keys, axis_names (iterable of str):
             The keys the script accepts in Model and Constants, and the axes
-            it can build.
+            it can build (None accepts any axis name).
         allow_sobol (bool):
             Can the script build a grid from Sobol-sampled points?
 
@@ -157,10 +157,12 @@ def load_params(
     axis_info = {}
     for entry in entries:
         name = entry.get("name")
-        if name not in axis_names:
+        if not isinstance(name, str) or (
+            axis_names is not None and name not in axis_names
+        ):
+            allowed = "a name" if axis_names is None else list(axis_names)
             raise ValueError(
-                f"{param_file}: axis {name!r} must be one of "
-                f"{list(axis_names)}"
+                f"{param_file}: axis {name!r} must be one of {allowed}"
             )
         if name in axis_info or name in constants:
             raise ValueError(f"{param_file}: {name} is given more than once")

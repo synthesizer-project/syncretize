@@ -2,7 +2,8 @@
 
 Example:
     python generate_incident_grid_variable_imf.py \
-        fsps/configs/variable_high_mass_slope.yaml --grid-dir path/to/grids
+        --grid-dir path/to/grid/dir \
+        --config-file fsps/configs/variable_high_mass_slope.yaml
 """
 
 import fsps
@@ -17,7 +18,7 @@ from syncretize.incident.sps.fsps_utils import (
     load_fsps_imf_config,
 )
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import incident_parser
+from syncretize.parser import Parser
 
 
 def _axis_description(config):
@@ -148,11 +149,19 @@ def generate_grid(config, grid_dir, config_file):
 
 
 if __name__ == "__main__":
-    parser = incident_parser("YAML-configured FSPS IMF grid creation")
+    parser = Parser(description="YAML-configured FSPS IMF grid creation")
+    parser.add_argument(
+        "--config-file",
+        required=True,
+        help="Path to an FSPS IMF YAML configuration file",
+    )
     args = parser.parse_args()
 
+    if args.download:
+        print("FSPS is a Python package; no separate download is required")
+
     generate_grid(
-        load_fsps_imf_config(args.param_file),
+        load_fsps_imf_config(args.config_file),
         args.grid_dir,
-        args.param_file,
+        args.config_file,
     )
