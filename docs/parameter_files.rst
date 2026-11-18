@@ -10,178 +10,205 @@ Every grid is described by a YAML parameter file. There are two kinds:
 
 Each script ships with example files beside it. Their comments list the
 allowed values of every key, so the usual way to make a new grid is to copy
-the closest example and edit it. This page describes the formats those files
-share.
+the closest example and edit it. This page describes those formats.
 
 YAML rules
 ----------
 
-Parameter files are read with PyYAML (``yaml.safe_load``), which follows YAML
-1.1. A few of its rules catch people out:
+Parameter files are YAML. A few of its rules catch people out:
 
-* **Exponents need a decimal point and a sign.** ``1.0e+6`` is a float, but
-  ``1e6`` and ``1.0e6`` are read as the *strings* ``"1e6"`` and ``"1.0e6"``.
 * **A key with no value is null.** ``grains:`` is the same as
-  ``grains: None`` in Python, and turns that option off.
+  ``grains: None`` in Python, and turns that option off. An empty section is
+  written the same way, e.g. ``Constants:``.
 * **Quote strings that look like numbers or booleans**, e.g.
   ``sps_version: "4.0"``. Unquoted ``yes``, ``no``, ``on`` and ``off`` are
   booleans.
+* **Cloudy parameter files need exponents with a decimal point and a sign.**
+  They are read with PyYAML's YAML 1.1 rules, so ``1.0e+6`` is a float but
+  ``1e6`` and ``1.0e6`` are *strings*. Incident parameter files read all
+  three as floats.
 * Lists can be written inline (``[1.0, 2.0]``) or one item per line
   (``- 1.0``).
-
-Keys common to all parameter files
-----------------------------------
-
-``contents`` (reserved)
-   Don't use ``contents`` as a mapping: the verbatim parameter file is stored
-   in the grid as ``ParameterFile/contents`` (see below).
 
 How a parameter file is stored
 ------------------------------
 
-The parameter file used to make a grid is stored in the grid's
+The parameter file used to make an incident grid is stored in the grid's
 ``ParameterFile`` group:
 
-* every key is written as an attribute, and nested mappings become subgroups;
+* every key is written as an attribute, and nested mappings (such as the
+  sections below) become subgroups;
 * the file itself is stored verbatim in the ``contents`` dataset, with its
   original path in the dataset's ``path`` attribute.
 
 So a grid can be remade from the file alone (see :doc:`grid_format` for how
-to extract it). Keys that HDF5 can't store directly, such as numbers used as
-keys or lists of mappings, are stored as strings.
+to extract it). Values HDF5 can't store directly, such as the list of axis
+entries, are stored as strings.
 
 Incident parameter files
 ------------------------
 
-Incident scripts take the parameter file as their first argument:
+Incident scripts take the parameter file with ``--config-file``:
 
 .. code-block:: console
 
-   python <script>.py <params>.yaml --grid-dir <grid-dir> \
+   python <script>.py --config-file <params>.yaml --grid-dir <grid-dir> \
        [--input-dir <input-dir>] [--download]
 
-The file describes the grid; the command line only says where to read and
-write files. One run makes one grid, so to make several variants (e.g. several
-IMFs) use one parameter file per variant.
+The file describes the grid; the rest of the command line only says where to
+read and write files. One run makes one grid, so to make several variants
+(e.g. several IMFs) use one parameter file per variant.
 
-There are two styles of key.
+Sections
+^^^^^^^^
 
-**Choices** select a model variant from a fixed list, e.g. ``imf_type`` or
-``variant``. A value that isn't in the list stops the script with an error
-naming the allowed values. Most SPS models only use choices; their axes
-(ages, metallicities) come from the source data.
+Every incident parameter file has the same four sections, in this order. Each
+must be present but may be left blank to use the script's defaults:
 
-**Axes** give the values of a grid axis. A list of numbers becomes an axis and
-must be strictly increasing. For the scripts that allow it (``cloudy_agn``,
-and the inclination of ``qsosed``, ``relagn`` and ``relqso``), a single
-number instead fixes the parameter and no axis is made.
+.. code-block:: yaml
+
+   Model:        # which model: choices and versions
+     imf_type: bpl
+   Constants:    # fixed numbers
+     imf_masses: [0.08, 0.5, 1, 120]
+     imf_slopes: [1.3, 2.3, 2.3]
+   Axes:         # one entry per grid axis
+   Sampling:     # settings for a global sampler (Sobol axes only)
+
+``Model``
+   Choices that select a model variant from a fixed list, e.g. ``imf_type``,
+   plus versions and the grid's name where a script takes one. A value that
+   isn't allowed stops the script with an error naming the allowed values.
+
+``Constants``
+   Numbers that are fixed for the grid, e.g. IMF masses or a single
+   inclination. A parameter that a script can either fix or vary goes here
+   when fixed and in ``Axes`` when varied.
+
+``Axes``
+   A list of axes, each a mapping with a ``name``, a ``type`` and the values
+   for that type:
+
+   .. list-table::
+      :header-rows: 1
+      :widths: 20 30 50
+
+      * - ``type``
+        - Keys
+        - Values
+      * - ``values``
+        - ``values``
+        - The listed values, which must be strictly increasing.
+      * - ``linear-range``
+        - ``min``, ``max``, ``n``
+        - ``n`` linearly spaced values, including both limits.
+      * - ``log-range``
+        - ``min``, ``max``, ``n``
+        - ``n`` logarithmically spaced values, including both (positive)
+          limits.
+      * - ``sobol``
+        - ``min``, ``max``, ``scale``
+        - Points sampled together from one Sobol sequence (see
+          ``Sampling``). ``scale`` is ``linear`` (default) or ``log``.
+
+   Prefer explicit ``values`` for released grids, so every value is visible
+   in review. Some scripts read extra keys on an axis, such as ``target`` and
+   ``log_on_read`` for the FSPS variable IMF. Sobol axes can only be used by
+   scripts that support them, and either every axis or none is Sobol-sampled.
+
+``Sampling``
+   Settings for the Sobol sampler: ``n_samples`` (required), ``seed`` and
+   ``scramble`` (default ``true``). The points are drawn from the next power
+   of two and the first ``n_samples`` kept.
+
+A section, key or axis that the script doesn't know stops it with an error,
+so a typo can't silently fall back to a default.
 
 SPS models
 ^^^^^^^^^^
 
+Most SPS models only take ``Model`` choices; their axes (ages and
+metallicities) come from the source data.
+
 .. list-table::
    :header-rows: 1
-   :widths: 24 30 46
+   :widths: 24 76
 
    * - Model (example file)
      - Keys
-     - Values
    * - FSPS (``fsps/fsps.yaml``)
-     - ``imf_type``, ``imf_masses``, ``imf_slopes``
-     - ``bpl`` needs four ``imf_masses`` ``[m_low, 0.5, 1.0, m_high]`` and
-       three ``imf_slopes``; ``chabrier03`` needs ``[m_low, m_high]`` with
-       ``0 < m_low < m_high``.
+     - ``Model.imf_type``: ``bpl`` or ``chabrier03``.
+       ``Constants.imf_masses``: ``[m_low, 0.5, 1.0, m_high]`` for ``bpl``,
+       ``[m_low, m_high]`` with ``0 < m_low < m_high`` for ``chabrier03``.
+       ``Constants.imf_slopes``: the three ``bpl`` slopes.
    * - FSPS variable IMF (``fsps/configs/*.yaml``)
-     - ``model``, ``imf``
      - See `FSPS variable IMF`_ below.
    * - BPASS 2.2.1 (``bpass/bpass-2.2.1.yaml``)
-     - ``model``, ``variant``
-     - ``model`` is the BPASS IMF directory, e.g.
-       ``bpass_v2.2.1_imf_chab100``; ``variant`` is ``bin`` or ``sin``.
+     - ``Model.bpass_model``: the BPASS IMF directory, e.g.
+       ``bpass_v2.2.1_imf_chab100``. ``Model.variant``: ``bin`` or ``sin``.
    * - BPASS 2.3 (``bpass/bpass-2.3.yaml``)
-     - ``model``, ``variant``, ``alpha_enhancement``
-     - ``alpha_enhancement`` is one of -0.2, 0.0, 0.2, 0.4, 0.6, or ``axis``
-       to make alpha enhancement a grid axis.
+     - ``alpha_enhancement``: in ``Constants`` (-0.2, 0.0, 0.2, 0.4 or 0.6)
+       for a grid at that value, or in ``Axes`` with all five values for
+       alpha enhancement as an axis.
    * - BC03 (``bc03/bc03.yaml``)
-     - ``isochrones``, ``imf_type``
-     - ``Padova2000`` and ``chabrier03`` only.
+     - None (Padova 2000 isochrones with a Chabrier 2003 IMF only).
    * - BC03 2016 (``bc03/bc03-2016.yaml``)
-     - ``variant``, ``imf_type``
-     - ``variant``: ``BaSeL``, ``Miles`` or ``Stelib``; ``imf_type``:
-       ``kroupa``, ``salpeter`` or ``chabrier``.
+     - ``Model.variant``: ``BaSeL``, ``Miles`` or ``Stelib``.
+       ``Model.imf_type``: ``kroupa``, ``salpeter`` or ``chabrier``.
    * - Maraston 2005 (``maraston/maraston05.yaml``)
-     - ``imf_type``, ``hr_morphology``
-     - ``salpeter`` and ``rhb`` only.
+     - None (Salpeter IMF with a red horizontal branch only).
    * - Maraston 2011 (``maraston/maraston11.yaml``)
-     - ``variant``, ``imf_type``
-     - ``variant``: ``standard``, ``nearIRextended``, ``UVtheoretical`` or
-       ``UVtheoretical_nearIRextended`` (the last two Salpeter only).
+     - ``Model.variant``: ``standard``, ``nearIRextended``,
+       ``UVtheoretical`` or ``UVtheoretical_nearIRextended`` (the last two
+       Salpeter only). ``Model.imf_type``: ``salpeter``, ``kroupa`` or
+       ``chabrier``.
    * - Maraston 2013 (``maraston/maraston13.yaml``)
-     - ``imf_type``
-     - ``salpeter`` or ``kroupa``.
+     - ``Model.imf_type``: ``salpeter`` or ``kroupa``.
    * - Maraston 2024 (``maraston/maraston24.yaml``)
-     - ``imf_type``, ``rotation``, ``model_type``
-     - ``rotation``: 0.0 or 0.4; ``model_type``: ``Te`` or ``Tenc``.
+     - ``Model.imf_type``: ``kroupa`` or ``salpeter``. ``Model.rotation``:
+       0.0 or 0.4. ``Model.model_type``: ``Te`` or ``Tenc``.
    * - Yggdrasil (``yggdrasil/yggdrasil.yaml``)
-     - ``population``, ``covering_fraction``
-     - ``population``: ``PopIII.1``, ``PopIII.2`` or ``PopIII_kroupa``;
-       ``covering_fraction``: 0, 0.5 or 1. Use 0 for grids to reprocess
-       with Cloudy.
+     - ``Model.population``: ``PopIII.1``, ``PopIII.2`` or
+       ``PopIII_kroupa``. ``Model.covering_fraction``: 0, 0.5 or 1; use 0
+       for grids to reprocess with Cloudy.
 
 FSPS variable IMF
 ^^^^^^^^^^^^^^^^^
 
-The variable-IMF script describes a broken power-law IMF entry by entry, so
-one of its parameters can become a grid axis:
+The variable-IMF script makes one IMF parameter a grid axis. The IMF is given
+in ``Constants`` and the axis names the entry it varies with ``target``:
 
 .. code-block:: yaml
 
-   model:
+   Model:
      sps_version: "4.0"
-     imf_type: bpl
+     imf_type: bpl            # only bpl is supported
+   Constants:
+     imf_masses: [0.08, 0.5, 1.0, 120.0]
+     imf_slopes: [1.3, 2.3, 2.3]
+   Axes:
+     - name: imf_high_mass_slope
+       target: imf_slopes[2]
+       type: values
+       values: [1.3, 1.5, 1.7, 2.0, 2.3, 2.6, 3.0]
+       log_on_read: false
+   Sampling:
 
-   imf:
-     mass_boundaries:
-       - name: lower_mass
-         fixed_value: 0.08
-         vary_axis: false
-       # ... one entry per boundary
-     slopes:
-       - name: high_mass_slope
-         fixed_value: 2.3
-         vary_axis: true
-         axis:
-           name: imf_high_mass_slope
-           log_on_read: false
-           values: [1.3, 1.5, 1.7, 2.0, 2.3, 2.6, 3.0]
-
-Each entry under ``mass_boundaries`` and ``slopes`` has a ``name``, a
-``fixed_value`` and ``vary_axis``. At most one entry may set
-``vary_axis: true``; it then needs an ``axis`` with a ``name`` and either
-explicit ``values`` or a generated ``range``:
-
-.. code-block:: yaml
-
-   axis:
-     name: imf_high_mass_slope
-     log_on_read: false
-     range:
-       minimum: 1.3
-       maximum: 3.0
-       number: 18
-       spacing: linear   # or log
-
-``values`` and ``range`` can't be used together. ``log_on_read`` sets whether
+The IMF has either two masses and one slope or four masses (with internal
+breaks at 0.5 and 1.0 Msun, which can't be varied) and three slopes. At most
+one axis may be given. The value in ``Constants`` at the target is used in the
+grid name and must lie within the axis. ``log_on_read`` sets whether
 Synthesizer interpolates the axis in log space; it doesn't change how the
-values are sampled. The ``fixed_value`` of a varied parameter is used in the
-grid name and must lie within the axis. Slopes are dimensionless and mass
-boundaries are in Msun.
+values are sampled. Slopes are dimensionless and masses are in Msun.
+``Model.libraries`` optionally lists the ``[isochrones, spectra, dust]`` FSPS
+must have been compiled with.
 
 Black hole models
 ^^^^^^^^^^^^^^^^^
 
-Every black hole parameter file has a ``model`` key, which names the grid
-(``<grid-dir>/<model>.hdf5``).
+Every black hole parameter file has a ``Model.grid_name``, which names the
+grid (``<grid-dir>/<grid_name>.hdf5``). Its parameters are axes, given as
+``values`` entries in ``Axes``.
 
 .. list-table::
    :header-rows: 1
@@ -190,22 +217,24 @@ Every black hole parameter file has a ``model`` key, which names the grid
    * - Model (example file)
      - Keys
    * - Blackbody (``blackbody/blackbody.yaml``)
-     - ``log10blackbody_temperature``: list of log10(T/K).
+     - Axis ``log10blackbody_temperature``: log10(T/K).
    * - Broken power law (``broken_power_law/bpl-feltre16.yaml``)
-     - ``edges``: the four wavelengths (Angstrom) bounding three power laws;
-       ``indices``: three lists of slopes, one per power law, each becoming
-       an axis. Only the first list may currently hold more than one value.
+     - ``Constants.edges``: the four wavelengths (Angstrom) bounding three
+       power laws. Axes ``alpha1``, ``alpha2`` and ``alpha3``: the slope of
+       each. All three are axes, and only ``alpha1`` may currently hold more
+       than one value.
    * - Cloudy AGN (``cloudy_agn/cloudy_agn.yaml``)
      - ``log10blue_bump_temperature``, ``alpha_ox``, and optional
        ``alpha_uv`` (default -0.5) and ``alpha_x`` (default -1.0). Each is an
-       axis if a list or fixed if a single number.
+       axis or, in ``Constants``, a fixed value.
    * - QSOSED (``qsosed/qsosed.yaml``)
-     - ``log10masses`` (Msun), ``log10accretion_rates_eddington``,
-       ``cosine_inclinations`` (a single number for an isotropic grid).
+     - Axes ``log10masses`` (Msun) and ``log10accretion_rates_eddington``.
+       ``cosine_inclinations``: an axis, or a single value in ``Constants``
+       for an isotropic grid.
    * - RELQSO (``relqso/relqso.yaml``)
-     - As QSOSED, plus ``spins`` in [0, 0.998].
+     - As QSOSED, plus axis ``spins`` in [0, 0.998].
    * - RELAGN (``relagn/relagn.yaml``)
-     - As QSOSED, plus exactly one of ``spins`` or
+     - As QSOSED, plus exactly one of the axes ``spins`` or
        ``radiative_efficiencies`` (converted to spins).
 
 Cloudy parameter files
