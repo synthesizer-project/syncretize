@@ -1,17 +1,12 @@
 """A module for parsing command line arguments in a standardised way.
 
-Incident grid scripts take a YAML parameter file describing the grid, and
-command line arguments for where to read and write files:
+Example Usage:
+    parser = Parser("A description of the program")
+    parser.add_argument("--flag", "-f", action="store_true", help="A flag")
+    parser.add_argument("--value", "-v", type=int, help="A value")
+    args = parser.parse()
 
-    parser = incident_parser("A description", input_dir=True)
-    args = parser.parse_args()
-    params = load_param_file(args.param_file)
-    grid = GridFile(f"{args.grid_dir}/name.hdf5", param_file=args.param_file)
-
-Cloudy scripts use the Parser class:
-
-    parser = Parser("A description of the program", cloudy_args=True)
-    args = parser.parse_args()
+Incident grid scripts also read a YAML config file with ``load_params``.
 
 """
 
@@ -22,64 +17,6 @@ from types import SimpleNamespace
 import numpy as np
 import yaml
 from scipy.stats import qmc
-
-
-def incident_parser(description, input_dir=False, download=False):
-    """
-    Create the command line parser for an incident grid script.
-
-    Args:
-        description (str):
-            A description of the program.
-        input_dir (bool):
-            Does the script read source data from --input-dir?
-        download (bool):
-            Can the script download its source data (--download)?
-
-    Returns:
-        argparse.ArgumentParser:
-            The parser, so scripts can add their own arguments.
-    """
-    parser = argparse.ArgumentParser(description=description)
-    parser.add_argument(
-        "param_file",
-        help="Path to the YAML parameter file describing the grid.",
-    )
-    parser.add_argument(
-        "--grid-dir",
-        required=True,
-        help="The directory to write the grid to.",
-    )
-    if input_dir:
-        parser.add_argument(
-            "--input-dir",
-            required=True,
-            help="The directory containing (or to contain) the source data.",
-        )
-    if download:
-        parser.add_argument(
-            "--download",
-            action="store_true",
-            help="Download the source data into --input-dir first.",
-        )
-    return parser
-
-
-def load_param_file(param_file):
-    """
-    Read a YAML parameter file.
-
-    Args:
-        param_file (str):
-            The path to the parameter file.
-
-    Returns:
-        dict:
-            The parameters.
-    """
-    with open(param_file) as file:
-        return yaml.safe_load(file) or {}
-
 
 #: The sections every incident parameter file has, in order
 SECTIONS = ("Model", "Constants", "Axes", "Sampling")
