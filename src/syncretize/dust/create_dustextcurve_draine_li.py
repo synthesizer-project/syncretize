@@ -3,7 +3,7 @@
 Create dust mass opacities (extinction curves) from Draine optical properties.
 
 Parse Draine's Sil_81, Gra_81, PAHion_30 and PAHneu_30 tables, build the
-grain-size distributions listed in a YAML configuration file, and compute the
+grain-size distributions listed in a YAML parameter file, and compute the
 mass opacity of each grain component,
 
     kappa(lam) = integral pi a^2 Q(a, lam) n(a) da    (cm^2 per g of dust),
@@ -44,7 +44,8 @@ Output layout:
   axes (empty for fixed components) and size-distribution parameters.
 
 Usage:
-  python create_dustextcurve_draine_li.py params/draine_li_lognormal.yaml \
+  python create_dustextcurve_draine_li.py \
+      --paramfile params/draine_li_lognormal.yaml \
       [--plot_example] [--show_plot]
 """
 
@@ -74,7 +75,8 @@ DRAINE_URL = "https://www.astro.princeton.edu/~draine/dust/diel"
 MODEL_URL = "https://www.astro.princeton.edu/~draine/dust/dust.diel.html"
 
 # Draine optical tables: table name, dataset-name label and default
-# material density (g cm^-3). Densities can be overridden in the config.
+# material density (g cm^-3). Densities can be overridden in the parameter
+# file.
 MATERIALS = {
     "silicate": {"table": "Sil_81", "label": "silicate", "rho": 3.5},
     "graphite": {"table": "Gra_81", "label": "graphite", "rho": 2.24},
@@ -457,11 +459,17 @@ def lognormal_shape(
 
 
 def powerlaw_shape(
-    a_grid_micron: NDArray, a_min: float, a_max: float, power: float
+    a_grid_micron: NDArray,
+    a_min: float,
+    a_max: float,
+    power: float,
+    include_a_max: bool = True,
 ) -> NDArray:
     """
     Unnormalised truncated power law, n(a) propto a^power on
-    [a_min, a_max] (micron) and zero elsewhere.
+    [a_min, a_max) (micron) and zero elsewhere. The upper edge is only
+    included when include_a_max is set, so a radius shared by two
+    adjacent bins belongs to the upper bin alone.
 
     Args:
         a_grid_micron (NDArray)
@@ -470,12 +478,17 @@ def powerlaw_shape(
             radius range (micron)
         power (float)
             power-law exponent (dn/da propto a^power)
+        include_a_max (bool)
+            include a_max itself, i.e. integrate over [a_min, a_max]
     Returns:
         shape (NDArray)
             unnormalised n(a) on a_grid_micron
     """
     shape = np.zeros_like(a_grid_micron)
-    mask = (a_grid_micron >= a_min) & (a_grid_micron <= a_max)
+    below_max = (
+        a_grid_micron <= a_max if include_a_max else a_grid_micron < a_max
+    )
+    mask = (a_grid_micron >= a_min) & below_max
     shape[mask] = a_grid_micron[mask] ** power
     return shape
 
@@ -568,26 +581,28 @@ def _axis_values(spec: Any, what: str) -> NDArray:
     return values
 
 
-def expand_components(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+def expand_components(params: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Validate the config's component entries and expand them into one spec
-    per output component.
+    Validate the parameter file's component entries and expand them into
+    one spec per output component.
 
     Args:
-        config (dict)
-            parsed YAML configuration
+        params (dict)
+            parsed YAML parameter file
     Returns:
         list of component specs, each a dict with name, material, kind and
         the kind's parameters
     """
-    unknown = set(config) - TOP_LEVEL_KEYS
+    unknown = set(params) - TOP_LEVEL_KEYS
     if unknown:
-        raise ValueError(f"Unknown top-level config keys: {sorted(unknown)}")
-    if not config.get("components"):
-        raise ValueError("The config must list at least one component")
+        raise ValueError(
+            f"Unknown top-level parameter file keys: {sorted(unknown)}"
+        )
+    if not params.get("components"):
+        raise ValueError("The parameter file must list at least one component")
 
     specs = []
-    for i, entry in enumerate(config["components"]):
+    for i, entry in enumerate(params["components"]):
         where = f"components[{i}]"
         kind = entry.get("kind")
         material = entry.get("material")
@@ -677,6 +692,9 @@ def expand_components(config: Dict[str, Any]) -> List[Dict[str, Any]]:
                 for lo, hi in ranges
             ]
             names = _as_list(names, len(ranges), f"{where} names")
+            # upper edges are exclusive so adjacent bins don't share a
+            # radius, except for the entry's topmost bin
+            top = max(hi for _, hi in ranges)
             for name, (lo, hi) in zip(names, ranges):
                 specs.append(
                     {
@@ -685,6 +703,7 @@ def expand_components(config: Dict[str, Any]) -> List[Dict[str, Any]]:
                         "kind": kind,
                         "a_min_um": lo,
                         "a_max_um": hi,
+                        "include_a_max": hi == top,
                         "power": float(entry["power"]),
                     }
                 )
@@ -718,13 +737,13 @@ def expand_components(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     return specs
 
 
-def load_config(path: str) -> Dict[str, Any]:
-    """Read the YAML configuration file."""
+def load_paramfile(path: str) -> Dict[str, Any]:
+    """Read the YAML parameter file."""
     with open(path, "r") as stream:
-        config = yaml.safe_load(stream)
-    if not isinstance(config, dict):
+        params = yaml.safe_load(stream)
+    if not isinstance(params, dict):
         raise ValueError(f"{path} does not contain a YAML mapping")
-    return config
+    return params
 
 
 def compute_component(
@@ -774,16 +793,22 @@ def compute_component(
 
     elif spec["kind"] == "powerlaw":
         a_min, a_max = spec["a_min_um"], spec["a_max_um"]
-        shape = powerlaw_shape(a_grid, a_min, a_max, spec["power"])
+        # nothing lies above the table's last radius, so keep it
+        include_a_max = bool(spec["include_a_max"] or a_max >= hi)
+        shape = powerlaw_shape(
+            a_grid, a_min, a_max, spec["power"], include_a_max
+        )
         attrs.update(
             a_min_um=a_min,
             a_max_um=a_max,
+            include_a_max=include_a_max,
             power=spec["power"],
             integrated_a_min_um=max(a_min, lo),
             integrated_a_max_um=min(a_max, hi),
         )
         print(
-            f"{spec['name']}: power law on [{a_min:.4g}, {a_max:.4g}] um, "
+            f"{spec['name']}: power law on [{a_min:.4g}, {a_max:.4g}"
+            f"{']' if include_a_max else ')'} um, "
             f"integrated over [{max(a_min, lo):.4g}, {min(a_max, hi):.4g}] "
             "um (table range)"
         )
@@ -813,23 +838,23 @@ def compute_component(
     }
 
 
-def compute_opacities(config: Dict[str, Any]) -> Dict[str, Any]:
+def compute_opacities(params: Dict[str, Any]) -> Dict[str, Any]:
     """
     Load the optical tables, build every component's size distribution and
     compute its extinction and attenuation mass opacities.
 
     Args:
-        config (dict)
-            parsed YAML configuration
+        params (dict)
+            parsed YAML parameter file
     Returns:
         dict with wav (micron), a_grids (material -> grid), and components
         (name -> output of compute_component plus kappa, a dict curve type
         -> kappa of shape (*axes, n_wavelength) in cm^2 g^-1)
     """
-    specs = expand_components(config)
-    data_dir = config.get("data_dir", ".")
-    n_a_int = int(config.get("n_a_int", 500))
-    densities = config.get("densities") or {}
+    specs = expand_components(params)
+    data_dir = params.get("data_dir", ".")
+    n_a_int = int(params.get("n_a_int", 500))
+    densities = params.get("densities") or {}
     unknown = set(densities) - set(MATERIALS)
     if unknown:
         raise ValueError(f"Unknown materials in densities: {sorted(unknown)}")
@@ -883,7 +908,7 @@ def compute_opacities(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def write_grid(
-    path: str, config: Dict[str, Any], results: Dict[str, Any]
+    path: str, params: Dict[str, Any], results: Dict[str, Any]
 ) -> None:
     """
     Write the opacities to an HDF5 file (layout in the module docstring).
@@ -891,8 +916,8 @@ def write_grid(
     Args:
         path (string)
             output file path
-        config (dict)
-            parsed YAML configuration (stored in the Model metadata)
+        params (dict)
+            parsed YAML parameter file (stored in the Model metadata)
         results (dict)
             output of compute_opacities
     """
@@ -912,7 +937,7 @@ def write_grid(
                 "exp(-(ln a - mu)^2 / (2 sigma^2)), a_n = e^mu, "
                 "a_mass_median = a_n exp(3 sigma^2)"
             ),
-            "config": yaml.safe_dump(config, sort_keys=False),
+            "paramfile": yaml.safe_dump(params, sort_keys=False),
         }
     )
     out_grid.write_dataset(
@@ -1042,7 +1067,10 @@ def plot_example(
         for name in names:
             dtg[name] = material_total / len(names)
     if not dtg:
-        print("No fixed components in the config; skipping the example plot")
+        print(
+            "No fixed components in the parameter file; skipping the "
+            "example plot"
+        )
         return
 
     wav = results["wav"]
@@ -1112,10 +1140,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=(
             "Build dust mass opacities from Draine optical tables for the "
-            "grain components listed in a YAML config."
+            "grain components listed in a YAML parameter file."
         )
     )
-    parser.add_argument("config", type=str, help="path to the YAML config")
+    parser.add_argument(
+        "--paramfile",
+        type=str,
+        required=True,
+        help="path to the YAML parameter file (see params/)",
+    )
     parser.add_argument(
         "--plot_example",
         action="store_true",
@@ -1128,21 +1161,21 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    config = load_config(args.config)
-    output = config.get("output") or {}
+    params = load_paramfile(args.paramfile)
+    output = params.get("output") or {}
     grid_loc = output.get("grid_loc", GRID_DIR)
-    grid_name = output.get("grid_name", Path(args.config).stem)
+    grid_name = output.get("grid_name", Path(args.paramfile).stem)
 
-    results = compute_opacities(config)
+    results = compute_opacities(params)
 
     Path(grid_loc).mkdir(parents=True, exist_ok=True)
     path = f"{grid_loc}/{grid_name}.hdf5"
-    write_grid(path, config, results)
+    write_grid(path, params, results)
     print(f"Saved dust opacity grid to: {path}")
 
     if args.plot_example:
         # Example dust-to-gas mass ratio of each material, split evenly
-        # across that material's fixed components in the config
+        # across that material's fixed components in the parameter file
         EXAMPLE_DTG = {
             "silicate": 0.006,
             "graphite": 0.003,
