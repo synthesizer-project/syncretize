@@ -3,21 +3,14 @@ Included model conversions
 
 These scripts convert model-specific data into the common :doc:`grid_format`.
 Each model has its own directory, with its generator and any model-specific
-YAML parameter files together. Each run makes one grid. The parameter file
-describes that grid (the model variant, IMF, axes and so on), and command line
-arguments say where to read and write files::
+configuration files together. All write into ``--grid-dir``. File-backed
+conversions also need ``--input-dir`` even though the shared command-line
+parser marks it as optional.
 
-   python <script>.py <params>.yaml --grid-dir <grid-dir> \
-       [--input-dir <input-dir>] [--download]
-
-``--grid-dir`` is where the grid is written. File-backed conversions also need
-``--input-dir``, and those that can fetch their source data accept
-``--download``. Every script has an example parameter file whose comments
-list the allowed values of each parameter; copy it to make other variants.
-Scripts reject values that aren't allowed. :doc:`parameter_files` describes
-the formats. The parameter file is stored in the
-grid's ``ParameterFile`` group (see :doc:`grid_format`), so every grid records
-how it was made.
+Every script takes a YAML config file (``--config-file``) describing the one
+grid it makes; each has an example next to it, and :doc:`parameter_files`
+describes the format. The file is stored in the grid's ``ParameterFile``
+group, so every grid records how it was made.
 
 SPS models
 ----------
@@ -91,13 +84,14 @@ SPS models
 FSPS
 ^^^^
 
-Generate an FSPS grid for the IMF set in the parameter file (a broken power
-law or Chabrier IMF):
+Generate an FSPS grid for the IMF in the config file (a broken power law or
+Chabrier IMF):
 
 .. code-block:: console
 
    python src/syncretize/incident/sps/fsps/generate_incident_grid.py \
-       src/syncretize/incident/sps/fsps/fsps.yaml --grid-dir grids
+       --grid-dir grids \
+       --config-file src/syncretize/incident/sps/fsps/fsps.yaml
 
 The result depends on the libraries compiled into the local FSPS installation.
 The grid records them in its ``fsps_libraries`` model attribute. To insist on
@@ -111,8 +105,9 @@ grid axis:
 .. code-block:: console
 
    python src/syncretize/incident/sps/fsps/generate_incident_grid_variable_imf.py \
-       src/syncretize/incident/sps/fsps/configs/variable_high_mass_slope.yaml \
-       --grid-dir grids
+       --grid-dir grids \
+       --config-file \
+       src/syncretize/incident/sps/fsps/configs/variable_high_mass_slope.yaml
 
 The provided configurations demonstrate explicit axis values and generated
 ranges. The current FSPS implementation supports one variable IMF parameter at
@@ -121,41 +116,41 @@ a time and keeps internal mass breaks fixed at 0.5 and 1.0 solar masses.
 BPASS
 ^^^^^
 
-Place downloaded BPASS data beneath ``<input-dir>/bpass/``. The parameter
-file chooses the BPASS model (IMF) and whether to use binary or single star
-populations:
+Place downloaded BPASS data beneath ``<input-dir>/bpass/``. Generate all
+supported BPASS 2.2.1 IMF variant chosen in the config file with:
 
 .. code-block:: console
 
    python src/syncretize/incident/sps/bpass/generate_incident_grid_2_2_1.py \
-       src/syncretize/incident/sps/bpass/bpass-2.2.1.yaml \
-       --grid-dir grids --input-dir model-data
+       --input-dir model-data \
+       --grid-dir grids \
+       --config-file src/syncretize/incident/sps/bpass/bpass-2.2.1.yaml
 
-BPASS 2.3 has five alpha enhancements. Set ``alpha_enhancement`` to one of
-them for a grid at that value, or to ``axis`` for a grid with alpha
-enhancement as a third axis.
+BPASS 2.3 adds alpha enhancement as a third axis. Give
+``alpha_enhancement`` in the config file's ``Constants`` for a grid at one
+value, or in its ``Axes`` for the combined grid.
 
 BC03 and Maraston
 ^^^^^^^^^^^^^^^^^
 
-``bc03/generate_incident_grid.py --download`` retrieves the original BC03
-data. The 2016 conversion's ``--download`` also compiles a Fortran binary
-reader and therefore needs ``make`` and a Fortran compiler.
+``bc03/generate_incident_grid.py --download`` retrieves the original BC03 data. The 2016
+conversion also compiles a Fortran binary reader and therefore needs ``make``
+and a Fortran compiler.
 
 Maraston source URLs used by older scripts are no longer available. Supply
 source files through ``--input-dir``.
 
-Other file-backed SPS conversions follow this command shape, with an
-example parameter file next to each script:
+Other file-backed SPS conversions follow this command shape:
 
 .. code-block:: console
 
    python src/syncretize/incident/sps/<model>/generate_incident_grid*.py \
-       src/syncretize/incident/sps/<model>/<model>.yaml \
-       --grid-dir grids --input-dir model-data
+       --input-dir model-data \
+       --grid-dir grids \
+       --config-file src/syncretize/incident/sps/<model>/<model>.yaml
 
-``--download`` only works for BC03, BC03 2016, and Yggdrasil. Other scripts
-need manually obtained files in the model-specific directory beneath
+Add ``--download`` only for BC03, BC03 2016, or Yggdrasil. Other scripts need
+manually obtained files in the model-specific directory beneath
 ``--input-dir``.
 
 Black-hole and AGN models

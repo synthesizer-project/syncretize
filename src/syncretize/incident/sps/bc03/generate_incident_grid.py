@@ -2,8 +2,9 @@
 Download BC03 and convert to HDF5 synthesizer grid.
 
 Example:
-    python generate_incident_grid.py bc03.yaml \
-        --grid-dir path/to/grids --input-dir path/to/input [--download]
+    python generate_incident_grid.py \
+    --input-dir path/to/input/dir \
+    --grid-dir path/to/grid/dir \
 """
 
 import gzip
@@ -20,7 +21,7 @@ from unyt import Hz, angstrom, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import get_choice, incident_parser, load_param_file
+from syncretize.parser import Parser, load_params
 
 
 def decompress_gz_recursively(directory):
@@ -212,24 +213,22 @@ def convertBC03(files=None):
     )
 
 
-def make_grid(model, input_dir, grid_dir, param_file=None):
+def make_grid(input_dir, grid_dir, synthesizer_model_name, param_file=None):
     """Main function to convert BC03 grids and
     produce grids used by synthesizer.
 
     Arguments:
-        model (dict)
-            The model metadata.
         input_dir (str)
             The directory where input files are downloaded.
         grid_dir (str)
             The directory where the grid is created.
+        synthesizer_model_name (str)
+            The name of the model used as the filename.
         param_file (str)
             The parameter file to store in the grid.
     """
 
     # output filename
-    synthesizer_model_name = get_model_filename(model)
-    print(synthesizer_model_name)
     out_filename = f"{grid_dir}/{synthesizer_model_name}.hdf5"
 
     # Define base path
@@ -290,26 +289,32 @@ def make_grid(model, input_dir, grid_dir, param_file=None):
 
 
 if __name__ == "__main__":
-    parser = incident_parser(
-        "BC03 download and grid creation", input_dir=True, download=True
-    )
-    args = parser.parse_args()
-    params = load_param_file(args.param_file)
+    # Set up the command line arguments
+    parser = Parser(description="BC03 download and grid creation")
 
-    # Only one variant is currently supported, but check the parameter
-    # file asks for it
-    isochrone_labels = {"Padova2000": "padova00"}
-    isochrones = get_choice(params, "isochrones", isochrone_labels)
-    imf_type = get_choice(params, "imf_type", ["chabrier03"])
+    # parameter file to use
+    parser.add_argument("--config-file", type=str, required=True)
+    # Unpack the arguments
+    args = parser.parse_args()
+
+    # open the config file (BC03 2003 has nothing to choose)
+    load_params(args.config_file)
+
+    # the directory to store downloaded input files
+    input_dir = args.input_dir
+
+    # the directory to store the grid
+    grid_dir = args.grid_dir
 
     sps_name = "bc03"
 
     # append sps_name to input_dir to define where to store downloaded input
     # files
-    input_dir = f"{args.input_dir}/{sps_name}"
+    input_dir += f"/{sps_name}"
 
     # create directory to store downloaded output if it doesn't exist
-    os.makedirs(input_dir, exist_ok=True)
+    if not os.path.exists(input_dir):
+        os.mkdir(input_dir)
 
     # Download data if asked
     if args.download:
@@ -318,11 +323,21 @@ if __name__ == "__main__":
     model = {
         "sps_name": sps_name,
         "sps_version": "2003",
-        "sps_variant": isochrone_labels[isochrones],
-        "imf_type": imf_type,
+        "sps_variant": "padova00",
+        "imf_type": "chabrier03",  # named IMF or bpl (broken power law)
         "imf_masses": [0.1, 100],
         "imf_slopes": False,
         "alpha_enhancement": False,
     }
 
-    make_grid(model, input_dir, args.grid_dir, param_file=args.param_file)
+    # Create synthesizer style model name
+    synthesizer_model_name = get_model_filename(model)
+    print(synthesizer_model_name)
+
+    # Get and write the grid
+    out_filename = make_grid(
+        input_dir,
+        grid_dir,
+        synthesizer_model_name,
+        param_file=args.config_file,
+    )

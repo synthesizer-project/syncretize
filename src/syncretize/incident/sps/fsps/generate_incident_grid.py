@@ -1,11 +1,12 @@
 """
-Create an FSPS synthesizer grid for the IMF chosen in the parameter file.
-
-To add an IMF parameter as a grid axis use
-generate_incident_grid_variable_imf.py instead.
+Create FSPS synthesizer grids.
 
 Example:
-    python generate_incident_grid.py fsps.yaml --grid-dir path/to/grids
+    python generate_incident_grid.py \
+    --input-dir path/to/input/dir \
+    --grid-dir path/to/grid/dir \
+    --include-chabrier \
+    --include-imf-variants \
 """
 
 import fsps
@@ -15,10 +16,10 @@ from unyt import Hz, angstrom, dimensionless, erg, s, yr
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.fsps_utils import fsps_libraries
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import get_choice, incident_parser, load_param_file
+from syncretize.parser import Parser, get_choice, load_params
 
 
-def generate_grid(model, grid_dir, param_file=None):
+def generate_grid(model):
     """Main function to create fsps grids used by synthesizer"""
 
     # set up StellarPopulation grid
@@ -35,17 +36,13 @@ def generate_grid(model, grid_dir, param_file=None):
         )
     elif imf_type == "bpl":
         imf_slopes = model["imf_slopes"]
+        # NOTE THIS ASSUMES boundaries of 0.5, 1.0
 
-        # FSPS fixes the internal boundaries at 0.5 and 1.0 Msun
-        if (
-            len(imf_masses) != 4
-            or imf_masses[1] != 0.5
-            or imf_masses[2] != 1.0
-            or len(imf_slopes) != 3
-        ):
-            raise ValueError(
-                "The bpl IMF needs imf_masses [m_low, 0.5, 1.0, m_high] "
-                "and three imf_slopes"
+        if (imf_masses[1] != 0.5) or (imf_masses[2] != 1.0):
+            # raise exception
+            print(
+                """WARNING: this IMF definition requires that the boundaries
+                are [m_low, 0.5, 1.0, m_high]"""
             )
 
         sp = fsps.StellarPopulation(
@@ -56,6 +53,9 @@ def generate_grid(model, grid_dir, param_file=None):
             imf2=imf_slopes[1],
             imf3=imf_slopes[2],
         )
+    else:
+        # raise exception
+        pass
 
     # Record the compiled libraries; the isochrones and spectra name the
     # variant
@@ -91,7 +91,7 @@ def generate_grid(model, grid_dir, param_file=None):
             stellar_fraction[ia, imetal] = _mfrac[ia]
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename, param_file=param_file)
+    out_grid = GridFile(out_filename, param_file=args.config_file)
 
     print("metallicities:", metallicities)
 
@@ -127,34 +127,68 @@ def generate_grid(model, grid_dir, param_file=None):
 
 
 if __name__ == "__main__":
-    parser = incident_parser("FSPS grid creation")
+    # Set up the command line arguments
+    parser = Parser(description="FSPS download and grid creation")
+
+    # parameter file to use
+    parser.add_argument("--config-file", type=str, required=True)
+
+    # Unpack the arguments
     args = parser.parse_args()
-    params = load_param_file(args.param_file)
+    grid_dir = args.grid_dir
 
-    imf_type = get_choice(params, "imf_type", ["bpl", "chabrier03"])
-    imf_masses = params["imf_masses"]
-    if imf_type == "chabrier03" and not (
-        len(imf_masses) == 2
-        and np.all(np.isfinite(imf_masses))
-        and 0 < imf_masses[0] < imf_masses[1]
-    ):
-        raise ValueError(
-            "The chabrier03 IMF needs finite imf_masses [m_low, m_high] "
-            "with 0 < m_low < m_high"
-        )
+    # open the config file and extract parameters
+    config = load_params(
+        args.config_file,
+        model_keys=["imf_type"],
+        constant_keys=["imf_masses", "imf_slopes"],
+    )
 
-    model = {
+    # No download for FSPS
+    if args.download:
+        print("FSPS is a python package, no download required")
+
+    # Define the parameters of the defaul model. Variants simply update these
+    # parameters as required.
+    default_model = {
         "sps_name": "fsps",
         # this is set later depending on the isochrones/spectra used
         "sps_variant": False,
-        "imf_type": imf_type,
-        "imf_masses": imf_masses,
-        "imf_slopes": params.get("imf_slopes", [])
-        if imf_type == "bpl"
-        else [],
+        "imf_type": "bpl",  # named IMF or bpl (broken power law)
+        "imf_masses": [0.08, 0.5, 1, 120],
+        "imf_slopes": [1.3, 2.3, 2.3],
         "alpha_enhancement": False,
         "pyfsps_version": str(fsps.__version__),
         "sps_version": "3.2",
     }
 
-    generate_grid(model, args.grid_dir, param_file=args.param_file)
+    # The IMF chosen in the config file. bpl needs imf_masses
+    # [m_low, 0.5, 1.0, m_high] and three imf_slopes; chabrier03 needs
+    # imf_masses [m_low, m_high].
+    imf_type = get_choice(config.model, "imf_type", ["bpl", "chabrier03"])
+    imf_masses = config.constants["imf_masses"]
+    if imf_type == "chabrier03" and not (
+        len(imf_masses) == 2 and 0 < imf_masses[0] < imf_masses[1]
+    ):
+        raise ValueError(
+            "The chabrier03 IMF needs imf_masses [m_low, m_high] "
+            "with 0 < m_low < m_high"
+        )
+    models = [
+        {
+            "imf_type": imf_type,
+            "imf_masses": imf_masses,
+            "imf_slopes": config.constants.get("imf_slopes", [])
+            if imf_type == "bpl"
+            else [],
+        }
+    ]
+
+    # Loop over models
+    for model_ in models:
+        # Combine default model parameters with variants
+        model = default_model | model_
+        print(model)
+
+        # Make grid
+        generate_grid(model)

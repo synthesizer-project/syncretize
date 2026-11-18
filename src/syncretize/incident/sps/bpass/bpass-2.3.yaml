@@ -1,17 +1,22 @@
 # Parameter file for bpass/generate_incident_grid_2_3.py (BPASS v2.3)
 #
-#   python generate_incident_grid_2_3.py bpass-2.3.yaml \
+#   python generate_incident_grid_2_3.py --config-file bpass-2.3.yaml \
 #       --grid-dir <grid-dir> --input-dir <input-dir>
 #
-# Source data must be downloaded manually and extracted to
-# <input-dir>/bpass/<model> (see the script docstring).
+# Source data must be downloaded manually (see the script docstring). There
+# is one model (bpass_v2.3_imf135_300, binary stars), so Model is empty.
 #
-#   model: bpass_v2.3_imf135_300  (the only option currently available)
-#   variant: bin                  (no single star models are available)
-#   alpha_enhancement: [alpha/Fe], one of -0.2, 0.0, 0.2, 0.4, 0.6 for a
-#     grid at that value, or axis for a grid with alpha enhancement as an
-#     axis.
+# Give alpha_enhancement ([alpha/Fe]) either in Constants, as one of -0.2,
+# 0.0, 0.2, 0.4 or 0.6, for a grid at that value, or in Axes, with all five
+# values, for a grid with alpha enhancement as an axis:
+#
+#   Constants:
+#     alpha_enhancement: 0.0
 
-model: bpass_v2.3_imf135_300
-variant: bin
-alpha_enhancement: axis
+Model:
+Constants:
+Axes:
+  - name: alpha_enhancement
+    type: values
+    values: [-0.2, 0.0, 0.2, 0.4, 0.6]
+Sampling:

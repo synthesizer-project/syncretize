@@ -1,12 +1,13 @@
 # Parameter file for bpass/generate_incident_grid_2_2_1.py (BPASS v2.2.1)
 #
-#   python generate_incident_grid_2_2_1.py bpass-2.2.1.yaml \
+#   python generate_incident_grid_2_2_1.py --config-file bpass-2.2.1.yaml \
 #       --grid-dir <grid-dir> --input-dir <input-dir>
 #
 # Source data must be downloaded manually and extracted to
-# <input-dir>/bpass/<model>.
+# <input-dir>/bpass/<bpass_model>.
 #
-#   model: the BPASS model (IMF), one of
+# Model:
+#   bpass_model: the BPASS model (IMF), one of
 #     bpass_v2.2.1_imf_chab100  (Chabrier, upper mass 100 Msun)
 #     bpass_v2.2.1_imf_chab300  (Chabrier, upper mass 300 Msun)
 #     bpass_v2.2.1_imf100_100   (slope 2.00 above 1 Msun, upper mass 100 Msun)
@@ -17,5 +18,9 @@
 #     bpass_v2.2.1_imf170_300   (slope 2.70 above 1 Msun, upper mass 300 Msun)
 #   variant: bin (with binary stars) or sin (single stars only)
 
-model: bpass_v2.2.1_imf_chab100
-variant: bin
+Model:
+  bpass_model: bpass_v2.2.1_imf_chab100
+  variant: bin
+Constants:
+Axes:
+Sampling:

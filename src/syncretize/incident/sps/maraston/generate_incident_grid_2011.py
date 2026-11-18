@@ -1,12 +1,5 @@
 """
-Convert the Maraston (2011) SPS model to an HDF5 synthesizer grid.
-
-The original download URL no longer exists, so the source data must be
-obtained by other means and placed in <input-dir>/maraston11.
-
-Example:
-    python generate_incident_grid_2011.py maraston11.yaml \
-        --grid-dir path/to/grids --input-dir path/to/input
+Download Maraston2011 and convert to HDF5 synthesizer grid.
 """
 
 import os
@@ -20,7 +13,7 @@ from unyt import Angstrom, Hz, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import get_choice, incident_parser, load_param_file
+from syncretize.parser import Parser, get_choice, load_params
 
 
 def download_data(output_dir, url):
@@ -133,34 +126,51 @@ def make_grid(model, imf, variant, output_dir, grid_dir, param_file=None):
     out_grid.add_specific_ionising_lum()
 
 
+# Lets include a way to call this script not via an entry point
 if __name__ == "__main__":
-    parser = incident_parser(
-        "Maraston (2011) grid creation", input_dir=True, download=True
-    )
+    # Set up the command line arguments
+    parser = Parser(description="Maraston+11 download and grid creation")
+
+    # parameter file to use
+    parser.add_argument("--config-file", type=str, required=True)
+
+    # Unpack the arguments
     args = parser.parse_args()
-    params = load_param_file(args.param_file)
 
-    # The IMFs available for each variant ("standard" has no suffix)
-    variant_imfs = {
-        "standard": ["salpeter", "kroupa", "chabrier"],
-        "nearIRextended": ["salpeter", "kroupa", "chabrier"],
-        "UVtheoretical": ["salpeter"],
-        "UVtheoretical_nearIRextended": ["salpeter"],
-    }
-    variant = get_choice(params, "variant", variant_imfs)
-    imf = get_choice(params, "imf_type", variant_imfs[variant])
-    imf_code = {"salpeter": "ss", "kroupa": "kr", "chabrier": "cha"}
-    if variant == "standard":
-        variant = False
+    # open the config file and extract parameters
+    config = load_params(
+        args.config_file,
+        model_keys=["variant", "imf_type"],
+    )
 
+    # the directory to store downloaded input files
+    input_dir = args.input_dir
+
+    # the directory to store the grid
+    grid_dir = args.grid_dir
+
+    # Define the model metadata
     sps_name = "maraston11"
+    imf_code = {"salpeter": "ss", "kroupa": "kr", "chabrier": "cha"}
+    default_model = {
+        "sps_name": sps_name,
+        "sps_variant": False,
+        "sps_version": False,
+        "alpha_enhancement": False,
+        "imf_masses": [0.1, 100],
+    }
 
-    # The location of the original data
-    output_dir = f"{args.input_dir}/{sps_name}"
+    # The location to untar the original data
+    output_dir = f"{input_dir}/{sps_name}"
 
+    # Define the download URL
     # NOTE: the original download URL (icg.port.ac.uk/~maraston/M11/
     # SSP_M11_Pickles.tar.gz) no longer exists (checked 2026-07-29).
+    # The input data must be obtained by other means and placed in
+    # output_dir before running with --download unset.
     original_data_url = None
+
+    # Download the data if necessary
     if args.download:
         if original_data_url is None:
             raise ValueError(
@@ -170,20 +180,40 @@ if __name__ == "__main__":
             )
         download_data(output_dir, original_data_url)
 
-    model = {
-        "sps_name": sps_name,
-        "sps_variant": variant,
-        "sps_version": False,
-        "alpha_enhancement": False,
-        "imf_type": imf,
-        "imf_masses": [0.1, 100],
-    }
-
-    make_grid(
-        model,
-        imf,
-        variant,
-        output_dir,
-        args.grid_dir,
-        param_file=args.param_file,
+    # Only make the grid chosen in the config file ("standard" has no suffix)
+    variant = get_choice(
+        config.model,
+        "variant",
+        [
+            "standard",
+            "nearIRextended",
+            "UVtheoretical",
+            "UVtheoretical_nearIRextended",
+        ],
     )
+    for variant in [False if variant == "standard" else variant]:
+        if (variant is False) or (variant == "nearIRextended"):
+            imfs = ["salpeter", "kroupa", "chabrier"]
+
+        if (variant == "UVtheoretical") or (
+            variant == "UVtheoretical_nearIRextended"
+        ):
+            imfs = ["salpeter"]
+
+        # Only make the grid for the IMF chosen in the config file
+        imfs = [get_choice(config.model, "imf_type", imfs)]
+
+        for imf in imfs:
+            print(variant)
+
+            model = default_model | {"imf_type": imf, "sps_variant": variant}
+
+            # Get and write the grid
+            make_grid(
+                model,
+                imf,
+                variant,
+                output_dir,
+                grid_dir,
+                param_file=args.config_file,
+            )

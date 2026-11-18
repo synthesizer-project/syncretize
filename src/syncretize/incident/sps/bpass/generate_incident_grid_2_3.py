@@ -2,9 +2,9 @@
 Process BPASS v2.3 and convert to HDF5 synthesizer grid.
 
 For BPASS v2.3 there is currently only a single variant (bin) and IMF. However
-v2.3 has 5 different values of the alpha enhancement. Each run makes either
-the grid for one alpha enhancement or a 3D grid where alpha enhancement is an
-axis, as chosen in the parameter file.
+v2.3 has 5 different values of the alpha enhancement. The processing at the
+moment create grid files for both individual alpha enhancements and then a 3D
+grid where alpha_enhancement is an axis.
 
 Note: there is no automatic download available so models need to be downloaded
 manually from:
@@ -20,8 +20,9 @@ mv bpass_v2.3.a*/* bpass_v2.3_imf135_300/
 rm -rf bpass_v2.3.a*
 
 Example:
-    python generate_incident_grid_2_3.py bpass-2.3.yaml \
-        --grid-dir path/to/grids --input-dir path/to/input
+    python generate_incident_grid_2_3.py \
+    --input-dir path/to/input/dir \
+    --grid-dir path/to/grid/dir \
 """
 
 import numpy as np
@@ -29,7 +30,7 @@ from unyt import Hz, angstrom, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import get_choice, incident_parser, load_param_file
+from syncretize.parser import Parser, load_params
 
 
 def resolve_name(original_model_name, bin, alpha=False):
@@ -332,34 +333,76 @@ def make_full_grid(
 
 
 if __name__ == "__main__":
-    parser = incident_parser("BPASS v2.3 grid creation", input_dir=True)
-    args = parser.parse_args()
-    params = load_param_file(args.param_file)
+    # Set up the command line arguments
+    parser = Parser(description="BPASS_2.3 download and grid creation")
 
-    model = get_choice(params, "model", ["bpass_v2.3_imf135_300"])
-    variant = get_choice(params, "variant", ["bin"])  # no single star models
+    # parameter file to use
+    parser.add_argument("--config-file", type=str, required=True)
+
+    # Unpack the arguments
+    args = parser.parse_args()
+
+    # open the config file and extract parameters
+    config = load_params(
+        args.config_file,
+        constant_keys=["alpha_enhancement"],
+        axis_names=["alpha_enhancement"],
+    )
 
     # The BPASS file codes for each alpha enhancement
     alpha_codes = {-0.2: "-02", 0.0: "+00", 0.2: "+02", 0.4: "+04", 0.6: "+06"}
-    alpha = get_choice(params, "alpha_enhancement", [*alpha_codes, "axis"])
 
-    # Source data are in <input-dir>/bpass/<model>
-    input_dir = f"{args.input_dir}/bpass"
+    # flags whether to build an individual grid (a fixed alpha enhancement)
+    # or the full grid (alpha enhancement as an axis, with all five values)
+    full = "alpha_enhancement" in config.axes
+    individual = not full
+    if full and list(config.axes["alpha_enhancement"]) != list(alpha_codes):
+        raise ValueError(
+            f"The alpha_enhancement axis must be {list(alpha_codes)}"
+        )
 
-    if alpha == "axis":
-        make_full_grid(
-            model,
-            input_dir,
-            args.grid_dir,
-            bs=variant,
-            param_file=args.param_file,
-        )
-    else:
-        make_single_alpha_grid(
-            model,
-            input_dir,
-            args.grid_dir,
-            ae=alpha_codes[alpha],
-            bs=variant,
-            param_file=args.param_file,
-        )
+    # the directory to store downloaded input files
+    input_dir = args.input_dir
+
+    # the directory to store the grid
+    grid_dir = args.grid_dir
+
+    # define sps name used to store the input files
+    sps_name = "bpass"
+
+    # append sps_name to input_dir to define where to store downloaded input
+    # files
+    input_dir += f"/{sps_name}"
+
+    # (the only model available)
+    models = ["bpass_v2.3_imf135_300"]
+
+    for model in models:
+        for bs in ["bin"]:  # no single star models , 'sin'
+            # make a grid with a single alpha enahancement value
+            if individual:
+                alpha = config.constants["alpha_enhancement"]
+                if alpha not in alpha_codes:
+                    raise ValueError(
+                        f"alpha_enhancement must be one of {list(alpha_codes)}"
+                    )
+                for ae in [alpha_codes[alpha]]:
+                    print(ae)
+                    out_filename = make_single_alpha_grid(
+                        model,
+                        input_dir,
+                        grid_dir,
+                        ae=ae,
+                        bs=bs,
+                        param_file=args.config_file,
+                    )
+
+            # make a full 3D grid
+            if full:
+                out_filename = make_full_grid(
+                    model,
+                    input_dir,
+                    grid_dir,
+                    bs=bs,
+                    param_file=args.config_file,
+                )
