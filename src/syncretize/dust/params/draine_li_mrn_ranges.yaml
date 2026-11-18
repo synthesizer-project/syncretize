@@ -3,7 +3,7 @@
 # own fixed component, so the same dust can be described with different
 # lower and upper size cut-offs.
 #
-# Run: python create_dustextcurve_draine_li.py params/draine_li_mrn_ranges.yaml
+# Run: python create_dustextcurve_draine_li.py --paramfile params/draine_li_mrn_ranges.yaml
 
 output:
   # Defaults to GRID_DIR in synthesizer
@@ -16,20 +16,20 @@ n_a_int: 500
 components:
   # One component per [min, max] range (micron); ranges may overlap
   - material: silicate
-    kind: powerlaw
+    shape: powerlaw
     ranges: [[0.005, 0.25], [0.005, 1.0], [0.005, 10.0], [0.01, 0.25], [0.01, 1.0], [0.01, 10.0], [0.03, 0.25], [0.03, 1.0], [0.03, 10.0], [0.1, 0.25], [0.1, 1.0], [0.1, 10.0]]
     power: -3.5
   - material: graphite
-    kind: powerlaw
+    shape: powerlaw
     ranges: [[0.005, 0.25], [0.005, 1.0], [0.005, 10.0], [0.01, 0.25], [0.01, 1.0], [0.01, 10.0], [0.03, 0.25], [0.03, 1.0], [0.03, 10.0], [0.1, 0.25], [0.1, 1.0], [0.1, 10.0]]
     power: -3.5
   # Parts of a range outside the optical table (PAH: 3.548e-4 - 0.01 um)
   # are dropped and the mass renormalised onto the table's radii.
   - material: pah_ionised
-    kind: powerlaw
+    shape: powerlaw
     ranges: [[0.0001, 0.01]]
     power: -3.5
   - material: pah_neutral
-    kind: powerlaw
+    shape: powerlaw
     ranges: [[0.0001, 0.01]]
     power: -3.5

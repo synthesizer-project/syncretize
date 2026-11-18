@@ -65,13 +65,13 @@ def test_mass_and_number_median_conventions_agree(synthetic_tables):
         [
             {
                 "material": "silicate",
-                "kind": "lognormal",
+                "shape": "lognormal",
                 "mass_median": 0.1,
                 "sigma": sigma,
             },
             {
                 "material": "silicate",
-                "kind": "lognormal",
+                "shape": "lognormal",
                 "number_median": 0.1 * math.exp(-3 * sigma**2),
                 "sigma": sigma,
                 "names": ["by_number"],
@@ -92,7 +92,7 @@ def test_powerlaw_edges_expand_to_bins():
             "components": [
                 {
                     "material": "graphite",
-                    "kind": "powerlaw",
+                    "shape": "powerlaw",
                     "edges": [0.001, 0.01, 0.1],
                     "power": -3.5,
                 }
@@ -109,13 +109,34 @@ def test_powerlaw_edges_expand_to_bins():
     ]
 
 
+def test_powerlaw_upper_edge_exclusive_except_top_bin():
+    specs = dl.expand_components(
+        {
+            "components": [
+                {
+                    "material": "graphite",
+                    "shape": "powerlaw",
+                    "edges": [0.001, 0.01, 0.1],
+                    "power": -3.5,
+                }
+            ]
+        }
+    )
+    assert [s["include_a_max"] for s in specs] == [False, True]
+
+    a = np.array([0.001, 0.005, 0.01, 0.05, 0.1])
+    low = dl.powerlaw_shape(a, 0.001, 0.01, -3.5, include_a_max=False)
+    high = dl.powerlaw_shape(a, 0.01, 0.1, -3.5, include_a_max=True)
+    assert np.all((low > 0) != (high > 0))
+
+
 @pytest.mark.parametrize(
     "entry, message",
     [
         (
             {
                 "material": "silicate",
-                "kind": "lognormal",
+                "shape": "lognormal",
                 "mass_median": 0.1,
                 "number_median": 0.1,
                 "sigma": 0.5,
@@ -123,17 +144,17 @@ def test_powerlaw_edges_expand_to_bins():
             "exactly one of number_median",
         ),
         (
-            {"material": "silicate", "kind": "lognormal", "centre": 0.1},
+            {"material": "silicate", "shape": "lognormal", "centre": 0.1},
             "unknown keys",
         ),
         (
-            {"material": "iron", "kind": "lognormal", "mass_median": 0.1},
+            {"material": "iron", "shape": "lognormal", "mass_median": 0.1},
             "material must be one of",
         ),
         (
             {
                 "material": "silicate",
-                "kind": "powerlaw",
+                "shape": "powerlaw",
                 "edges": [0.1, 0.01],
                 "power": -3.5,
             },
@@ -142,7 +163,7 @@ def test_powerlaw_edges_expand_to_bins():
         (
             {
                 "material": "silicate",
-                "kind": "powerlaw",
+                "shape": "powerlaw",
                 "edges": [[0.005, 0.25], [0.01, 1.0]],
                 "power": -3.5,
             },
@@ -151,7 +172,7 @@ def test_powerlaw_edges_expand_to_bins():
         (
             {
                 "material": "silicate",
-                "kind": "powerlaw",
+                "shape": "powerlaw",
                 "ranges": [0.001, 0.01, 0.1],
                 "power": -3.5,
             },
@@ -167,7 +188,7 @@ def test_invalid_components_raise(entry, message):
 def test_duplicate_names_raise():
     entry = {
         "material": "silicate",
-        "kind": "lognormal",
+        "shape": "lognormal",
         "mass_median": 0.1,
         "sigma": 0.5,
     }
@@ -182,7 +203,7 @@ def test_table_nodes_match_fixed_components(synthetic_tables):
         [
             {
                 "material": "graphite",
-                "kind": "lognormal_table",
+                "shape": "lognormal_table",
                 "log10_number_median": log10_a_n,
                 "sigma": sigmas,
             }
@@ -190,7 +211,7 @@ def test_table_nodes_match_fixed_components(synthetic_tables):
         + [
             {
                 "material": "graphite",
-                "kind": "lognormal",
+                "shape": "lognormal",
                 "number_median": 10**la,
                 "sigma": s,
                 "names": [f"n{i}_{j}"],
@@ -212,31 +233,31 @@ def test_table_nodes_match_fixed_components(synthetic_tables):
 
 
 def test_write_grid_layout(synthetic_tables, tmp_path):
-    config = {
+    params = {
         "components": [
             {
                 "material": "silicate",
-                "kind": "lognormal",
+                "shape": "lognormal",
                 "mass_median": [0.01, 0.1],
                 "sigma": 0.75,
             },
             {
                 "material": "pah_neutral",
-                "kind": "lognormal_table",
+                "shape": "lognormal_table",
                 "log10_number_median": {"min": -3.0, "max": -2.0, "n": 3},
                 "sigma": {"min": 0.2, "max": 0.8, "n": 4},
             },
         ]
     }
-    results = dl.compute_opacities(config)
+    results = dl.compute_opacities(params)
     path = tmp_path / "opacities.hdf5"
-    dl.write_grid(str(path), config, results)
+    dl.write_grid(str(path), params, results)
 
     with h5py.File(path, "r") as hf:
         n_wav = hf["wavelength"].shape[0]
         fixed = hf["components/silicate_a0.1um"]
         assert list(fixed.attrs["axes"]) == []
-        assert fixed.attrs["kind"] == "lognormal"
+        assert fixed.attrs["shape"] == "lognormal"
         assert fixed.attrs["mass_median_um"] == pytest.approx(0.1)
         assert fixed["extinction"].shape == (n_wav,)
         assert fixed["extinction"].attrs["Units"] == "cm**2/g"
@@ -249,4 +270,4 @@ def test_write_grid_layout(synthetic_tables, tmp_path):
         assert axes == ["log10_number_median_um", "sigma"]
         assert table["attenuation"].shape == (3, 4, n_wav)
         assert table["untruncated_mass_fraction"].shape == (3, 4)
-        assert "config" in hf["Model"].attrs
+        assert "paramfile" in hf["Model"].attrs
