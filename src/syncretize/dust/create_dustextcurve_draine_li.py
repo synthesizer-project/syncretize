@@ -2,52 +2,68 @@
 """
 Create dust mass opacities (extinction curves) from Draine optical properties.
 
-Parse Draine's Sil_81, Gra_81, PAHion_30 and PAHneu_30 tables, build the
-grain-size distributions listed in a YAML parameter file, and compute the
-mass opacity of each grain component,
+Parse Draine's Sil_81, Gra_81, PAHion_30 and PAHneu_30 tables and compute,
+on a grid of grain-size distribution parameters, the mass opacity of each
+material listed in a YAML parameter file,
 
     kappa(lam) = integral pi a^2 Q(a, lam) n(a) da    (cm^2 per g of dust),
 
-with n(a) normalised to one gram of dust over the radii where Q is tabulated
-(any part of a distribution outside the table is cut off and the mass
-renormalised onto the table's radii).
+with n(a) normalised to one gram of dust over the radii where Q is tabulated.
+
+Truncation to the optical table's radii (silicate, graphite: 0.001 - 10 um;
+PAHs: 3.548e-4 - 0.01 um): Q is never extrapolated in radius. Any part of a
+size distribution outside the table is cut off and the remainder rescaled
+to one gram, so the full dust mass is kept but the mass outside the table
+is effectively given the opacity per gram of the grains inside it. kappa is
+therefore biased for distributions with significant mass outside the table,
+e.g. a lognormal centred at a table edge has half its mass outside it
+(the default PAH lognormal, a = 0.001 um and sigma = 0.75, has 8.5%).
+How much is affected is stored in every output:
+  - lognormal: untruncated_mass_fraction, the fraction of each
+    untruncated lognormal's mass inside the table (1 = no truncation).
+  - powerlaw: integrated_a_min/integrated_a_max, the radius range actually
+    integrated after clipping [a_min, a_max] to the table.
+Check these before using cells near or beyond the table edges.
 
 The extinction scales linearly with the dust mass: for a line of sight with
-dust mass column Sigma_dust,c of each component c, the optical depth is
-tau(lam) = sum_c kappa_c(lam) Sigma_dust,c and A(lam) = 1.086 tau(lam).
+dust mass column Sigma_dust,m of each material m, the optical depth is
+tau(lam) = sum_m kappa_m(lam) Sigma_dust,m and A(lam) = 1.086 tau(lam).
 
-Two opacities are written for every component:
+Two opacities are written for every material:
   - extinction: computed with Q_ext, i.e. every scattered photon is removed
     from the beam (point source behind a dust screen).
   - attenuation: computed with Q_abs + (1 - g) Q_sca, i.e. forward-scattered
     light is kept in the beam, a simple stand-in for unresolved scattering
     geometry.
 
-Component shapes (see params/*.yaml for examples):
-  - lognormal: fixed lognormal components, one per median radius. The
-    lognormal is defined in number,
+One parameter file makes one grid: a single size-distribution shape, the
+materials of one family (grains: silicate, graphite; pah: pah_ionised,
+pah_neutral, whose optical tables cover different radii and wavelengths)
+and axes shared by all of them. Shapes (see params/*.yaml):
+  - lognormal: axes (a, sigma). The lognormal is defined in number,
         n(a) = M0 / (sqrt(2 pi) sigma a) exp(-(ln a - mu)^2 / (2 sigma^2)),
-    so the number-median radius is a_n = e^mu and the mass-median radius is
-    a_m = a_n exp(3 sigma^2). Medians are given explicitly as either
-    number_median or mass_median (micron).
-  - powerlaw: dn/da propto a^power on one or more radius ranges, one
-    component per range. Covers MRN-like ranges and discrete grain-size bins.
-  - lognormal_table: kappa tabulated on a grid of (log10 a_n, sigma), for
-    moment-based lognormal modes whose parameters vary continuously.
+    and the a axis is its mass-median radius (micron), so
+    mu = ln(a / 1 micron) - 3 sigma^2 and the number-median radius is
+    a_n = e^mu = a exp(-3 sigma^2).
+  - powerlaw: axes (a_min, a_max), dn/da propto a^power on [a_min, a_max]
+    (micron). Covers MRN-like size ranges and discrete grain-size bins.
+    Cells with a_min >= a_max, or with no overlap with the optical table,
+    are NaN.
 
-Output layout:
-  /wavelength                  (micron), shared by both curve types
-  /<type>_curves/wavelength    soft link to /wavelength
-  /extinction_curves/<name>    kappa from Q_ext, (*axes, n_wavelength)
-  /attenuation_curves/<name>   kappa from Q_abs + (1 - g) Q_sca, same shape
-  Each dataset carries attributes describing its component: material,
-  shape, size-distribution parameters and axes (the axis names, empty for
-  fixed components). Tabulated components also store each axis's values
-  as an attribute named after the axis.
+Output layout (readable by synthesizer's Grid):
+  attrs axes                       axis names, in array-dimension order
+  /axes/<axis>                     axis values (radii in micron, read in log)
+  /wavelength                      (micron), shared by both curve types
+  /<type>_curves/wavelength        soft link to /wavelength
+  /extinction_curves/<material>    kappa from Q_ext, (*axes, n_wavelength)
+  /attenuation_curves/<material>   kappa from Q_abs + (1 - g) Q_sca
+  lognormal: /untruncated_mass_fraction/<material>, (*axes)
+  powerlaw:  /integrated_a_min/<material>, /integrated_a_max/<material>,
+             the radius range actually integrated in each cell, (*axes)
 
 Usage:
   python create_dustextcurve_draine_li.py \
-      --paramfile params/draine_li_lognormal.yaml \
+      --paramfile params/draine_li_grains_lognormal.yaml \
       [--plot-example] [--show-plot]
 """
 
@@ -69,24 +85,44 @@ from scipy.interpolate import interp1d
 from scipy.special import erf
 from synthesizer import GRID_DIR
 from synthesizer.emission_models.attenuation import Calzetti2000, GrainModels
-from unyt import Angstrom, cm, g, um
+from unyt import Angstrom, cm, dimensionless, g, um
 
 from syncretize.grid_io import GridFile
 
 DRAINE_URL = "https://www.astro.princeton.edu/~draine/dust/diel"
 MODEL_URL = "https://www.astro.princeton.edu/~draine/dust/dust.diel.html"
 
-# Draine optical tables: table name, dataset-name label and default
-# material density (g cm^-3). Densities can be overridden in the parameter
-# file.
+# Draine optical tables: table name, dataset-name label, default material
+# density (g cm^-3) and family. Densities can be overridden in the
+# parameter file. A grid holds materials of one family only.
 MATERIALS = {
-    "silicate": {"table": "Sil_81", "label": "silicate", "rho": 3.5},
-    "graphite": {"table": "Gra_81", "label": "graphite", "rho": 2.24},
-    "pah_ionised": {"table": "PAHion_30", "label": "pahionised", "rho": 2.24},
-    "pah_neutral": {"table": "PAHneu_30", "label": "pahneutral", "rho": 2.24},
+    "silicate": {
+        "table": "Sil_81",
+        "label": "silicate",
+        "rho": 3.5,
+        "family": "grains",
+    },
+    "graphite": {
+        "table": "Gra_81",
+        "label": "graphite",
+        "rho": 2.24,
+        "family": "grains",
+    },
+    "pah_ionised": {
+        "table": "PAHion_30",
+        "label": "pahionised",
+        "rho": 2.24,
+        "family": "pah",
+    },
+    "pah_neutral": {
+        "table": "PAHneu_30",
+        "label": "pahneutral",
+        "rho": 2.24,
+        "family": "pah",
+    },
 }
 
-# The two efficiencies written for every component
+# The two efficiencies written for every material
 CURVE_TYPES = {
     "extinction": {
         "efficiency": "Q_ext",
@@ -103,18 +139,34 @@ CURVE_TYPES = {
 
 MICRON_TO_CM = (1.0 * um).to("cm").value  # 1e-4
 
-# Allowed keys for each component shape (besides "shape" and "material")
-COMPONENT_KEYS = {
-    "lognormal": {"number_median", "mass_median", "sigma", "names"},
-    "powerlaw": {"edges", "ranges", "power", "names"},
-    "lognormal_table": {"log10_number_median", "sigma", "name"},
+# Grid axes of each shape, in array-dimension order
+SHAPE_AXES = {
+    "lognormal": ("a", "sigma"),
+    "powerlaw": ("a_min", "a_max"),
+}
+# Radius axes (micron): log-spaced when given as {min, max, n}, stored in
+# micron and interpolated in log by synthesizer. Other axes are linear.
+RADIUS_AXES = {"a", "a_min", "a_max"}
+AXIS_DESCRIPTIONS = {
+    "a": (
+        "Mass-median grain radius of the lognormal (micron). The lognormal "
+        "is defined in number, n(a) propto (1/a) exp(-(ln a - mu)^2 / "
+        "(2 sigma^2)), so mu = ln(a / 1 micron) - 3 sigma^2 and the "
+        "number-median radius is a_n = e^mu = a exp(-3 sigma^2)"
+    ),
+    "sigma": "Width of the lognormal in ln(a)",
+    "a_min": "Lower radius cut-off of the power law (micron)",
+    "a_max": "Upper radius cut-off of the power law (micron)",
 }
 TOP_LEVEL_KEYS = {
     "output",
     "data_dir",
     "n_a_int",
     "densities",
-    "components",
+    "shape",
+    "materials",
+    "axes",
+    "power",
 }
 
 
@@ -407,12 +459,66 @@ def trapezoid_weights(x: NDArray) -> NDArray:
     return w
 
 
+def restricted_trapezoid_weights(
+    x_micron: NDArray, lo_micron: Any, hi_micron: Any
+) -> NDArray:
+    """
+    Trapezoid weights (in cm) for integrating over [lo, hi] only, where lo
+    and hi are nodes of x. Segments outside [lo, hi] get no weight, so a
+    sharp cut-off at a node is integrated without spilling half a segment
+    beyond it. lo and hi broadcast against each other; cells with lo >= hi
+    (or NaN) get all-zero weights.
+
+    Args:
+        x_micron (NDArray)
+            sample points (micron), increasing
+        lo_micron, hi_micron (float or NDArray)
+            integration limits (micron), nodes of x_micron
+    Returns:
+        w (NDArray)
+            weights, shape broadcast(lo, hi) + (len(x_micron),)
+    """
+    lo = np.asarray(lo_micron, dtype=float)[..., np.newaxis]
+    hi = np.asarray(hi_micron, dtype=float)[..., np.newaxis]
+    inside = (x_micron[:-1] >= lo) & (x_micron[1:] <= hi)
+    half = 0.5 * np.diff(x_micron * MICRON_TO_CM) * inside
+    w = np.zeros(half.shape[:-1] + (x_micron.size,))
+    w[..., :-1] += half
+    w[..., 1:] += half
+    return w
+
+
+def integration_grid(
+    radii_micron: NDArray, n_points: int, extra_nodes: Any = ()
+) -> NDArray:
+    """
+    Integration grid for a material: n_points log-spaced radii spanning the
+    optical table, plus any extra nodes (e.g. power-law cut-offs) inside it.
+
+    Args:
+        radii_micron (NDArray)
+            radius grid (micron) of the optical table
+        n_points (int)
+            number of log-spaced points
+        extra_nodes (array-like)
+            radii (micron) to add as nodes; those outside the table are
+            ignored
+    Returns:
+        grid (NDArray)
+            sorted integration grid (micron)
+    """
+    grid = table_radius_grid(radii_micron, n_points)
+    extra = np.asarray(extra_nodes, dtype=float).ravel()
+    extra = extra[(extra > grid[0]) & (extra < grid[-1])]
+    return np.unique(np.concatenate([grid, extra]))
+
+
 def build_kernel(
     radii_micron: NDArray, Q: NDArray, a_grid_micron: NDArray
 ) -> NDArray:
     """
-    Kernel K such that kappa = n_per_gram @ K.T, i.e.
-    K[lam, a] = pi a^2 Q(a, lam) w(a), with w the trapezoid weights in a.
+    Kernel K[lam, a] = pi a^2 Q(a, lam) on the integration grid, so that
+    kappa = (n * w) @ K.T with w the quadrature weights.
 
     Args:
         radii_micron (NDArray)
@@ -423,484 +529,356 @@ def build_kernel(
             integration grid (micron); must lie within radii_micron
     Returns:
         K (NDArray)
-            kernel (cm^2 * cm), shape (n_wavelength, len(a_grid_micron))
+            kernel (cm^2), shape (n_wavelength, len(a_grid_micron))
     """
     # Never extrapolate Q in radius (raise instead)
     Q_a = interp1d(radii_micron, Q, axis=1, bounds_error=True)(a_grid_micron)
     a_cm = a_grid_micron * MICRON_TO_CM
-    return math.pi * a_cm**2 * Q_a * trapezoid_weights(a_cm)
+    return math.pi * a_cm**2 * Q_a
 
 
 # Size distributions
 def lognormal_shape(
-    a_grid_micron: NDArray, number_median_micron: Any, sigma: Any
+    a_grid_micron: NDArray, mass_median_micron: Any, sigma: Any
 ) -> NDArray:
     """
     Unnormalised lognormal size distribution defined in number,
-    n(a) propto (1 / a) exp(-(ln a - mu)^2 / (2 sigma^2)), mu = ln(a_n).
-    number_median_micron and sigma broadcast against each other; the
-    radius axis is appended last.
+    n(a) propto (1 / a) exp(-(ln a - mu)^2 / (2 sigma^2)), with
+    mu = ln(a_m) - 3 sigma^2 for mass-median radius a_m. a_m and sigma
+    broadcast against each other; the radius axis is appended last.
 
     Args:
         a_grid_micron (NDArray)
             radius grid (micron)
-        number_median_micron (float or NDArray)
-            number-median radius a_n = e^mu (micron)
+        mass_median_micron (float or NDArray)
+            mass-median radius (micron)
         sigma (float or NDArray)
             width in ln(a)
     Returns:
         shape (NDArray)
-            unnormalised n(a), shape broadcast(a_n, sigma) + (n_a,)
+            unnormalised n(a), shape broadcast(a_m, sigma) + (n_a,)
     """
-    a_n = np.asarray(number_median_micron, dtype=float)[..., np.newaxis]
+    a_m = np.asarray(mass_median_micron, dtype=float)[..., np.newaxis]
     sig = np.asarray(sigma, dtype=float)[..., np.newaxis]
-    if np.any(sig <= 0):
-        raise ValueError("sigma must be > 0")
-    x = np.log(a_grid_micron / a_n)
+    if np.any(sig <= 0) or np.any(a_m <= 0):
+        raise ValueError("mass median and sigma must be > 0")
+    mu = np.log(a_m) - 3 * sig**2
+    x = np.log(a_grid_micron) - mu
     return np.exp(-0.5 * (x / sig) ** 2) / a_grid_micron
-
-
-def powerlaw_shape(
-    a_grid_micron: NDArray,
-    a_min: float,
-    a_max: float,
-    power: float,
-    include_a_max: bool = True,
-) -> NDArray:
-    """
-    Unnormalised truncated power law, n(a) propto a^power on
-    [a_min, a_max) (micron) and zero elsewhere. The upper edge is only
-    included when include_a_max is set, so a radius shared by two
-    adjacent bins belongs to the upper bin alone.
-
-    Args:
-        a_grid_micron (NDArray)
-            radius grid (micron)
-        a_min, a_max (float)
-            radius range (micron)
-        power (float)
-            power-law exponent (dn/da propto a^power)
-        include_a_max (bool)
-            include a_max itself, i.e. integrate over [a_min, a_max]
-    Returns:
-        shape (NDArray)
-            unnormalised n(a) on a_grid_micron
-    """
-    shape = np.zeros_like(a_grid_micron)
-    below_max = (
-        a_grid_micron <= a_max if include_a_max else a_grid_micron < a_max
-    )
-    mask = (a_grid_micron >= a_min) & below_max
-    shape[mask] = a_grid_micron[mask] ** power
-    return shape
-
-
-def normalise_per_gram(
-    a_grid_micron: NDArray, shape: NDArray, rho: float
-) -> NDArray:
-    """
-    Normalise size distributions to one gram of dust on a_grid_micron,
-    i.e. integral (4/3 pi a^3 rho n(a) da) = 1 g, using the same trapezoid
-    weights as the kappa integral.
-
-    Args:
-        a_grid_micron (NDArray)
-            radius grid (micron)
-        shape (NDArray)
-            unnormalised n(a), radius axis last
-        rho (float)
-            material density (g cm^-3)
-    Returns:
-        n(a) (NDArray)
-            grains per gram of dust per cm, same shape as shape
-    """
-    a_cm = a_grid_micron * MICRON_TO_CM
-    grain_mass = (4.0 / 3.0) * math.pi * rho * a_cm**3
-    mass = shape @ (grain_mass * trapezoid_weights(a_cm))
-    if not np.all(mass > 0):
-        raise ValueError(
-            "Size distribution has no mass on the integration grid; "
-            "check it overlaps the radii covered by the optical table."
-        )
-    return shape / mass[..., np.newaxis]
 
 
 def lognormal_mass_fraction(
     a_lo_micron: float,
     a_hi_micron: float,
-    number_median_micron: Any,
+    mass_median_micron: Any,
     sigma: Any,
 ) -> NDArray:
     """
     Fraction of an untruncated lognormal's mass lying in [a_lo, a_hi].
     The mass per ln(a) is a Gaussian in ln(a) of width sigma centred on the
-    mass-median radius a_m = a_n exp(3 sigma^2).
+    mass-median radius.
 
     Args:
         a_lo_micron, a_hi_micron (float)
             radius range (micron)
-        number_median_micron (float or NDArray)
-            number-median radius (micron)
+        mass_median_micron (float or NDArray)
+            mass-median radius (micron)
         sigma (float or NDArray)
             width in ln(a)
     Returns:
         mass fraction in [a_lo, a_hi], broadcast shape of the inputs
     """
     sig = np.asarray(sigma, dtype=float)
-    ln_am = np.log(np.asarray(number_median_micron, dtype=float)) + 3 * sig**2
+    ln_am = np.log(np.asarray(mass_median_micron, dtype=float))
     z_lo = (math.log(a_lo_micron) - ln_am) / (sig * math.sqrt(2))
     z_hi = (math.log(a_hi_micron) - ln_am) / (sig * math.sqrt(2))
     return 0.5 * (erf(z_hi) - erf(z_lo))
 
 
-def format_radius(value: float) -> str:
-    """Format a radius for a dataset name without exponent notation."""
-    return np.format_float_positional(float(value), trim="-")
+def axis_values(spec: Any, name: str) -> NDArray:
+    """
+    Axis values from {min, max, n} (log-spaced for radius axes, linear
+    otherwise) or from an explicit value or increasing list.
 
-
-def _as_list(value: Any, n: int, what: str) -> List[Any]:
-    """Broadcast a scalar to a list of length n, or check a list's length."""
-    if isinstance(value, (list, tuple)):
-        if len(value) != n:
-            raise ValueError(f"{what} has {len(value)} entries, expected {n}")
-        return list(value)
-    return [value] * n
-
-
-def _axis_values(spec: Any, what: str) -> NDArray:
-    """Axis from {min, max, n} (linearly spaced) or an explicit list."""
+    Args:
+        spec (dict, list or float)
+            axis specification from the parameter file
+        name (string)
+            axis name
+    Returns:
+        values (NDArray)
+    """
+    what = f"axes.{name}"
     if isinstance(spec, dict):
         if set(spec) != {"min", "max", "n"}:
             raise ValueError(f"{what} needs exactly min, max and n")
-        if int(spec["n"]) < 2 or not spec["max"] > spec["min"]:
-            raise ValueError(f"{what} needs n >= 2 and max > min")
-        return np.linspace(
-            float(spec["min"]), float(spec["max"]), int(spec["n"])
+        lo, hi, n = float(spec["min"]), float(spec["max"]), int(spec["n"])
+        if n < 2 or not hi > lo or lo <= 0:
+            raise ValueError(f"{what} needs n >= 2 and max > min > 0")
+        spacing = np.geomspace if name in RADIUS_AXES else np.linspace
+        values = spacing(lo, hi, n)
+        values[0], values[-1] = lo, hi
+        return values
+    values = np.atleast_1d(np.asarray(spec, dtype=float))
+    if values.ndim != 1 or values.size < 1 or np.any(np.diff(values) <= 0):
+        raise ValueError(
+            f"{what} must be a value or a strictly increasing list"
         )
-    values = np.asarray(spec, dtype=float)
-    if values.ndim != 1 or values.size < 2 or np.any(np.diff(values) <= 0):
-        raise ValueError(f"{what} must be strictly increasing, >= 2 values")
+    if np.any(values <= 0):
+        raise ValueError(f"{what} values must be > 0")
     return values
 
 
-def expand_components(params: Dict[str, Any]) -> List[Dict[str, Any]]:
+def parse_params(params: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Validate the parameter file's component entries and expand them into
-    one spec per output component.
+    Validate the parameter file and build the grid axes.
 
     Args:
         params (dict)
             parsed YAML parameter file
     Returns:
-        list of component specs, each a dict with name, material, shape and
-        the shape's parameters
+        dict with shape, materials, family, axes (name -> values, in
+        array-dimension order), power (powerlaw only) and densities
     """
     unknown = set(params) - TOP_LEVEL_KEYS
     if unknown:
         raise ValueError(
             f"Unknown top-level parameter file keys: {sorted(unknown)}"
         )
-    if not params.get("components"):
-        raise ValueError("The parameter file must list at least one component")
 
-    specs = []
-    for i, entry in enumerate(params["components"]):
-        where = f"components[{i}]"
-        shape = entry.get("shape")
-        material = entry.get("material")
-        if shape not in COMPONENT_KEYS:
-            raise ValueError(
-                f"{where}: shape must be one of {sorted(COMPONENT_KEYS)}"
-            )
-        if material not in MATERIALS:
-            raise ValueError(
-                f"{where}: material must be one of {sorted(MATERIALS)}"
-            )
-        unknown = set(entry) - COMPONENT_KEYS[shape] - {"shape", "material"}
-        if unknown:
-            raise ValueError(f"{where}: unknown keys {sorted(unknown)}")
-        label = MATERIALS[material]["label"]
+    shape = params.get("shape")
+    if shape not in SHAPE_AXES:
+        raise ValueError(f"shape must be one of {sorted(SHAPE_AXES)}")
 
-        if shape == "lognormal":
-            has_n = "number_median" in entry
-            has_m = "mass_median" in entry
-            if has_n == has_m:
-                raise ValueError(
-                    f"{where}: give exactly one of number_median or "
-                    "mass_median (micron)"
-                )
-            medians = entry["number_median" if has_n else "mass_median"]
-            medians = medians if isinstance(medians, list) else [medians]
-            sigmas = _as_list(entry.get("sigma"), len(medians), "sigma")
-            names = entry.get("names") or [
-                f"{label}_a{format_radius(m)}um" for m in medians
-            ]
-            names = _as_list(names, len(medians), f"{where} names")
-            for name, median, sigma in zip(names, medians, sigmas):
-                if sigma is None or not float(sigma) > 0:
-                    raise ValueError(f"{where}: sigma must be > 0")
-                sigma = float(sigma)
-                # Everything is computed in the number convention
-                factor = math.exp(3 * sigma**2)
-                a_n = float(median) if has_n else float(median) / factor
-                specs.append(
-                    {
-                        "name": name,
-                        "material": material,
-                        "shape": shape,
-                        "number_median_um": a_n,
-                        "mass_median_um": a_n * factor,
-                        "sigma": sigma,
-                    }
-                )
-
-        elif shape == "powerlaw":
-            if ("edges" in entry) == ("ranges" in entry):
-                raise ValueError(f"{where}: give exactly one of edges/ranges")
-            if "power" not in entry:
-                raise ValueError(f"{where}: power is required")
-            if "edges" in entry:
-                edges = entry["edges"]
-                if not isinstance(edges, list) or any(
-                    isinstance(e, (list, tuple)) for e in edges
-                ):
-                    raise ValueError(
-                        f"{where}: edges must be a flat list of bin edges, "
-                        "e.g. [0.001, 0.01, 0.1]; use ranges for a list of "
-                        "[min, max] pairs"
-                    )
-                edges = [float(e) for e in edges]
-                if len(edges) < 2 or np.any(np.diff(edges) <= 0):
-                    raise ValueError(
-                        f"{where}: edges must be strictly increasing"
-                    )
-                ranges = list(zip(edges[:-1], edges[1:]))
-            else:
-                ranges = entry["ranges"]
-                if not isinstance(ranges, list) or not all(
-                    isinstance(r, (list, tuple)) and len(r) == 2
-                    for r in ranges
-                ):
-                    raise ValueError(
-                        f"{where}: ranges must be a list of [min, max] pairs, "
-                        "e.g. [[0.001, 0.01], [0.1, 1.0]]; use edges for a "
-                        "flat list of bin edges"
-                    )
-                ranges = [(float(lo), float(hi)) for lo, hi in ranges]
-                if any(not hi > lo for lo, hi in ranges):
-                    raise ValueError(f"{where}: each range needs max > min")
-            names = entry.get("names") or [
-                f"{label}_a{format_radius(lo)}-{format_radius(hi)}um"
-                for lo, hi in ranges
-            ]
-            names = _as_list(names, len(ranges), f"{where} names")
-            # upper edges are exclusive so adjacent bins don't share a
-            # radius, except for the entry's topmost bin
-            top = max(hi for _, hi in ranges)
-            for name, (lo, hi) in zip(names, ranges):
-                specs.append(
-                    {
-                        "name": name,
-                        "material": material,
-                        "shape": shape,
-                        "a_min_um": lo,
-                        "a_max_um": hi,
-                        "include_a_max": hi == top,
-                        "power": float(entry["power"]),
-                    }
-                )
-
-        # lognormal_table: useful for moment-based lognormal modes whose
-        # parameters can vary continuously
-        else:
-            for key in ("log10_number_median", "sigma"):
-                if key not in entry:
-                    raise ValueError(f"{where}: {key} is required")
-            log10_a_n = _axis_values(
-                entry["log10_number_median"], f"{where} log10_number_median"
-            )
-            sigmas = _axis_values(entry["sigma"], f"{where} sigma")
-            if np.any(sigmas <= 0):
-                raise ValueError(f"{where}: sigma values must be > 0")
-            specs.append(
-                {
-                    "name": entry.get("name", f"{label}_lognormal_table"),
-                    "material": material,
-                    "shape": shape,
-                    "log10_number_median_um": log10_a_n,
-                    "sigma": sigmas,
-                }
-            )
-
-    names = [s["name"] for s in specs]
-    duplicates = sorted({n for n in names if names.count(n) > 1})
-    if duplicates:
-        raise ValueError(f"Duplicate component names: {duplicates}")
-    return specs
-
-
-def load_paramfile(path: str) -> Dict[str, Any]:
-    """Read the YAML parameter file."""
-    with open(path, "r") as stream:
-        params = yaml.safe_load(stream)
-    if not isinstance(params, dict):
-        raise ValueError(f"{path} does not contain a YAML mapping")
-    return params
-
-
-def compute_component(
-    spec: Dict[str, Any], a_grid: NDArray, rho: float
-) -> Dict[str, Any]:
-    """
-    Build a component's size distribution(s), normalised to one gram of
-    dust on the material's integration grid, plus its output metadata.
-
-    Args:
-        spec (dict)
-            one entry of expand_components
-        a_grid (NDArray)
-            the material's integration grid (micron)
-        rho (float)
-            material density (g cm^-3)
-    Returns:
-        dict with n_per_gram (shape (*axes, n_a)), axes (dict name ->
-        values) and attrs (dict) to write alongside the opacities
-    """
-    lo, hi = a_grid[0], a_grid[-1]
-    attrs: Dict[str, Any] = {
-        "material": spec["material"],
-        "shape": spec["shape"],
-        "rho_g_cm3": rho,
-        "table_a_min_um": lo,
-        "table_a_max_um": hi,
-    }
-    axes: Dict[str, NDArray] = {}
-
-    if spec["shape"] == "lognormal":
-        a_n, sigma = spec["number_median_um"], spec["sigma"]
-        shape = lognormal_shape(a_grid, a_n, sigma)
-        frac = float(lognormal_mass_fraction(lo, hi, a_n, sigma))
-        attrs.update(
-            number_median_um=a_n,
-            mass_median_um=spec["mass_median_um"],
-            sigma=sigma,
-            untruncated_mass_fraction=frac,
+    materials = params.get("materials")
+    if not isinstance(materials, list) or not materials:
+        raise ValueError("materials must be a non-empty list")
+    bad = [m for m in materials if m not in MATERIALS]
+    if bad:
+        raise ValueError(
+            f"Unknown materials {bad}; must be one of {sorted(MATERIALS)}"
         )
-        print(
-            f"{spec['name']}: {100 * frac:.2f}% of the lognormal mass lies "
-            f"in the table range [{lo:.4g}, {hi:.4g}] um; renormalised"
+    if len(set(materials)) != len(materials):
+        raise ValueError("materials must not repeat")
+    families = {MATERIALS[m]["family"] for m in materials}
+    if len(families) > 1:
+        groups = {
+            f: [m for m in MATERIALS if MATERIALS[m]["family"] == f]
+            for f in sorted({v["family"] for v in MATERIALS.values()})
+        }
+        raise ValueError(
+            "materials must all be from one family, since their optical "
+            f"tables share radii and wavelengths: {groups}. Use one "
+            "parameter file per family."
         )
 
-    elif spec["shape"] == "powerlaw":
-        a_min, a_max = spec["a_min_um"], spec["a_max_um"]
-        # nothing lies above the table's last radius, so keep it
-        include_a_max = bool(spec["include_a_max"] or a_max >= hi)
-        shape = powerlaw_shape(
-            a_grid, a_min, a_max, spec["power"], include_a_max
-        )
-        attrs.update(
-            a_min_um=a_min,
-            a_max_um=a_max,
-            include_a_max=include_a_max,
-            power=spec["power"],
-            integrated_a_min_um=max(a_min, lo),
-            integrated_a_max_um=min(a_max, hi),
-        )
-        print(
-            f"{spec['name']}: power law on [{a_min:.4g}, {a_max:.4g}"
-            f"{']' if include_a_max else ')'} um, "
-            f"integrated over [{max(a_min, lo):.4g}, {min(a_max, hi):.4g}] "
-            "um (table range)"
-        )
-    # lognormal_table
+    axes_spec = params.get("axes")
+    expected = SHAPE_AXES[shape]
+    if not isinstance(axes_spec, dict) or set(axes_spec) != set(expected):
+        raise ValueError(f"axes for shape {shape} must be exactly {expected}")
+    axes = {name: axis_values(axes_spec[name], name) for name in expected}
+
+    if shape == "powerlaw":
+        if "power" not in params:
+            raise ValueError("power is required for shape powerlaw")
+        power = float(params["power"])
     else:
-        log10_a_n, sigmas = spec["log10_number_median_um"], spec["sigma"]
-        a_n_mesh, sig_mesh = np.meshgrid(10**log10_a_n, sigmas, indexing="ij")
-        shape = lognormal_shape(a_grid, a_n_mesh, sig_mesh)
-        frac = lognormal_mass_fraction(lo, hi, a_n_mesh, sig_mesh)
-        axes = {"log10_number_median_um": log10_a_n, "sigma": sigmas}
-        # shape (n_log10_number_median, n_sigma)
-        attrs["untruncated_mass_fraction"] = frac
-        print(
-            f"{spec['name']}: table of {log10_a_n.size} x {sigmas.size} "
-            f"(log10 a_n, sigma); untruncated mass fraction in table range "
-            f"{100 * frac.min():.2f}%-{100 * frac.max():.2f}%"
-        )
+        if "power" in params:
+            raise ValueError("power is only used by shape powerlaw")
+        power = None
 
-    return {
-        "n_per_gram": normalise_per_gram(a_grid, shape, rho),
-        "axes": axes,
-        "attrs": attrs,
-    }
-
-
-def compute_opacities(params: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Load the optical tables, build every component's size distribution and
-    compute its extinction and attenuation mass opacities.
-
-    Args:
-        params (dict)
-            parsed YAML parameter file
-    Returns:
-        dict with wav (micron), a_grids (material -> grid), and components
-        (name -> output of compute_component plus kappa, a dict curve type
-        -> kappa of shape (*axes, n_wavelength) in cm^2 g^-1)
-    """
-    specs = expand_components(params)
-    data_dir = params.get("data_dir", ".")
-    n_a_int = int(params.get("n_a_int", 500))
     densities = params.get("densities") or {}
     unknown = set(densities) - set(MATERIALS)
     if unknown:
         raise ValueError(f"Unknown materials in densities: {sorted(unknown)}")
 
-    materials = sorted({s["material"] for s in specs})
-    tables = {
-        material: load_optical_table(material, data_dir)
-        for material in materials
+    return {
+        "shape": shape,
+        "materials": materials,
+        "family": families.pop(),
+        "axes": axes,
+        "power": power,
+        "densities": densities,
     }
 
-    # Common wavelength grid: union of the tables in use
-    wav = np.unique(
-        np.concatenate([tables[material]["wav"] for material in materials])
+
+def size_distribution(
+    cfg: Dict[str, Any], radii: NDArray, n_a_int: int
+) -> Dict[str, Any]:
+    """
+    Unnormalised size distributions of every grid cell for a material, with
+    the quadrature weights used to integrate them.
+
+    Args:
+        cfg (dict)
+            output of parse_params
+        radii (NDArray)
+            radius grid (micron) of the material's optical table
+        n_a_int (int)
+            number of log-spaced integration points
+    Returns:
+        dict with a_grid (micron), n (unnormalised n(a), broadcastable to
+        (*axes, n_a)), w (weights, (*axes, n_a)), valid (cells that
+        should have a finite opacity, (*axes)) and extra (name ->
+        ((*axes) array, units, description)) datasets to write
+    """
+    lo, hi = float(radii[0]), float(radii[-1])
+    if cfg["shape"] == "lognormal":
+        a_grid = integration_grid(radii, n_a_int)
+        a_m, sig = np.meshgrid(
+            cfg["axes"]["a"], cfg["axes"]["sigma"], indexing="ij"
+        )
+        n = lognormal_shape(a_grid, a_m, sig)
+        w = np.broadcast_to(trapezoid_weights(a_grid * MICRON_TO_CM), n.shape)
+        frac = lognormal_mass_fraction(lo, hi, a_m, sig)
+        return {
+            "a_grid": a_grid,
+            "n": n,
+            "w": w,
+            # an untruncated lognormal has mass at every radius, but cells
+            # far outside the table can underflow to zero (checked later)
+            "valid": None,
+            "extra": {
+                "untruncated_mass_fraction": (
+                    frac,
+                    dimensionless,
+                    "Fraction of the untruncated lognormal's mass within "
+                    "the optical table's radius range (before "
+                    "renormalisation onto it)",
+                ),
+            },
+        }
+
+    # powerlaw: put every cut-off on the integration grid so each cell is
+    # integrated exactly between its own limits
+    a_min_axis, a_max_axis = cfg["axes"]["a_min"], cfg["axes"]["a_max"]
+    a_grid = integration_grid(
+        radii, n_a_int, np.concatenate([a_min_axis, a_max_axis])
     )
+    a_min, a_max = np.meshgrid(a_min_axis, a_max_axis, indexing="ij")
+    int_lo, int_hi = np.maximum(a_min, lo), np.minimum(a_max, hi)
+    valid = (a_min < a_max) & (int_lo < int_hi)
+    int_lo = np.where(valid, int_lo, np.nan)
+    int_hi = np.where(valid, int_hi, np.nan)
+    return {
+        "a_grid": a_grid,
+        "n": a_grid ** cfg["power"],
+        "w": restricted_trapezoid_weights(a_grid, int_lo, int_hi),
+        "valid": valid,
+        "extra": {
+            "integrated_a_min": (
+                int_lo,
+                um,
+                "Lower limit of the radius range integrated in each cell: "
+                "a_min clipped to the optical table (NaN for empty cells)",
+            ),
+            "integrated_a_max": (
+                int_hi,
+                um,
+                "Upper limit of the radius range integrated in each cell: "
+                "a_max clipped to the optical table (NaN for empty cells)",
+            ),
+        },
+    }
 
-    # Per material: integration grid spanning the table's radii, and the
-    # kernel K[lam, a] for each curve type so that kappa = n @ K.T
-    a_grids, kernels = {}, {}
-    for material in materials:
-        radii = tables[material]["radii"]
-        a_grids[material] = table_radius_grid(radii, n_a_int)
-        Q = efficiencies_on_grid(tables[material], wav)
-        kernels[material] = {
-            ct: build_kernel(radii, Q[ct], a_grids[material])
-            for ct in CURVE_TYPES
-        }
 
-    components = {}
-    for spec in specs:
-        material = spec["material"]
-        rho = float(densities.get(material, MATERIALS[material]["rho"]))
-        comp = compute_component(spec, a_grids[material], rho)
-        comp["material"] = material
-        # kappa(lam) = integral pi a^2 Q(a, lam) n(a) da. With the trapezoid
-        # rule this is sum_i w_i pi a_i^2 Q(a_i, lam) n(a_i), where the
-        # weights w_i depend only on the radius grid. Everything except n(a)
-        # is folded into the per-material kernel K[lam, i] (build_kernel), so
-        # the integral for any number of distributions is one matrix product,
-        # n_per_gram (*axes, n_a) @ K.T (n_a, n_wavelength). For a
-        # lognormal_table this avoids looping over every (a_n, sigma) node or
-        # broadcasting to a (*axes, n_wavelength, n_a) array (GBs for a
-        # typical table). normalise_per_gram uses the same weights, so the
+def compute_opacities(params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Compute the extinction and attenuation mass opacities of every material
+    on the parameter file's grid.
+
+    Args:
+        params (dict)
+            parsed YAML parameter file
+    Returns:
+        dict with wav (micron), shape, family, axes, power and materials
+        (material -> dict with kappa (curve type -> (*axes, n_wavelength)
+        in cm^2 g^-1), a_grid (micron), n_per_gram ((*axes, n_a), grains
+        per gram per cm), rho, table range and extra datasets)
+    """
+    cfg = parse_params(params)
+    data_dir = params.get("data_dir", ".")
+    n_a_int = int(params.get("n_a_int", 500))
+    grid_shape = tuple(v.size for v in cfg["axes"].values())
+
+    tables = {m: load_optical_table(m, data_dir) for m in cfg["materials"]}
+
+    # Common wavelength grid: union of this family's tables
+    wav = np.unique(np.concatenate([t["wav"] for t in tables.values()]))
+
+    out: Dict[str, Any] = {}
+    for material in cfg["materials"]:
+        table = tables[material]
+        radii = table["radii"]
+        rho = float(cfg["densities"].get(material, MATERIALS[material]["rho"]))
+        dist = size_distribution(cfg, radii, n_a_int)
+        a_grid = dist["a_grid"]
+
+        # Normalise every cell to one gram of dust with its own weights
+        a_cm = a_grid * MICRON_TO_CM
+        grain_mass = (4.0 / 3.0) * math.pi * rho * a_cm**3
+        nw = dist["n"] * dist["w"]
+        mass = nw @ grain_mass
+        has_mass = mass > 0
+        if dist["valid"] is not None and np.any(dist["valid"] & ~has_mass):
+            raise RuntimeError(
+                f"{material}: cells with a valid radius range have no mass "
+                "on the integration grid"
+            )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            scale = np.where(has_mass, 1.0 / mass, np.nan)
+        nw_per_gram = nw * scale[..., np.newaxis]
+        n_per_gram = (
+            np.where(dist["w"] > 0, dist["n"], 0.0) * scale[..., np.newaxis]
+        )
+
+        # kappa(lam) = integral pi a^2 Q(a, lam) n(a) da. With the
+        # trapezoid rule this is sum_i w_i pi a_i^2 Q(a_i, lam) n(a_i).
+        # pi a^2 Q is the same for every cell and is the per-material
+        # kernel K[lam, i] (build_kernel); the weights w_i depend on the
+        # cell (each power-law cell only integrates between its own
+        # limits) and are folded into n. The integral for every cell is
+        # then one matrix product, (n w) (*axes, n_a) @ K.T (n_a,
+        # n_wavelength), rather than a loop over cells or a
+        # (*axes, n_wavelength, n_a) array (GBs for a typical grid). The
+        # mass normalisation above uses the same weights, so the
         # normalised mass and the kappa integral share one quadrature.
-        comp["kappa"] = {
-            ct: comp["n_per_gram"] @ kernels[material][ct].T
+        Q = efficiencies_on_grid(table, wav)
+        kappa = {
+            ct: nw_per_gram @ build_kernel(radii, Q[ct], a_grid).T
             for ct in CURVE_TYPES
         }
-        components[spec["name"]] = comp
 
-    return {"wav": wav, "a_grids": a_grids, "components": components}
+        n_nan = int(np.sum(~has_mass))
+        print(
+            f"{material}: {grid_shape} grid on table radii "
+            f"[{radii[0]:.4g}, {radii[-1]:.4g}] um, {n_nan} empty (NaN) "
+            "cells"
+        )
+        if cfg["shape"] == "lognormal":
+            frac = dist["extra"]["untruncated_mass_fraction"][0]
+            print(
+                f"  untruncated mass fraction in table range "
+                f"{100 * frac.min():.3g}%-{100 * frac.max():.3g}%"
+            )
+        out[material] = {
+            "kappa": kappa,
+            "a_grid": a_grid,
+            "n_per_gram": n_per_gram,
+            "rho": rho,
+            "table_a_min_um": float(radii[0]),
+            "table_a_max_um": float(radii[-1]),
+            "extra": dist["extra"],
+        }
+
+    return {
+        "wav": wav,
+        "shape": cfg["shape"],
+        "family": cfg["family"],
+        "axes": cfg["axes"],
+        "power": cfg["power"],
+        "materials": out,
+    }
 
 
 def write_grid(
@@ -917,25 +895,69 @@ def write_grid(
         results (dict)
             output of compute_opacities
     """
-    out_grid = GridFile(path)
-    out_grid.write_model_metadata(
-        {
-            "model_name": "Draine & Li dust mass opacities",
-            "url": MODEL_URL,
-            "opacity_units": "cm**2/g",
-            "usage": (
-                "tau(lam) = sum_c kappa_c(lam) * Sigma_dust,c, where "
-                "Sigma_dust,c is the dust mass column of component c; "
-                "A(lam) = 1.086 tau(lam)"
-            ),
-            "lognormal_definition": (
-                "n(a) = M0 / (sqrt(2 pi) sigma a) "
-                "exp(-(ln a - mu)^2 / (2 sigma^2)), a_n = e^mu, "
-                "a_mass_median = a_n exp(3 sigma^2)"
-            ),
-            "paramfile": yaml.safe_dump(params, sort_keys=False),
-        }
+    model: Dict[str, Any] = {
+        "model_name": "Draine & Li dust mass opacities",
+        "url": MODEL_URL,
+        "opacity_units": "cm**2/g",
+        "usage": (
+            "tau(lam) = sum_m kappa_m(lam) * Sigma_dust,m, where "
+            "Sigma_dust,m is the dust mass column of material m; "
+            "A(lam) = 1.086 tau(lam)"
+        ),
+        "shape": results["shape"],
+        "family": results["family"],
+        "materials": ", ".join(results["materials"]),
+        "paramfile": yaml.safe_dump(params, sort_keys=False),
+    }
+    if results["shape"] == "lognormal":
+        model["lognormal_definition"] = (
+            "n(a) = M0 / (sqrt(2 pi) sigma a) exp(-(ln a - mu)^2 / "
+            "(2 sigma^2)); axis a is the mass-median radius, "
+            "mu = ln(a / 1 micron) - 3 sigma^2"
+        )
+    else:
+        model["power"] = results["power"]
+        model["powerlaw_definition"] = (
+            "dn/da propto a^power on [a_min, a_max]; NaN where "
+            "a_min >= a_max or the range misses the optical table"
+        )
+
+    # How the size distributions are truncated to the optical table (the
+    # materials of a family share the same table radii)
+    first = next(iter(results["materials"].values()))
+    check = (
+        "untruncated_mass_fraction (fraction of each untruncated "
+        "lognormal's mass inside the table, 1 = no truncation)"
+        if results["shape"] == "lognormal"
+        else "integrated_a_min/integrated_a_max (the radius range actually "
+        "integrated after clipping [a_min, a_max] to the table)"
     )
+    model["truncation"] = (
+        "Q is never extrapolated in radius. Any part of a size "
+        "distribution outside the optical table's radii "
+        f"[{first['table_a_min_um']:.4g}, {first['table_a_max_um']:.4g}] um "
+        "is cut off and the remainder rescaled to one gram, so the full "
+        "dust mass is kept but the mass outside the table is effectively "
+        "given the opacity per gram of the grains inside it; kappa is "
+        "biased for distributions with significant mass outside the "
+        f"table. Check {check} before using cells near or beyond the "
+        "table edges."
+    )
+
+    out_grid = GridFile(path)
+    out_grid.write_model_metadata(model)
+
+    # Axes in the layout synthesizer's Grid expects
+    out_grid.write_attribute("/", "axes", list(results["axes"]))
+    for name, values in results["axes"].items():
+        radius = name in RADIUS_AXES
+        out_grid.write_dataset(
+            key=f"axes/{name}",
+            data=values * (um if radius else dimensionless),
+            description=AXIS_DESCRIPTIONS[name],
+            log_on_read=radius,
+        )
+
     out_grid.write_dataset(
         key="wavelength",
         data=results["wav"] * um,
@@ -943,30 +965,39 @@ def write_grid(
         log_on_read=False,
     )
 
-    # One group per curve type, as in the original layout. Each dataset is
-    # self-describing: its attributes hold the component's metadata and,
-    # for tabulated components, the axis names and values.
-    for ct, info in CURVE_TYPES.items():
-        group = f"{ct}_curves"
-        for name, comp in results["components"].items():
-            meta: Dict[str, Any] = dict(comp["attrs"])
-            meta["axes"] = np.array(
-                list(comp["axes"]), dtype=h5py.string_dtype()
-            )
-            meta.update(comp["axes"])
+    for material, res in results["materials"].items():
+        label = MATERIALS[material]["label"]
+        attrs = {
+            "material": material,
+            "rho_g_cm3": res["rho"],
+            "table_a_min_um": res["table_a_min_um"],
+            "table_a_max_um": res["table_a_max_um"],
+        }
+        for ct, info in CURVE_TYPES.items():
             out_grid.write_dataset(
-                key=f"{group}/{name}",
-                data=comp["kappa"][ct] * cm**2 / g,
+                key=f"{ct}_curves/{label}",
+                data=res["kappa"][ct] * cm**2 / g,
                 description=(
-                    f"{info['description']} for component {name}: optical "
-                    "depth per unit dust mass column (tau = kappa * "
-                    "Sigma_dust; A = 1.086 tau), shape (*axes, wavelength)"
+                    f"{info['description']} for {material}: optical depth "
+                    "per unit dust mass column (tau = kappa * Sigma_dust; "
+                    "A = 1.086 tau), shape (*axes, wavelength)"
                 ),
                 log_on_read=False,
-                **meta,
+                **attrs,
             )
-        # Attributes go on the group, which now exists
-        out_grid.write_attribute(group, "efficiency", info["efficiency"])
+        for key, (values, units, description) in res["extra"].items():
+            out_grid.write_dataset(
+                key=f"{key}/{label}",
+                data=values * units,
+                description=f"{description}, shape (*axes)",
+                log_on_read=False,
+            )
+
+    # Attributes go on the groups, which now exist
+    for ct, info in CURVE_TYPES.items():
+        out_grid.write_attribute(
+            f"{ct}_curves", "efficiency", info["efficiency"]
+        )
 
     # Each curve group also exposes the shared wavelength through a soft
     # link to /wavelength, so the data is stored only once
@@ -975,10 +1006,20 @@ def write_grid(
             hf[f"{ct}_curves/wavelength"] = h5py.SoftLink("/wavelength")
 
 
+def load_paramfile(path: str) -> Dict[str, Any]:
+    """Read the YAML parameter file."""
+    with open(path, "r") as stream:
+        params = yaml.safe_load(stream)
+    if not isinstance(params, dict):
+        raise ValueError(f"{path} does not contain a YAML mapping")
+    return params
+
+
 def plot_extinction_curve(
     wav_micron: NDArray,
     curves_over_Av: Dict[str, NDArray],
     ax: Optional[Axes] = None,
+    styles: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Axes:
     """
     Plot extinction/attenuation curves A(λ)/A(V) against reference curves.
@@ -990,26 +1031,31 @@ def plot_extinction_curve(
             mapping of legend label -> curve A(λ)/A(V) on wav_micron
         ax (Axes)
             axes to plot on (a new figure is created if None)
+        styles (dict)
+            optional legend label -> matplotlib line keyword arguments
     """
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 5))
+    styles = styles or {}
 
     wav_angstrom = wav_micron * 1e4
     for label, A_over_Av in curves_over_Av.items():
-        ax.plot(wav_angstrom, A_over_Av, label=label)
+        ax.plot(wav_angstrom, A_over_Av, label=label, **styles.get(label, {}))
     curve = Calzetti2000(ampl=10.0)
     ax.plot(
         wav_angstrom,
         curve.get_tau(wav_angstrom * Angstrom),
         ls="--",
+        color="k",
         label="Calzetti+2000",
     )
-    for c in ["MW", "LMC", "SMC"]:
+    for c, color in zip(["MW", "LMC", "SMC"], ["0.3", "0.5", "0.7"]):
         curve_wd01 = GrainModels(submodel=c)
         ax.plot(
             wav_angstrom,
             curve_wd01.get_tau(wav_angstrom * Angstrom),
             ls=":",
+            color=color,
             label=f"{c}",
         )
     ax.set_xlabel("Wavelength (AA)", fontsize=12)
@@ -1017,8 +1063,29 @@ def plot_extinction_curve(
     ax.set_xlim(800, 1e4)
     ax.set_xticks(np.arange(1000, 10001, 1000))
     ax.grid(which="both", ls="--", alpha=0.4)
-    ax.legend(fontsize=11, ncol=2)
+    ax.legend(fontsize=8, ncol=2)
     return ax
+
+
+def example_cells(results: Dict[str, Any], n_cells: int) -> List[Tuple]:
+    """
+    A few grid cells to plot: up to n_cells nodes spread along the first
+    axis, with the second axis at its middle node (lognormal) or its
+    largest value (powerlaw, where small a_max leaves cells empty). Cells
+    that are NaN for any material are skipped.
+    """
+    sizes = [v.size for v in results["axes"].values()]
+    j = sizes[1] // 2 if results["shape"] == "lognormal" else sizes[1] - 1
+    rows = np.unique(np.linspace(0, sizes[0] - 1, min(n_cells, sizes[0])))
+    cells = [(int(round(i)), j) for i in rows]
+    return [
+        cell
+        for cell in cells
+        if all(
+            np.all(np.isfinite(res["kappa"]["extinction"][cell]))
+            for res in results["materials"].values()
+        )
+    ]
 
 
 def plot_example(
@@ -1027,95 +1094,89 @@ def plot_example(
     png_name: str,
     show: bool,
     v_wavelength_um: float = 0.55,
+    n_cells: int = 4,
 ) -> None:
     """
-    Plot the A(λ)/A(V) curves and size distributions for an example dust
-    mix. Each material's dust-to-gas mass ratio is split evenly across that
-    material's fixed (non-tabulated) components; materials without fixed
-    components are skipped.
+    Plot A(λ)/A(V) and the size distributions of an example dust mix of the
+    grid's materials at a few grid cells (see example_cells).
 
     Args:
         results (dict)
             output of compute_opacities
         material_dtg (dict)
-            dust-to-gas mass ratio of each material (key of MATERIALS)
+            dust-to-gas mass ratio of each material (key of MATERIALS);
+            materials of the grid that are missing here are left out
         png_name (string)
             output image filename
         show (bool)
             whether to show the plot interactively
         v_wavelength_um (float)
             wavelength (micron) used to normalise A(λ)/A(V)
+        n_cells (int)
+            maximum number of grid cells to plot
     """
-    components = results["components"]
-    dtg = {}
-    for material, material_total in material_dtg.items():
-        names = [
-            name
-            for name, comp in components.items()
-            if comp["material"] == material and not comp["axes"]
-        ]
-        for name in names:
-            dtg[name] = material_total / len(names)
-    if not dtg:
-        print(
-            "No fixed components in the parameter file; skipping the "
-            "example plot"
-        )
+    materials = [m for m in results["materials"] if m in material_dtg]
+    cells = example_cells(results, n_cells)
+    if not materials or not cells:
+        print("Nothing to plot for the example dust mix; skipping")
         return
 
     wav = results["wav"]
     iv = np.argmin(np.abs(wav - v_wavelength_um))
+    names = list(results["axes"])
 
     # Gas mass per H (g) with helium correction, used only to turn the
     # example DTGs into dust mass per H for the Av/NH comparison
     MU = 1.4
     M_H = 1.6738e-24  # in grams
-    dust_mass_per_H = {name: d * MU * M_H for name, d in dtg.items()}
+    dust_mass_per_H = {m: material_dtg[m] * MU * M_H for m in materials}
     MAG_PER_TAU = 2.5 * np.log10(np.e)  # A = 1.086 tau
 
-    plot_labels = {
-        "extinction": r"Extinction ($Q_{\rm ext}$)",
-        "attenuation": r"Attenuation ($Q_{\rm abs} + (1-g)\,Q_{\rm sca}$)",
-    }
-    curves_over_Av = {}
-    for ct in CURVE_TYPES:
-        # A(lam)/N_H in mag cm^2 per H
-        A_total = MAG_PER_TAU * sum(
-            components[name]["kappa"][ct] * m
-            for name, m in dust_mass_per_H.items()
+    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    ct_ls = {"extinction": "-", "attenuation": "--"}
+    curves_over_Av, styles = {}, {}
+    fig, axs = plt.subplots(figsize=(8, 8), nrows=2, ncols=1)
+    for k, cell in enumerate(cells):
+        color = colors[k % len(colors)]
+        cell_label = ", ".join(
+            f"{name}={results['axes'][name][i]:.3g}"
+            for name, i in zip(names, cell)
         )
-        curves_over_Av[plot_labels[ct]] = A_total / A_total[iv]
-        print(f"{ct}: Av/NH = {A_total[iv]:.3e} mag cm^2")
+        for ct in CURVE_TYPES:
+            # A(lam)/N_H in mag cm^2 per H
+            A_total = MAG_PER_TAU * sum(
+                results["materials"][m]["kappa"][ct][cell] * dust_mass_per_H[m]
+                for m in materials
+            )
+            label = f"{ct}: {cell_label}"
+            curves_over_Av[label] = A_total / A_total[iv]
+            styles[label] = {"color": color, "ls": ct_ls[ct]}
+            print(f"{label}: Av/NH = {A_total[iv]:.3e} mag cm^2")
+
+        # Size distributions, a^4 n(a) per H
+        for m in materials:
+            res = results["materials"][m]
+            n = res["n_per_gram"][cell] * dust_mass_per_H[m]
+            ok = n > 0
+            a = res["a_grid"][ok]
+            axs[1].loglog(
+                a,
+                (a * MICRON_TO_CM) ** 4 * n[ok],
+                color=color,
+                ls="-" if m == materials[0] else ":",
+                label=f"{m}: {cell_label}",
+            )
     print("Milky Way sightline (extinction), Rv=3.1:")
     print("Av/NH = 5.3E-22 mag cm^2")
 
-    fig, axs = plt.subplots(figsize=(8, 8), nrows=2, ncols=1)
-    plot_extinction_curve(wav, curves_over_Av, axs[0])
-
-    # Size distributions summed per material, a^4 n(a) per H
-    by_material: Dict[str, NDArray] = {}
-    for name, m in dust_mass_per_H.items():
-        mat = components[name]["material"]
-        n = components[name]["n_per_gram"] * m
-        by_material[mat] = by_material.get(mat, 0) + n
-    for mat, n_tot in by_material.items():
-        a_grid = results["a_grids"][mat]
-        ok = n_tot != 0
-        axs[1].loglog(
-            a_grid[ok],
-            ((a_grid[ok] * MICRON_TO_CM) ** 4) * n_tot[ok],
-            label=mat,
-            ls="dotted" if mat.startswith("pah") else "dashed",
-            # Thicker so identical ionised/neutral PAH curves both show
-            lw=4 if mat == "pah_ionised" else None,
-        )
-    axs[1].set_ylim(1e-30, 1e-26)
+    plot_extinction_curve(wav, curves_over_Av, axs[0], styles)
     axs[1].set_xlabel("a (um)", fontsize=12)
     axs[1].set_ylabel(r"a$^{4}$ n(a) / (grains/H cm$^3$)", fontsize=12)
+    axs[1].set_ylim(1e-30, 1e-26)
     axs[1].grid(which="both", ls="--", alpha=0.4)
-    axs[1].legend(fontsize=11, ncol=2)
+    axs[1].legend(fontsize=7, ncol=2)
 
-    dtgs = ", ".join(f"{k}={v:.3g}" for k, v in dtg.items())
+    dtgs = ", ".join(f"{m}={material_dtg[m]:.3g}" for m in materials)
     fig.suptitle(f"Example dust mix (DTG): {dtgs}", fontsize=9, wrap=True)
     plt.tight_layout()
     plt.savefig(png_name, dpi=200)
@@ -1129,8 +1190,9 @@ def plot_example(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=(
-            "Build dust mass opacities from Draine optical tables for the "
-            "grain components listed in a YAML parameter file."
+            "Build a grid of dust mass opacities from Draine optical tables "
+            "for the materials and size-distribution axes in a YAML "
+            "parameter file."
         )
     )
     parser.add_argument(
@@ -1164,8 +1226,8 @@ if __name__ == "__main__":
     print(f"Saved dust opacity grid to: {path}")
 
     if args.plot_example:
-        # Example dust-to-gas mass ratio of each material, split evenly
-        # across that material's fixed components in the parameter file
+        # Example dust-to-gas mass ratio of each material; only the grid's
+        # materials are used
         EXAMPLE_DTG = {
             "silicate": 0.006,
             "graphite": 0.003,
