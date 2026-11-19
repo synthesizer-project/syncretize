@@ -6,7 +6,7 @@
 #
 #   python src/syncretize/incident/blackholes/relagn/generate_incident_grid.py \
 #       --config-file parameter_files/incident/blackholes/relagn/generate_incident_grid_template.yaml \
-#       --grid-dir <grid-dir> [--num-procs 8]
+#       --grid-dir <grid-dir> [--cores 8]
 #
 # Every section must be present, but may be left blank. Unknown keys stop
 # the script with an error.

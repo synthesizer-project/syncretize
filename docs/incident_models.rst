@@ -171,13 +171,12 @@ Black-hole and AGN models
      - ``broken_power_law/generate_incident_grid.py``
      - Three spectral slopes
      - Included YAML configuration
-     - Limited. Supplied Feltre configuration works; multiple values on its
-       second or third slope do not.
+     - Self-contained.
    * - RELAGN
      - ``relagn/generate_incident_grid.py``
      - Mass, accretion rate, spin/efficiency, optional inclination
      - RELAGN and XSPEC
-     - External setup. Parallel generation through ``--num-procs``.
+     - External setup. Parallel generation through ``--cores``.
    * - RELQSO
      - ``relqso/generate_incident_grid.py``
      - Mass, accretion rate, spin, optional inclination

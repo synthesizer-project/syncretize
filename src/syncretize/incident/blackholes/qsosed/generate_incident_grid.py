@@ -18,17 +18,27 @@ import numpy as np
 from synthesizer.utils.integrate import trapezoid
 from unyt import Angstrom, Hz, Msun, c, dimensionless, erg, s
 
-from syncretize.grid_io import GridFile
+from syncretize.incident.builder import GridSpec, Output, build_grid
 from syncretize.parser import Parser, load_params
 
 sys.path.append("RELAGN/src/python_version")
 
-if __name__ == "__main__":
-    # Import relagn module
-    from relagn import relagn, relqso  # noqa: E402
+# Import relagn module
+from relagn import relagn, relqso  # noqa: E402
 
-    """
-    Create incident AGN spectra assuming the QSOSED model.
+
+def setup(config_file, input_dir=None):
+    """Read the config and describe the grid (see syncretize.incident.builder).
+
+    Args:
+        config_file (str)
+            The parameter file.
+        input_dir (str)
+            Unused; the model needs no source data.
+
+    Returns:
+        GridSpec
+            The grid, with one point per mass and accretion rate.
     """
 
     axes_names = ["masses", "accretion_rates_eddington", "cosine_inclinations"]
@@ -46,18 +56,9 @@ if __name__ == "__main__":
         "cosine_inclinations": dimensionless,
     }
 
-    # Set up the command line arguments
-    parser = Parser(description="QSOSED AGN model creation.")
-
-    # parameter file to use
-    parser.add_argument("--config-file", type=str, required=True)
-
-    # get the arguments
-    args = parser.parse_args()
-
     # open the config file and extract parameters
     config = load_params(
-        args.config_file,
+        config_file,
         model_keys=["grid_name"],
         constant_keys=["cosine_inclinations"],
         axis_names=[
@@ -90,9 +91,6 @@ if __name__ == "__main__":
         "family": "qsosed",
     }
 
-    # Define the grid filename and path
-    out_filename = f"{args.grid_dir}/{model_name}.hdf5"
-
     # Define axes values
     axes_values = {
         "masses": mass,
@@ -109,11 +107,6 @@ if __name__ == "__main__":
         "accretion_rates_eddington": True,
     }
 
-    # the shape of the grid (useful for creating outputs)
-    axes_shape = list(
-        [len(axes_values[axis_name]) for axis_name in axes_names]
-    )
-
     # define axes dictionary which is saved to the HDF5 file
     axes = {}
     for axis_name in axes_names:
@@ -127,46 +120,55 @@ if __name__ == "__main__":
     # initialise default model, to get wavelength grid
     dagn = relagn()
     lam = dagn.wave_grid[::-1] * Angstrom
-    nu = c / lam
+
+    if not isotropic:
+        log_on_read["cosine_inclinations"] = False
+
+    return GridSpec(
+        grid_name=model_name,
+        model=model,
+        axes=axes,
+        descriptions=axes_descriptions,
+        wavelength=lam,
+        outputs={"incident": Output(units=erg / s / Hz)},
+        # Each mass and accretion rate is normalised using its own
+        # isotropic spectrum, so the inclinations come as a block
+        point_axes=("masses", "accretion_rates_eddington"),
+        log_on_read=log_on_read,
+        weight="bolometric_luminosities",
+        data={
+            "axes_values": axes_values,
+            "isotropic": isotropic,
+            "cosine_inclination": cosine_inclination,
+        },
+    )
+
+
+def generate_point(spec, index):
+    """Return the normalised spectra for one mass and accretion rate."""
+    axes_values = spec.data["axes_values"]
+    mass_ = axes_values["masses"][index["masses"]]
+    accretion_rate_eddington_ = axes_values["accretion_rates_eddington"][
+        index["accretion_rates_eddington"]
+    ]
+    isotropic = spec.data["isotropic"]
+    cosine_inclination = spec.data["cosine_inclination"]
+    nu = c / spec.wavelength
     nu_hz = nu.to("Hz").value
 
-    # create empty spectra grid
-    spec = np.zeros((*axes_shape, len(lam)))
+    def qsosed_lnu(cosine_inclination_):
+        # spin is assumed to be zero here
+        dagn = relqso(
+            a=0.0,
+            cos_inc=cosine_inclination_,
+            log_mdot=np.log10(accretion_rate_eddington_),
+            M=mass_,
+        )
 
-    for i1, mass_ in enumerate(axes_values["masses"]):
-        for i2, accretion_rate_eddington_ in enumerate(
-            axes_values["accretion_rates_eddington"]
-        ):
-            if isotropic:
-                # spin is assumed to be zero here
-                dagn = relqso(
-                    a=0.0,
-                    cos_inc=cosine_inclination,
-                    log_mdot=np.log10(accretion_rate_eddington_),
-                    M=mass_,
-                )
+        # lnu = dagn.get_totSED(rel=True) # relativistic
+        lnu = dagn.get_totSED(rel=False)  # non-relativistic
 
-                # lnu = dagn.get_totSED(rel=True) # relativistic
-                lnu = dagn.get_totSED(rel=False)  # non-relativistic
-
-                spec[i1, i2] = lnu[::-1]
-
-            else:
-                for i3, cosine_inclination_ in enumerate(
-                    axes_values["cosine_inclinations"]
-                ):
-                    # spin is assumed to be zero here
-                    dagn = relqso(
-                        a=0.0,
-                        cos_inc=cosine_inclination_,
-                        log_mdot=np.log10(accretion_rate_eddington_),
-                        M=mass_,
-                    )
-
-                    # lnu = dagn.get_totSED(rel=True) # relativistic
-                    lnu = dagn.get_totSED(rel=False)  # non-relativistic
-
-                    spec[i1, i2, i3] = lnu[::-1]
+        return lnu[::-1]
 
     # Normalise the spectra using the isotropic spectra (i.e.
     # cosine_inclination=0.5)
@@ -174,52 +176,36 @@ if __name__ == "__main__":
     # If only a grid containing isoptropic spectra this simply means
     # normalising every spectra to unit
     if isotropic:
-        # loop over each axis
-        for i1, mass_ in enumerate(axes_values["masses"]):
-            for i2, accretion_rate_eddington_ in enumerate(
-                axes_values["accretion_rates_eddington"]
-            ):
-                # determine the boloe
-                bolometric_luminosity = -trapezoid(spec[i1, i2], nu_hz)
-                spec[i1, i2] /= bolometric_luminosity
+        spec_ = qsosed_lnu(cosine_inclination)
+        bolometric_luminosity = -trapezoid(spec_, nu_hz)
+        return {"incident": spec_ / bolometric_luminosity}
 
     # Otherwise identify the index correspinding and divide all by this
-    else:
-        # Find the index corresponding to cosine_inclination=0.5
-        isotropic_index = np.where(cosine_inclination == 0.5)[0]
+    spec_ = np.array([qsosed_lnu(cos_inc) for cos_inc in cosine_inclination])
 
-        # Loop over each axis
-        for i1, mass_ in enumerate(axes_values["masses"]):
-            for i2, accretion_rate_eddington_ in enumerate(
-                axes_values["accretion_rates_eddington"]
-            ):
-                # Determine the bolometric luminosity
-                bolometric_luminosity = -trapezoid(
-                    spec[i1, i2, isotropic_index], nu_hz
-                )
+    # Find the index corresponding to cosine_inclination=0.5
+    isotropic_index = np.where(cosine_inclination == 0.5)[0]
 
-                for i3, cosine_inclination_ in enumerate(
-                    axes_values["cosine_inclinations"]
-                ):
-                    spec[i1, i2, i3] /= bolometric_luminosity
+    # Determine the bolometric luminosity
+    bolometric_luminosity = -trapezoid(spec_[isotropic_index], nu_hz)
 
-    # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename, param_file=args.config_file)
+    return {"incident": spec_ / bolometric_luminosity}
 
-    if not isotropic:
-        log_on_read["cosine_inclinations"] = False
 
-    # Write everything out thats common to all models
-    out_grid.write_grid_common(
-        model=model,
-        axes=axes,
-        descriptions=axes_descriptions,
-        wavelength=lam,
-        log_on_read=log_on_read,
-        spectra={"incident": spec * erg / s / Hz},
-        weight="bolometric_luminosities",
+if __name__ == "__main__":
+    # Set up the command line arguments
+    parser = Parser(description="QSOSED AGN model creation.")
+
+    # parameter file to use
+    parser.add_argument("--config-file", type=str, required=True)
+
+    # get the arguments
+    args = parser.parse_args()
+
+    build_grid(
+        setup(args.config_file),
+        generate_point,
+        args.grid_dir,
+        param_file=args.config_file,
+        cores=args.cores,
     )
-
-    # Include the specific ionising photon luminosity
-    print("Calculating and saving specific ionising luminosity")
-    out_grid.add_specific_ionising_lum()

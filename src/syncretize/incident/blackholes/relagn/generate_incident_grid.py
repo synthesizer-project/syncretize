@@ -12,9 +12,6 @@ This also requires that xspec (https://heasarc.gsfc.nasa.gov/xanadu/xspec/) is
 installed.
 """
 
-import itertools
-from multiprocessing import Pool
-
 import numpy as np
 from numpy.typing import NDArray
 
@@ -24,7 +21,7 @@ from scipy.optimize import brentq
 from synthesizer.exceptions import InconsistentParameter
 from unyt import Angstrom, Hz, Msun, dimensionless, erg, s
 
-from syncretize.grid_io import GridFile
+from syncretize.incident.builder import GridSpec, Output, build_grid
 from syncretize.parser import Parser, load_params
 
 
@@ -140,7 +137,6 @@ def compute_single_spectrum(
     Returns:
         lnu (NDArray): The computed SED in wavelength order.
     """
-    # Re-instantiate the physics object inside the worker process
     dagn = relagn(
         a=spin,
         cos_inc=cos_inc,
@@ -155,9 +151,18 @@ def compute_single_spectrum(
     return lnu[::-1]
 
 
-if __name__ == "__main__":
-    """
-    Create incident AGN spectra assuming the RELAGN model.
+def setup(config_file, input_dir=None):
+    """Read the config and describe the grid (see syncretize.incident.builder).
+
+    Args:
+        config_file (str)
+            The parameter file.
+        input_dir (str)
+            Unused; the model needs no source data.
+
+    Returns:
+        GridSpec
+            The grid, with one point per combination of the axes.
     """
 
     axes_names = [
@@ -198,21 +203,9 @@ if __name__ == "__main__":
     cosine_inclination_range = [0.09, 1.0]
     spin_range = [0.0, 0.998]
 
-    # Set up the command line arguments
-    parser = Parser(description="RELAGN AGN model creation.")
-
-    # parameter file to use
-    parser.add_argument("--config-file", type=str, required=True)
-
-    # number of processes to use
-    parser.add_argument("--num-procs", type=int, default=8)
-
-    # get the arguments
-    args = parser.parse_args()
-
     # open the config file and extract parameters
     config = load_params(
-        args.config_file,
+        config_file,
         model_keys=["grid_name"],
         constant_keys=["cosine_inclinations"],
         axis_names=[
@@ -284,9 +277,6 @@ if __name__ == "__main__":
         "family": "relagn",
     }
 
-    # Define the grid filename and path
-    out_filename = f"{args.grid_dir}/{model_name}.hdf5"
-
     axes_values = {
         "masses": mass,
         "accretion_rates_eddington": accretion_rate_eddington,
@@ -309,32 +299,6 @@ if __name__ == "__main__":
     dagn = relagn()
     lam = dagn.wave_grid[::-1] * Angstrom
 
-    iterables = [values for values in axes_values.values()]
-    grid_shape = tuple(len(x) for x in iterables if len(x) > 1)
-
-    # Generate all combinations of arguments (Flattening the loops)
-    if isotropic:
-        # When isotropic, add the scalar cosine_inclination to
-        # each parameter tuple
-        param_grid = [
-            (*params, cosine_inclination)
-            for params in itertools.product(*iterables)
-        ]
-    else:
-        param_grid = list(itertools.product(*iterables))
-
-    print("Starting RELAGN SED calculations...")
-    with Pool(processes=args.num_procs) as pool:
-        # starmap unpacks the tuple arguments for us: func(*args)
-        results = pool.starmap(compute_single_spectrum, param_grid)
-
-    # Reshape results into the final grid shape
-    final_shape = grid_shape + (len(lam),)
-    spec = np.array(results).reshape(final_shape)
-
-    # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename, param_file=args.config_file)
-
     if not isotropic:
         log_on_read["cosine_inclinations"] = False
 
@@ -353,17 +317,61 @@ if __name__ == "__main__":
         else:
             del axes["spins"]
 
-    # Write everything out thats common to all models
-    out_grid.write_grid_common(
+    return GridSpec(
+        grid_name=model_name,
         model=model,
         axes=axes,
         descriptions=axes_descriptions,
         wavelength=lam,
+        outputs={"incident": Output(units=erg / s / Hz)},
+        point_axes=tuple(axes),
         log_on_read=log_on_read,
-        spectra={"incident": spec * erg / s / Hz},
         weight="None",
+        data={
+            "axes_values": axes_values,
+            "cosine_inclination": cosine_inclination,
+        },
     )
 
-    # Include the specific ionising photon luminosity
-    print("Calculating and saving specific ionising luminosity")
-    out_grid.add_specific_ionising_lum()
+
+def generate_point(spec, index):
+    """Return the spectrum at one grid point."""
+    axes_values = spec.data["axes_values"]
+    # The radiative_efficiencies axis indexes the spins; with a single
+    # radiative efficiency there is no spin axis
+    spin_index = index.get("spins", index.get("radiative_efficiencies", 0))
+    if "cosine_inclinations" in index:
+        cos_inc = axes_values["cosine_inclinations"][
+            index["cosine_inclinations"]
+        ]
+    else:
+        cos_inc = spec.data["cosine_inclination"]
+    return {
+        "incident": compute_single_spectrum(
+            mass=axes_values["masses"][index["masses"]],
+            mdot=axes_values["accretion_rates_eddington"][
+                index["accretion_rates_eddington"]
+            ],
+            spin=axes_values["spins"][spin_index],
+            cos_inc=cos_inc,
+        )
+    }
+
+
+if __name__ == "__main__":
+    # Set up the command line arguments
+    parser = Parser(description="RELAGN AGN model creation.")
+
+    # parameter file to use
+    parser.add_argument("--config-file", type=str, required=True)
+
+    # get the arguments
+    args = parser.parse_args()
+
+    build_grid(
+        setup(args.config_file),
+        generate_point,
+        args.grid_dir,
+        param_file=args.config_file,
+        cores=args.cores,
+    )

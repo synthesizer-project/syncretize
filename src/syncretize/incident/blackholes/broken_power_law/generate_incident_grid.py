@@ -6,7 +6,7 @@ import numpy as np
 from synthesizer.utils.integrate import trapezoid
 from unyt import Angstrom, Hz, c, dimensionless, erg, s
 
-from syncretize.grid_io import GridFile
+from syncretize.incident.builder import GridSpec, Output, build_grid
 from syncretize.parser import Parser, load_params
 
 
@@ -63,6 +63,95 @@ def broken_power_law(x, edges, indices, normalisations=False, normalise=True):
     return y
 
 
+def setup(config_file, input_dir=None):
+    """Read the config and describe the grid (see syncretize.incident.builder).
+
+    Args:
+        config_file (str)
+            The parameter file.
+        input_dir (str)
+            Unused; the model needs no source data.
+
+    Returns:
+        GridSpec
+            The grid, with one point per combination of the slopes.
+    """
+    # open the config file and extract parameters
+    config = load_params(
+        config_file,
+        model_keys=["grid_name"],
+        constant_keys=["edges"],
+        axis_names=["alpha1", "alpha2", "alpha3"],
+    )
+    parameters = {**config.constants, **config.axes}
+
+    model_name = config.model["grid_name"]
+    indices = [parameters[f"alpha{i}"] for i in (1, 2, 3)]
+    edges_lam = np.array(parameters["edges"]) * Angstrom
+
+    # Model defintion dictionary
+    model = {
+        "name": model_name,
+        "type": "agn",
+        "family": "broken_power_law",
+    }
+
+    # Define axes names
+    axes_names = [f"alpha{i + 1}" for i, _ in enumerate(indices)]
+
+    # Define axes descriptions
+    axes_descriptions = {}
+    for i, axis_name in enumerate(axes_names):
+        axes_descriptions[axis_name] = (
+            rf"The power-law slope between {edges_lam[i]} "
+            rf"\le \lambda/\AA < {edges_lam[i + 1]}"
+        )
+
+    # In this case the incident axes values are just the indices
+    # but we also convert lists to arrays
+    axes_values = [np.array(index) * dimensionless for index in indices]
+
+    # axes dictionary, save as part of output
+    axes = dict(zip(axes_names, axes_values))
+
+    # convert the value of edges for use
+    edges_nu = c / edges_lam
+    edges = edges_nu.to("THz").value
+
+    # define wavelength grid using the edges
+    lam = np.arange(edges_lam.value[0], edges_lam.value[-1], 10.0) * Angstrom
+
+    return GridSpec(
+        grid_name=model_name,
+        model=model,
+        axes=axes,
+        descriptions=axes_descriptions,
+        wavelength=lam,
+        outputs={"incident": Output(units=erg / s / Hz)},
+        point_axes=tuple(axes_names),
+        # Define which axes are logged
+        log_on_read={"alpha1": False, "alpha2": False, "alpha3": False},
+        weight="bolometric_luminosities",
+        data={"edges": edges},
+    )
+
+
+def generate_point(spec, index):
+    """Return the broken power-law spectrum for one set of slopes."""
+    # define the indices of the current model
+    indices_ = [spec.axes[name][i].value for name, i in index.items()]
+
+    # frequency grid
+    x = (c / spec.wavelength).to("THz").value
+
+    # generate the broken power-law spectra
+    return {
+        "incident": broken_power_law(
+            x, spec.data["edges"][::-1], indices_[::-1]
+        )
+    }
+
+
 if __name__ == "__main__":
     """
     Create incident AGN spectra assuming a broken power-law model.
@@ -84,90 +173,10 @@ if __name__ == "__main__":
     # get the arguments
     args = parser.parse_args()
 
-    # open the config file and extract parameters
-    config = load_params(
-        args.config_file,
-        model_keys=["grid_name"],
-        constant_keys=["edges"],
-        axis_names=["alpha1", "alpha2", "alpha3"],
+    build_grid(
+        setup(args.config_file),
+        generate_point,
+        args.grid_dir,
+        param_file=args.config_file,
+        cores=args.cores,
     )
-    parameters = {**config.constants, **config.axes}
-
-    model_name = config.model["grid_name"]
-    indices = [parameters[f"alpha{i}"] for i in (1, 2, 3)]
-    edges_lam = np.array(parameters["edges"]) * Angstrom
-
-    # Model defintion dictionary
-    model = {
-        "name": model_name,
-        "type": "agn",
-        "family": "broken_power_law",
-    }
-
-    # Define the grid filename and path
-    out_filename = f"{args.grid_dir}/{model_name}.hdf5"
-
-    # Define axes names
-    axes_names = [f"alpha{i + 1}" for i, _ in enumerate(indices)]
-
-    # Define axes descriptions
-    axes_descriptions = {}
-    for i, axis_name in enumerate(axes_names):
-        axes_descriptions[axis_name] = (
-            rf"The power-law slope between {edges_lam[i]} "
-            rf"\le \lambda/\AA < {edges_lam[i + 1]}"
-        )
-
-    # In this case the incident axes values are just the indices
-    # but we also convert lists to arrays
-    axes_values = [np.array(index) * dimensionless for index in indices]
-
-    # axes dictionary, save as part of output
-    axes = dict(zip(axes_names, axes_values))
-
-    # the shape of the grid (useful for creating outputs)
-    axes_shape = list([len(axis) for axis in axes_values])
-
-    # convert the value of edges for use
-    edges_nu = c / edges_lam
-    edges = edges_nu.to("THz").value
-
-    # define wavelength and frequency grid using the edges
-    lam = np.arange(edges_lam.value[0], edges_lam.value[-1], 10.0) * Angstrom
-    nu = c / lam
-    x = nu.to("THz").value
-
-    # create empty spectra grid
-    spec = np.zeros((*axes_shape, len(lam)))
-
-    # loop over grid points
-    # TODO: this needs generalising, but not a priority
-    for i, alpha1 in enumerate(indices[0]):
-        for j, alpha2 in enumerate(indices[1]):
-            for k, alpha3 in enumerate(indices[2]):
-                # define the indices of the current model
-                indices_ = [alpha1, alpha2, alpha3]
-
-                # generate the broken power-law spectra
-                spec[i] = broken_power_law(x, edges[::-1], indices_[::-1])
-
-    # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename, param_file=args.config_file)
-
-    # Define which axes are logged
-    log_on_read = {"alpha1": False, "alpha2": False, "alpha3": False}
-
-    # Write everything out thats common to all models
-    out_grid.write_grid_common(
-        model=model,
-        axes=axes,
-        descriptions=axes_descriptions,
-        wavelength=lam,
-        log_on_read=log_on_read,
-        spectra={"incident": spec * erg / s / Hz},
-        weight="bolometric_luminosities",
-    )
-
-    # Include the specific ionising photon luminosity
-    print("Calculating and saving specific ionising luminosity")
-    out_grid.add_specific_ionising_lum()

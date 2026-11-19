@@ -21,7 +21,7 @@ import numpy as np
 from synthesizer.utils.integrate import trapezoid
 from unyt import Hz, K, c, erg, s
 
-from syncretize.grid_io import GridFile
+from syncretize.incident.builder import GridSpec, Output, build_grid
 from syncretize.parser import Parser, load_params
 
 # 1 Ryd in Hz and in K (cloudy's TE1RYD = h c R_inf / k)
@@ -113,19 +113,22 @@ def blackbody_lnu(lam, blackbody_temperature):
     return lnu / bolometric_luminosity
 
 
-if __name__ == "__main__":
-    # Set up the command line arguments
-    parser = Parser(description="cloudy blackbody model creation.")
+def setup(config_file, input_dir=None):
+    """Read the config and describe the grid (see syncretize.incident.builder).
 
-    # parameter file to use
-    parser.add_argument("--config-file", type=str, required=True)
+    Args:
+        config_file (str)
+            The parameter file.
+        input_dir (str)
+            Unused; the model needs no source data.
 
-    # get the arguments
-    args = parser.parse_args()
-
+    Returns:
+        GridSpec
+            The grid, with one point per temperature.
+    """
     # open the config file and extract parameters
     config = load_params(
-        args.config_file,
+        config_file,
         model_keys=["grid_name"],
         constant_keys=[],
         axis_names=["log10blackbody_temperature"],
@@ -151,30 +154,41 @@ if __name__ == "__main__":
         "family": "blackbody",
     }
 
-    # Define the grid filename and path
-    out_filename = f"{args.grid_dir}/{model_name}.hdf5"
-
-    lam = wavelength_grid()
-
-    # create the spectra grid, one spectrum per temperature
-    spec = np.array(
-        [blackbody_lnu(lam, temperature) for temperature in temperatures]
-    )
-
-    # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename, param_file=args.config_file)
-
-    # Write everything out that's common to all models
-    out_grid.write_grid_common(
+    return GridSpec(
+        grid_name=model_name,
         model=model,
         axes={"blackbody_temperature": temperatures * K},
         descriptions={"blackbody_temperature": "Temperature of the blackbody"},
-        wavelength=lam,
+        wavelength=wavelength_grid(),
+        outputs={"incident": Output(units=erg / s / Hz)},
+        point_axes=("blackbody_temperature",),
         log_on_read={"blackbody_temperature": True},
-        spectra={"incident": spec * erg / s / Hz},
         weight="bolometric_luminosities",
     )
 
-    # Include the specific ionising photon luminosity
-    print("Calculating and saving specific ionising luminosity")
-    out_grid.add_specific_ionising_lum()
+
+def generate_point(spec, index):
+    """Return the spectrum at one temperature."""
+    temperature = spec.axes["blackbody_temperature"][
+        index["blackbody_temperature"]
+    ]
+    return {"incident": blackbody_lnu(spec.wavelength, temperature.value)}
+
+
+if __name__ == "__main__":
+    # Set up the command line arguments
+    parser = Parser(description="cloudy blackbody model creation.")
+
+    # parameter file to use
+    parser.add_argument("--config-file", type=str, required=True)
+
+    # get the arguments
+    args = parser.parse_args()
+
+    build_grid(
+        setup(args.config_file),
+        generate_point,
+        args.grid_dir,
+        param_file=args.config_file,
+        cores=args.cores,
+    )
