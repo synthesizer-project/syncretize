@@ -416,12 +416,6 @@ if __name__ == "__main__":
         "alpha_enhancement": False,
     }
 
-    # download BC03 utility
-    download_utility(input_dir)
-
-    # compile BC03 utility
-    compile_utility(input_dir)
-
     variants = ["BaSeL", "Miles", "Stelib"]
 
     # do not bother with the top-heavy IMF it has a different naming scheme
@@ -429,6 +423,11 @@ if __name__ == "__main__":
     imf_types = ["kroupa", "salpeter", "chabrier"]
 
     if args.download:
+        # download and compile the BC03 utility, only needed to convert
+        # the downloaded binary files to ascii
+        download_utility(input_dir)
+        compile_utility(input_dir)
+
         # download all the variant and IMF types desired
         for variant in variants:
             for imf_type in imf_types:
