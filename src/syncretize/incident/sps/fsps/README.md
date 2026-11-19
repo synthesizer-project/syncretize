@@ -31,7 +31,8 @@ with an FSPS `... cannot be opened` error, or gives different isochrones.
 
 The libraries are C preprocessor flags passed through `FFLAGS` when
 python-fsps is built. Set the ones you want to 1 and the defaults you don't
-want to 0:
+want to 0. Build with `--no-cache-dir`, as below, so pip doesn't reuse a
+python-fsps it built earlier with other flags:
 
 | Kind        | Flags (default in **bold** for 4.0) |
 |-------------|--------------------------------------|
@@ -48,11 +49,11 @@ git clone --depth 1 --branch v4.0 https://github.com/cconroy20/fsps.git
 export SPS_HOME=$PWD/fsps
 
 # Default libraries (MIST + C3K_LR)
-pip install --no-binary fsps fsps==0.5.0
+pip install --no-cache-dir --no-binary fsps fsps==0.5.0
 
 # Or other libraries, e.g. MIST + MILES
 FFLAGS="-DMIST=1 -DMILES=1 -DC3K_LR=0" \
-    pip install --force-reinstall --no-deps --no-binary fsps fsps==0.5.0
+    pip install --no-cache-dir --force-reinstall --no-deps --no-binary fsps fsps==0.5.0
 ```
 
 ## Installing FSPS 3.2 (python-fsps 0.4.7)
@@ -76,7 +77,7 @@ NP=$(python -c 'import numpy; print(numpy.__version__)')
 python -m venv venv-fsps-build && source venv-fsps-build/bin/activate
 pip install "scikit-build-core[pyproject]<0.8" pyproject-metadata \
     setuptools_scm cmake ninja "numpy==$NP"
-FFLAGS="-DMIST=1 -DMILES=1 -DC3K_LR=0" pip install --no-deps \
+FFLAGS="-DMIST=1 -DMILES=1 -DC3K_LR=0" pip install --no-cache-dir --no-deps \
     --no-build-isolation --no-binary fsps --target $PWD/fsps-0.4.7 fsps==0.4.7
 deactivate
 

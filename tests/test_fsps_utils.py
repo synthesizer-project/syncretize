@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from syncretize.incident.sps.fsps_utils import (
+    check_fsps_model,
     check_fsps_version,
     expand_fsps_slopes,
     fsps_libraries,
@@ -166,8 +167,27 @@ def test_check_fsps_version():
         check_fsps_version("3.3", "0.5.0")
 
 
-def test_variable_imf_config_needs_libraries(tmp_path):
+@pytest.mark.parametrize(
+    "libraries, message",
+    [
+        (None, "non-empty list"),
+        ([], "non-empty list"),
+        ("mist", "non-empty list"),
+        ("missing", "Model.libraries is required"),
+    ],
+)
+def test_fsps_configs_need_libraries(tmp_path, libraries, message):
+    """Both scripts check the Model section with check_fsps_model."""
+    model = {"sps_version": "4.0", "imf_type": "bpl", "libraries": libraries}
+    if libraries == "missing":
+        del model["libraries"]
+    with pytest.raises(ValueError, match=message):
+        check_fsps_model(model)
+
     raw = _raw_config()
-    del raw["Model"]["libraries"]
-    with pytest.raises(ValueError, match="Model.libraries is required"):
+    raw["Model"] = model
+    with pytest.raises(ValueError, match=message):
         _parse(raw, tmp_path)
+
+    # A prefix of the compiled libraries is still accepted
+    check_fsps_model({"sps_version": "4.0", "libraries": ["mist", "c3k_lr"]})

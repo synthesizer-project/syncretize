@@ -30,6 +30,28 @@ FSPS_VERSIONS = {"3.2": "0.4.7", "4.0": "0.5.0"}
 FSPS_README = "src/syncretize/incident/sps/fsps/README.md"
 
 
+def check_fsps_model(model):
+    """Check a config's Model section gives the FSPS version and libraries.
+
+    Args:
+        model (dict)
+            The Model section of the parameter file.
+    """
+    for key in ("sps_version", "libraries"):
+        if key not in model:
+            raise ValueError(f"Model.{key} is required. See {FSPS_README}.")
+    libraries = model["libraries"]
+    if (
+        not isinstance(libraries, list)
+        or not libraries
+        or not all(isinstance(name, str) and name for name in libraries)
+    ):
+        raise ValueError(
+            "Model.libraries must be a non-empty list of library names, "
+            f"e.g. [mist, c3k_lr], got {libraries!r}. See {FSPS_README}."
+        )
+
+
 def check_fsps_version(sps_version, installed):
     """Check the installed python-fsps provides the FSPS version asked for.
 
@@ -76,9 +98,7 @@ def parse_fsps_imf_config(params):
     model = params.model
     if model.get("imf_type") != "bpl":
         raise ValueError("Only Model.imf_type='bpl' is currently supported")
-    for key in ("sps_version", "libraries"):
-        if key not in model:
-            raise ValueError(f"Model.{key} is required. See {FSPS_README}.")
+    check_fsps_model(model)
 
     fixed = {}
     for key in TARGET_GROUPS:

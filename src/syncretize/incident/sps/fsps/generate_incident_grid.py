@@ -15,7 +15,7 @@ from unyt import Hz, angstrom, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.fsps_utils import (
-    FSPS_README,
+    check_fsps_model,
     check_fsps_version,
     fsps_libraries,
 )
@@ -150,9 +150,7 @@ if __name__ == "__main__":
 
     # The FSPS version and libraries are fixed when FSPS is built, so check
     # the installation matches the config before making anything
-    for key in ("sps_version", "libraries"):
-        if key not in config.model:
-            raise ValueError(f"Model.{key} is required. See {FSPS_README}.")
+    check_fsps_model(config.model)
     check_fsps_version(str(config.model["sps_version"]), fsps.__version__)
 
     # No download for FSPS
