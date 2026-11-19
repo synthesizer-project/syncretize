@@ -1,0 +1,30 @@
+# Template parameter file for src/syncretize/incident/sps/maraston/generate_incident_grid_2011.py
+# (Maraston 2011).
+#
+# Every key is listed with what it does and its allowed values; copy this file
+# and edit it to make a grid.
+#
+#   python src/syncretize/incident/sps/maraston/generate_incident_grid_2011.py \
+#       --config-file parameter_files/incident/sps/maraston/generate_incident_grid_2011_template.yaml \
+#       --grid-dir <grid-dir> --input-dir <input-dir>
+#
+# Every section must be present, but may be left blank. Unknown keys stop
+# the script with an error.
+#
+# The source data must be obtained manually and placed in
+# <input-dir>/maraston11. These models are for solar metallicity only.
+
+# Which model to make
+Model:
+  variant: standard   # Pickles library variant. Options: standard, nearIRextended, UVtheoretical (salpeter only), UVtheoretical_nearIRextended (salpeter only).
+  imf_type: salpeter  # IMF. Options: salpeter, kroupa, chabrier.
+  # grid_name: my-grid  # (Optional) Write <grid-dir>/<grid_name>.hdf5 instead of the name built from the model.
+
+# Fixed parameters
+Constants:  # (None for this model)
+
+# Grid axes
+Axes:  # (None: the ages and metallicities come from the source data)
+
+# Sobol sampling settings
+Sampling:  # (Not used: this script can't Sobol-sample its axes)

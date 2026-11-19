@@ -3,7 +3,8 @@
 Example:
     python generate_incident_grid_variable_imf.py \
         --grid-dir path/to/grid/dir \
-        --config-file fsps/configs/variable_high_mass_slope.yaml
+        --config-file \
+        parameter_files/incident/sps/fsps/variable_high_mass_slope.yaml
 """
 
 import fsps

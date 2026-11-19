@@ -8,9 +8,12 @@ Every grid is described by a YAML parameter file. There are two kinds:
 * **Cloudy parameter files**, which set the photoionisation model used to
   reprocess an incident grid.
 
-Each script ships with example files beside it. Their comments list the
-allowed values of every key, so the usual way to make a new grid is to copy
-the closest example and edit it. This page describes those formats.
+Parameter files live in ``parameter_files/`` at the repository root, which is
+laid out like ``src/syncretize``. For each incident script there is a template
+named after it (e.g. ``incident/sps/fsps/generate_incident_grid_template.yaml``)
+whose inline comments describe every key and its allowed values, so the usual
+way to make a new grid is to copy the template and edit it. This page
+describes the formats.
 
 YAML rules
 ----------
@@ -137,42 +140,42 @@ metallicities) come from the source data.
    :header-rows: 1
    :widths: 24 76
 
-   * - Model (example file)
+   * - Model (template)
      - Keys
-   * - FSPS (``fsps/fsps.yaml``)
+   * - FSPS (``fsps/generate_incident_grid_template.yaml``)
      - ``Model.imf_type``: ``bpl`` or ``chabrier03``.
        ``Constants.imf_masses``: ``[m_low, 0.5, 1.0, m_high]`` for ``bpl``,
        ``[m_low, m_high]`` with ``0 < m_low < m_high`` for ``chabrier03``.
        ``Constants.imf_slopes``: the three ``bpl`` slopes.
        ``Model.libraries`` (optional): the ``[isochrones, spectra, dust]``
        FSPS must have been compiled with.
-   * - FSPS variable IMF (``fsps/configs/*.yaml``)
+   * - FSPS variable IMF (``fsps/generate_incident_grid_variable_imf_template.yaml``)
      - See `FSPS variable IMF`_ below.
-   * - BPASS 2.2.1 (``bpass/bpass-2.2.1.yaml``)
+   * - BPASS 2.2.1 (``bpass/generate_incident_grid_2_2_1_template.yaml``)
      - ``Model.bpass_model``: the BPASS IMF directory, e.g.
        ``bpass_v2.2.1_imf_chab100``. ``Model.variant``: ``bin`` or ``sin``.
-   * - BPASS 2.3 (``bpass/bpass-2.3.yaml``)
+   * - BPASS 2.3 (``bpass/generate_incident_grid_2_3_template.yaml``)
      - ``alpha_enhancement``: in ``Constants`` (-0.2, 0.0, 0.2, 0.4 or 0.6)
        for a grid at that value, or in ``Axes`` with all five values for
        alpha enhancement as an axis.
-   * - BC03 (``bc03/bc03.yaml``)
+   * - BC03 (``bc03/generate_incident_grid_template.yaml``)
      - None (Padova 2000 isochrones with a Chabrier 2003 IMF only).
-   * - BC03 2016 (``bc03/bc03-2016.yaml``)
+   * - BC03 2016 (``bc03/generate_incident_grid_2016_template.yaml``)
      - ``Model.variant``: ``BaSeL``, ``Miles`` or ``Stelib``.
        ``Model.imf_type``: ``kroupa``, ``salpeter`` or ``chabrier``.
-   * - Maraston 2005 (``maraston/maraston05.yaml``)
+   * - Maraston 2005 (``maraston/generate_incident_grid_2005_template.yaml``)
      - None (Salpeter IMF with a red horizontal branch only).
-   * - Maraston 2011 (``maraston/maraston11.yaml``)
+   * - Maraston 2011 (``maraston/generate_incident_grid_2011_template.yaml``)
      - ``Model.variant``: ``standard``, ``nearIRextended``,
        ``UVtheoretical`` or ``UVtheoretical_nearIRextended`` (the last two
        Salpeter only). ``Model.imf_type``: ``salpeter``, ``kroupa`` or
        ``chabrier``.
-   * - Maraston 2013 (``maraston/maraston13.yaml``)
+   * - Maraston 2013 (``maraston/generate_incident_grid_2013_template.yaml``)
      - ``Model.imf_type``: ``salpeter`` or ``kroupa``.
-   * - Maraston 2024 (``maraston/maraston24.yaml``)
+   * - Maraston 2024 (``maraston/generate_incident_grid_2024_template.yaml``)
      - ``Model.imf_type``: ``kroupa`` or ``salpeter``. ``Model.rotation``:
        0.0 or 0.4. ``Model.model_type``: ``Te`` or ``Tenc``.
-   * - Yggdrasil (``yggdrasil/yggdrasil.yaml``)
+   * - Yggdrasil (``yggdrasil/generate_incident_grid_template.yaml``)
      - ``Model.population``: ``PopIII.1``, ``PopIII.2`` or
        ``PopIII_kroupa``. ``Model.covering_fraction``: 0, 0.5 or 1; use 0
        for grids to reprocess with Cloudy.
@@ -219,26 +222,26 @@ grid (``<grid-dir>/<grid_name>.hdf5``). Its parameters are axes, given as
    :header-rows: 1
    :widths: 24 76
 
-   * - Model (example file)
+   * - Model (template)
      - Keys
-   * - Blackbody (``blackbody/blackbody.yaml``)
+   * - Blackbody (``blackbody/generate_incident_grid_template.yaml``)
      - Axis ``log10blackbody_temperature``: log10(T/K).
-   * - Broken power law (``broken_power_law/bpl-feltre16.yaml``)
+   * - Broken power law (``broken_power_law/generate_incident_grid_template.yaml``)
      - ``Constants.edges``: the four wavelengths (Angstrom) bounding three
        power laws. Axes ``alpha1``, ``alpha2`` and ``alpha3``: the slope of
        each. All three are axes, and only ``alpha1`` may currently hold more
        than one value.
-   * - Cloudy AGN (``cloudy_agn/cloudy_agn.yaml``)
+   * - Cloudy AGN (``cloudy_agn/generate_incident_grid_template.yaml``)
      - ``log10blue_bump_temperature``, ``alpha_ox``, and optional
        ``alpha_uv`` (default -0.5) and ``alpha_x`` (default -1.0). Each is an
        axis or, in ``Constants``, a fixed value.
-   * - QSOSED (``qsosed/qsosed.yaml``)
+   * - QSOSED (``qsosed/generate_incident_grid_template.yaml``)
      - Axes ``log10masses`` (Msun) and ``log10accretion_rates_eddington``.
        ``cosine_inclinations``: an axis, or a single value in ``Constants``
        for an isotropic grid.
-   * - RELQSO (``relqso/relqso.yaml``)
+   * - RELQSO (``relqso/generate_incident_grid_template.yaml``)
      - As QSOSED, plus axis ``spins`` in [0, 0.998].
-   * - RELAGN (``relagn/relagn.yaml``)
+   * - RELAGN (``relagn/generate_incident_grid_template.yaml``)
      - As QSOSED, plus exactly one of the axes ``spins`` or
        ``radiative_efficiencies`` (converted to spins).
 

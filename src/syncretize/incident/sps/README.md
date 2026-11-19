@@ -9,7 +9,8 @@ You need a working fortran compiler to convert the binary files into ascii. You 
 
 `fsps/generate_incident_grid_variable_imf.py` reads an IMF definition from YAML and can add
 one IMF parameter as a grid axis. FSPS-specific configurations live in
-`fsps/configs/`; see `variable_high_mass_slope.yaml` for the complete format
+`parameter_files/incident/sps/fsps/` at the repository root; see
+`variable_high_mass_slope.yaml` for the complete format
 and both supported axis-sampling forms. `variable_single_slope.yaml` applies
 one variable power-law slope across the complete IMF mass range.
 
@@ -17,7 +18,7 @@ one variable power-law slope across the complete IMF mass range.
 export SPS_HOME=/path/to/fsps
 python fsps/generate_incident_grid_variable_imf.py \
     --grid-dir path/to/grid/dir \
-    --config-file fsps/configs/variable_high_mass_slope.yaml
+    --config-file ../../../../parameter_files/incident/sps/fsps/variable_high_mass_slope.yaml
 ```
 
 Generated names retain the standard SPS/IMF prefix and append

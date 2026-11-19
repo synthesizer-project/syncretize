@@ -8,8 +8,10 @@ conversions also need ``--input-dir`` even though the shared command-line
 parser marks it as optional.
 
 Every script takes a YAML config file (``--config-file``) describing the one
-grid it makes; each has an example next to it, and :doc:`parameter_files`
-describes the format. The file is stored in the grid's ``ParameterFile``
+grid it makes. ``parameter_files/`` at the repository root, laid out like
+``src/syncretize``, holds a commented template for each script (named after
+it, e.g. ``generate_incident_grid_template.yaml``) and example configs, and
+:doc:`parameter_files` describes the format. The file is stored in the grid's ``ParameterFile``
 group, so every grid records how it was made.
 
 SPS models
@@ -90,7 +92,7 @@ Generate the FSPS grid set in the config file:
 
    python src/syncretize/incident/sps/fsps/generate_incident_grid.py \
        --grid-dir grids \
-       --config-file src/syncretize/incident/sps/fsps/fsps.yaml
+       --config-file parameter_files/incident/sps/fsps/generate_incident_grid_template.yaml
 
 The result depends on the libraries compiled into the local FSPS installation.
 The grid records them in its ``fsps_libraries`` model attribute. To insist on
@@ -106,7 +108,7 @@ grid axis:
    python src/syncretize/incident/sps/fsps/generate_incident_grid_variable_imf.py \
        --grid-dir grids \
        --config-file \
-       src/syncretize/incident/sps/fsps/configs/variable_high_mass_slope.yaml
+       parameter_files/incident/sps/fsps/variable_high_mass_slope.yaml
 
 The provided configurations demonstrate explicit axis values and generated
 ranges. The current FSPS implementation supports one variable IMF parameter at
@@ -123,7 +125,7 @@ BPASS 2.2.1 IMF variant set in the config file with:
    python src/syncretize/incident/sps/bpass/generate_incident_grid_2_2_1.py \
        --input-dir model-data \
        --grid-dir grids \
-       --config-file src/syncretize/incident/sps/bpass/bpass-2.2.1.yaml
+       --config-file parameter_files/incident/sps/bpass/generate_incident_grid_2_2_1_template.yaml
 
 BPASS 2.3 adds alpha enhancement as a third axis in its combined grid. Give
 ``alpha_enhancement`` in the config file's ``Constants`` for a grid at one
@@ -146,7 +148,7 @@ Other file-backed SPS conversions follow this command shape:
    python src/syncretize/incident/sps/<model>/generate_incident_grid*.py \
        --input-dir model-data \
        --grid-dir grids \
-       --config-file src/syncretize/incident/sps/<model>/<model>.yaml
+       --config-file parameter_files/incident/sps/<model>/generate_incident_grid*_template.yaml
 
 Add ``--download`` only for BC03, BC03 2016, or Yggdrasil. Other scripts need
 manually obtained files in the model-specific directory beneath
@@ -205,7 +207,7 @@ Run the self-contained broken-power-law model with:
    python src/syncretize/incident/blackholes/broken_power_law/generate_incident_grid.py \
        --grid-dir grids \
        --config-file \
-       src/syncretize/incident/blackholes/broken_power_law/bpl-feltre16.yaml
+       parameter_files/incident/blackholes/broken_power_law/bpl-feltre16.yaml
 
 The supplied configuration varies only its first slope. The current
 implementation does not correctly support multiple values on the second or

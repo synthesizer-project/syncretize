@@ -1,0 +1,36 @@
+# Template parameter file for src/syncretize/incident/blackholes/cloudy_agn/generate_incident_grid.py
+# (cloudy's AGN continuum).
+#
+# Every key is listed with what it does and its allowed values; copy this file
+# and edit it to make a grid.
+#
+#   python src/syncretize/incident/blackholes/cloudy_agn/generate_incident_grid.py \
+#       --config-file parameter_files/incident/blackholes/cloudy_agn/generate_incident_grid_template.yaml \
+#       --grid-dir <grid-dir>
+#
+# Every section must be present, but may be left blank. Unknown keys stop
+# the script with an error.
+#
+# Each parameter below is either a fixed value in Constants or an axis in
+# Axes, not both.
+
+# Which model to make
+Model:
+  grid_name: cloudy_agn  # Name of the grid; it is written to <grid-dir>/<grid_name>.hdf5.
+
+# Fixed parameters
+Constants:
+  alpha_uv: -0.5  # (Optional) Low energy slope of the big blue bump. Default -0.5.
+  alpha_x: -1.0   # (Optional) Slope of the X-ray power law. Default -1.0.
+
+# Grid axes
+Axes:
+  - name: log10blue_bump_temperature   # log10 of the big blue bump temperature in K.
+    type: values                       # How the axis is sampled. Options: values (an explicit list), linear-range or log-range (give min, max and n instead of values; both limits included).
+    values: [4.0, 4.5, 5.0, 5.5, 6.0]  # The axis values, strictly increasing.
+  - name: alpha_ox                     # Optical to X-ray index between 2500 A and 2 keV (cloudy default -1.4).
+    type: values                       # How the axis is sampled. Options: values (an explicit list), linear-range or log-range (give min, max and n instead of values; both limits included).
+    values: [-2.0, -1.4, -1.0]         # The axis values, strictly increasing.
+
+# Sobol sampling settings
+Sampling:  # (Not used: this script can't Sobol-sample its axes)

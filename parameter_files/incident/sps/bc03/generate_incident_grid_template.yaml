@@ -1,0 +1,28 @@
+# Template parameter file for src/syncretize/incident/sps/bc03/generate_incident_grid.py
+# (BC03, 2003 release).
+#
+# Every key is listed with what it does and its allowed values; copy this file
+# and edit it to make a grid.
+#
+#   python src/syncretize/incident/sps/bc03/generate_incident_grid.py \
+#       --config-file parameter_files/incident/sps/bc03/generate_incident_grid_template.yaml \
+#       --grid-dir <grid-dir> --input-dir <input-dir> [--download]
+#
+# Every section must be present, but may be left blank. Unknown keys stop
+# the script with an error.
+#
+# BC03 2003 has one variant (Padova 2000 isochrones, Chabrier 2003 IMF), so
+# there is nothing to choose.
+
+# Which model to make
+Model:
+  # grid_name: my-grid  # (Optional) Write <grid-dir>/<grid_name>.hdf5 instead of the name built from the model.
+
+# Fixed parameters
+Constants:  # (None for this model)
+
+# Grid axes
+Axes:  # (None: the ages and metallicities come from the source data)
+
+# Sobol sampling settings
+Sampling:  # (Not used: this script can't Sobol-sample its axes)

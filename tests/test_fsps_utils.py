@@ -17,7 +17,7 @@ from syncretize.incident.sps.utils import get_model_filename
 
 CONFIG = (
     Path(__file__).parents[1]
-    / "src/syncretize/incident/sps/fsps/configs"
+    / "parameter_files/incident/sps/fsps"
     / "variable_high_mass_slope.yaml"
 )
 SINGLE_SLOPE_CONFIG = CONFIG.with_name("variable_single_slope.yaml")

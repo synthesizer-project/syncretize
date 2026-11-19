@@ -1,0 +1,30 @@
+# Template parameter file for src/syncretize/incident/sps/bpass/generate_incident_grid_2_2_1.py
+# (BPASS v2.2.1).
+#
+# Every key is listed with what it does and its allowed values; copy this file
+# and edit it to make a grid.
+#
+#   python src/syncretize/incident/sps/bpass/generate_incident_grid_2_2_1.py \
+#       --config-file parameter_files/incident/sps/bpass/generate_incident_grid_2_2_1_template.yaml \
+#       --grid-dir <grid-dir> --input-dir <input-dir>
+#
+# Every section must be present, but may be left blank. Unknown keys stop
+# the script with an error.
+#
+# The source data must be downloaded manually and extracted to
+# <input-dir>/bpass/<bpass_model>.
+
+# Which model to make
+Model:
+  bpass_model: bpass_v2.2.1_imf_chab100  # The BPASS model (IMF). Options: bpass_v2.2.1_imf_chab100 or _chab300 (Chabrier, upper mass 100 or 300 Msun); bpass_v2.2.1_imf100_100, _imf135_100, _imf170_100, _imf100_300, _imf135_300, _imf170_300 (slope 2.00, 2.35 or 2.70 above 1 Msun, upper mass 100 or 300 Msun).
+  variant: bin                           # Options: bin (with binary stars) or sin (single stars only).
+  # grid_name: my-grid  # (Optional) Write <grid-dir>/<grid_name>.hdf5 instead of the name built from the model.
+
+# Fixed parameters
+Constants:  # (None for this model)
+
+# Grid axes
+Axes:  # (None: the ages and metallicities come from the source data)
+
+# Sobol sampling settings
+Sampling:  # (Not used: this script can't Sobol-sample its axes)
