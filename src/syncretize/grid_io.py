@@ -879,8 +879,13 @@ def _write_attrs(grp, params):
         params (dict)
             The parameters to write.
     """
+    # YAML keys can be numbers, HDF5 names can't, so keys are written as
+    # strings; refuse two keys (e.g. 1 and "1") that would share a name
+    names = [str(key) for key in params]
+    clashes = sorted({name for name in names if names.count(name) > 1})
+    if clashes:
+        raise ValueError(f"Parameter names {clashes} are given more than once")
     for key, value in params.items():
-        # YAML keys can be numbers, HDF5 names can't
         key = str(key)
         if value is None:
             value = "None"
