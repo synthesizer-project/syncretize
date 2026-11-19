@@ -194,3 +194,32 @@ def test_grid_readable_by_synthesizer(simple_grid):
     assert read_grid.available_spectra == ["incident"]
     assert read_grid.spectra["incident"].shape == simple_grid["spectra_shape"]
     np.testing.assert_allclose(read_grid.spectra["incident"], 1.0)
+
+
+def test_write_cloudy_metadata_handles_nested_and_odd_values(tmp_path):
+    out_path = tmp_path / "grid.hdf5"
+    grid = GridFile(str(out_path))
+    grid.write_cloudy_metadata(
+        {
+            "grains": None,
+            "abundances": {"scalings": {"nitrogen": 0.5}},
+            0.02: "solar",
+            "imf": [{"name": "lower", "value": 0.1}],
+        }
+    )
+
+    with h5py.File(out_path, "r") as hdf:
+        grp = hdf["CloudyParams"]
+        assert grp.attrs["grains"] == "None"
+        assert grp["abundances/scalings"].attrs["nitrogen"] == 0.5
+        assert grp.attrs["0.02"] == "solar"
+        assert "'value': 0.1" in grp.attrs["imf"]
+
+
+def test_write_cloudy_metadata_rejects_clashing_key_names(tmp_path):
+    grid = GridFile(str(tmp_path / "grid.hdf5"))
+
+    # A single numeric key is fine; 1 and "1" would both be named "1"
+    grid.write_cloudy_metadata({1: "a"})
+    with pytest.raises(ValueError, match="more than once"):
+        grid.write_cloudy_metadata({"nested": {1: "a", "1": "b"}})
