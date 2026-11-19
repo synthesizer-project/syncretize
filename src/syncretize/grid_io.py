@@ -850,28 +850,8 @@ class GridFile:
         # Open the file
         self._open_file()
 
-        # Create the CloudyParams group if it doesn't exist
-        if "CloudyParams" not in self.hdf:
-            self.hdf.create_group("CloudyParams")
-        cloudy_grp = self.hdf["CloudyParams"]
-
-        # Add other parameters as attributes
-        for k, v in params.items():
-            # If v is None then convert to string None for saving in the
-            # HDF5 file.
-            if v is None:
-                v = "None"
-
-            # If the parameter is a dictionary (e.g. as used for abundances)
-            if isinstance(v, dict):
-                # Create group for this key
-                nested_grp = cloudy_grp.create_group(k)
-
-                for k2, v2 in v.items():
-                    nested_grp.attrs[k2] = v2
-
-            else:
-                cloudy_grp.attrs[k] = v
+        # Write the parameters to the CloudyParams group
+        _write_attrs(self.hdf.require_group("CloudyParams"), params)
 
         # Close the file
         self._close_file()
