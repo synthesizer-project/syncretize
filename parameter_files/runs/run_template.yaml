@@ -1,0 +1,58 @@
+# Template run config for the Runner (src/syncretize/runner).
+#
+# A run makes an incident grid, runs Cloudy on it and assembles the final
+# grid, from this one file. Every key is listed with what it does and its
+# default; copy this file and edit it to make a grid.
+#
+#   python -m syncretize.runner run path/to/run.yaml --local
+#
+# Run and Incident are required; leave out Cloudy to make only the incident
+# grid. Unknown keys stop the run with an error. Relative paths are relative
+# to this file's directory.
+#
+# Downloads aren't part of a run (compute nodes may have no internet): run the
+# model's script with --download once beforehand.
+
+# Where things go and how the jobs are sized
+Run:
+  name: blackbody-example        # Name of the run, used to name its jobs. Required.
+  work_dir: /path/to/runs/blackbody-example  # Directory for the run's state, job scripts, logs and Cloudy inputs and outputs. Required.
+  grid_dir: /path/to/grids       # Directory the incident and final grids are written to. Required.
+  input_dir: /path/to/input_data # Directory holding the incident models' source data (e.g. input_data/bc03). Default: none (for models that need none).
+  environment: ""                # Shell lines run at the start of every job, e.g. "source software/env.sh". Default: none.
+
+  slurm:                         # Slurm settings for every job (not used with --local)
+    partition: cosma8-serial     # Partition to submit to. Default: Slurm's default.
+    account: dp004               # Account to charge. Default: Slurm's default.
+
+  incident:                      # The incident job, which makes the whole incident grid
+    cores: 1                     # Processes computing the grid's points. Only models with more than one point (FSPS, the black hole models) use more than one. Default: 1.
+    walltime: "12:00:00"         # Slurm time limit. Default: 12:00:00.
+    memory:                      # Slurm memory, e.g. 8G. Default: Slurm's default.
+
+  cloudy:                        # The Cloudy workers
+    workers: 100                 # Worker jobs per round (one Slurm array; at most 1001 on COSMA). Default: 100.
+    cores_per_worker: 4          # Cloudy runs per worker at once (Cloudy is single-threaded). Default: 4.
+    walltime: "12:00:00"         # Time limit of the first round's workers. Default: 12:00:00.
+    walltime_growth: 1.5         # A model stopped by the time limit is requeued, and the next round's limit is multiplied by this (at least 1). Default: 1.5.
+    max_walltime: "3-00:00:00"   # The longest time limit (the partition's). A model stopped at this limit counts as failed. Default: 3-00:00:00.
+    margin: "00:15:00"           # A worker stops taking models this long before its time limit. Default: 00:15:00.
+    claim: 1                     # Models a worker takes from the queue at a time. Default: 1.
+    max_retries: 2               # Times a failed Cloudy model is rerun before it is recorded as a failure. Default: 2.
+
+  assemble:                      # The job assembling the final grid
+    cores: 1                     # Cores for the job. Default: 1.
+    walltime: "12:00:00"         # Slurm time limit. Default: 12:00:00.
+    memory:                      # Slurm memory, e.g. 32G. Default: Slurm's default.
+
+# The incident grid: either model and config, or grid
+Incident:
+  model: blackholes/blackbody/generate_incident_grid  # The incident model, as its script's path under src/syncretize/incident (e.g. sps/bc03/generate_incident_grid).
+  config: /path/to/syncretize/parameter_files/incident/blackholes/blackbody/generate_incident_grid_template.yaml  # The model's parameter file.
+  # grid: /path/to/grids/blackbody.hdf5  # Instead of model and config: an existing incident grid to run Cloudy on.
+
+# Cloudy (leave this section out to make only the incident grid)
+# Cloudy:
+#   config: c23.01-sps           # A shipped Cloudy config name or a path to one. Required.
+#   executable: /cosma/local/cloudy/c23.01  # The Cloudy directory, holding source/cloudy.exe and data/. Required.
+#   linelist: linelist.dat       # The line list to read lines from. Default: the Cloudy config's.
