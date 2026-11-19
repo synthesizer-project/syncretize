@@ -847,14 +847,19 @@ class GridFile:
             params (dict)
                 A dictionary containing the metadata of the Cloudy run.
         """
+        # Refuse clashing names before touching the file, so a refused call
+        # doesn't even create the CloudyParams group
+        _check_attr_names(params)
+
         # Open the file
         self._open_file()
 
-        # Write the parameters to the CloudyParams group
-        _write_attrs(self.hdf.require_group("CloudyParams"), params)
-
-        # Close the file
-        self._close_file()
+        # Write the parameters to the CloudyParams group, closing the file
+        # even if they can't be written
+        try:
+            _write_attrs(self.hdf.require_group("CloudyParams"), params)
+        finally:
+            self._close_file()
 
     def get_grid_properties(self, verbose=False):
         """Return dimensions, values, and indices for every grid point.
@@ -933,12 +938,10 @@ def _write_attrs(grp, params):
         params (dict)
             The parameters to write.
     """
-    # YAML keys can be numbers, HDF5 names can't, so keys are written as
-    # strings; refuse two keys (e.g. 1 and "1") that would share a name
-    names = [str(key) for key in params]
-    clashes = sorted({name for name in names if names.count(name) > 1})
-    if clashes:
-        raise ValueError(f"Parameter names {clashes} are given more than once")
+    # Check every level before writing anything, so a clash can't leave a
+    # half-written group
+    _check_attr_names(params)
+
     for key, value in params.items():
         key = str(key)
         if value is None:
@@ -950,6 +953,26 @@ def _write_attrs(grp, params):
             grp.attrs[key] = value
         except (TypeError, ValueError):
             grp.attrs[key] = str(value)
+
+
+def _check_attr_names(params):
+    """
+    Refuse two keys, at any nesting level, that would share an HDF5 name.
+
+    YAML keys can be numbers, HDF5 names can't, so keys are written as
+    strings and e.g. 1 and "1" would both be named "1".
+
+    Args:
+        params (dict)
+            The parameters to check.
+    """
+    names = [str(key) for key in params]
+    clashes = sorted({name for name in names if names.count(name) > 1})
+    if clashes:
+        raise ValueError(f"Parameter names {clashes} are given more than once")
+    for value in params.values():
+        if isinstance(value, dict):
+            _check_attr_names(value)
 
 
 def read_params(param_file):
