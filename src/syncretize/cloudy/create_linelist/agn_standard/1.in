@@ -12,3 +12,4 @@ save last abundances "1.abundances"
 save last continuum "1.cont" units Angstroms no clobber
 # print line vacuum
 save last lines, array "1.lines" units Angstroms no clobber
+save line list emergent column absolute last units angstroms "1.emergent_elin" "../full_linelist/linelist-unfiltered.dat"

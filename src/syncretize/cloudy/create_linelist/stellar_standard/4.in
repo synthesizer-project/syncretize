@@ -16,3 +16,4 @@ save overview  "4.ovr" last
 save last abundances "4.abundances"
 save last continuum intrinsic "4.cont" units Angstroms no clobber
 save last lines, array "4.lines" units Angstroms no clobber
+save line list emergent column absolute last units angstroms "4.emergent_elin" "../full_linelist/linelist-unfiltered.dat"

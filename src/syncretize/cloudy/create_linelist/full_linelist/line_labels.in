@@ -1,0 +1,6 @@
+title line labels for full_linelist.py
+table agn
+ionization parameter -2
+hden 3
+stop zone 1
+save line labels "line_labels.labels" last

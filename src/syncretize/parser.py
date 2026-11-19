@@ -23,7 +23,13 @@ class Parser(argparse.ArgumentParser):
             The parser instance.
     """
 
-    def __init__(self, description, with_alpha=False, cloudy_args=False):
+    def __init__(
+        self,
+        description,
+        with_alpha=False,
+        cloudy_args=False,
+        incident_grid_required=True,
+    ):
         """
         Create the parser instance.
 
@@ -32,6 +38,10 @@ class Parser(argparse.ArgumentParser):
                 A description of the program.
             with_alpha (bool):
                 Should the parser accept alpha arguments?
+            cloudy_args (bool):
+                Should the parser accept cloudy arguments?
+            incident_grid_required (bool):
+                Is --incident-grid required (cloudy arguments only)?
         """
         # Create the parser
         super(Parser, self).__init__(description=description)
@@ -58,7 +68,7 @@ class Parser(argparse.ArgumentParser):
         if not cloudy_args:
             self._add_incident_args()
         else:
-            self._add_cloudy_args()
+            self._add_cloudy_args(incident_grid_required)
 
         # Add alpha flag if necessary
         if with_alpha:
@@ -83,7 +93,7 @@ class Parser(argparse.ArgumentParser):
             help="Should the data be downloaded?",
         )
 
-    def _add_cloudy_args(self):
+    def _add_cloudy_args(self, incident_grid_required=True):
         """Add arguments for cloudy grids."""
         # Path to directory where cloudy runs are
         self.add_argument(
@@ -98,7 +108,7 @@ class Parser(argparse.ArgumentParser):
         self.add_argument(
             "--incident-grid",
             type=str,
-            required=True,
+            required=incident_grid_required,
             help="The name of the incident grid (the grid "
             "used to generate the cloudy runs).",
         )
