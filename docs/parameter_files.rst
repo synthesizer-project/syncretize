@@ -77,8 +77,11 @@ must be present but may be left blank to use the script's defaults:
 
 ``Model``
    Choices that select a model variant from a fixed list, e.g. ``imf_type``,
-   plus versions and the grid's name where a script takes one. A value that
-   isn't allowed stops the script with an error naming the allowed values.
+   plus versions. A value that isn't allowed stops the script with an error
+   naming the allowed values. Every script also accepts ``grid_name``: the
+   grid is then written to ``<grid-dir>/<grid_name>.hdf5`` instead of the
+   name the script builds from the model, e.g. to remake a published grid
+   under its published name.
 
 ``Constants``
    Numbers that are fixed for the grid, e.g. IMF masses or a single
@@ -141,6 +144,8 @@ metallicities) come from the source data.
        ``Constants.imf_masses``: ``[m_low, 0.5, 1.0, m_high]`` for ``bpl``,
        ``[m_low, m_high]`` with ``0 < m_low < m_high`` for ``chabrier03``.
        ``Constants.imf_slopes``: the three ``bpl`` slopes.
+       ``Model.libraries`` (optional): the ``[isochrones, spectra, dust]``
+       FSPS must have been compiled with.
    * - FSPS variable IMF (``fsps/configs/*.yaml``)
      - See `FSPS variable IMF`_ below.
    * - BPASS 2.2.1 (``bpass/bpass-2.2.1.yaml``)

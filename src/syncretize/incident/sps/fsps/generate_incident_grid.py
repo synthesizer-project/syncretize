@@ -59,7 +59,7 @@ def generate_grid(model):
 
     # Record the compiled libraries; the isochrones and spectra name the
     # variant
-    libraries = fsps_libraries(sp)
+    libraries = fsps_libraries(sp, config.model.get("libraries"))
     model["fsps_libraries"] = ",".join(libraries)
     model["sps_variant"] = "".join(libraries[:2])
     print(model["sps_variant"])
@@ -140,7 +140,7 @@ if __name__ == "__main__":
     # open the config file and extract parameters
     config = load_params(
         args.config_file,
-        model_keys=["imf_type"],
+        model_keys=["imf_type", "libraries"],
         constant_keys=["imf_masses", "imf_slopes"],
     )
 

@@ -61,7 +61,8 @@ def load_params(
 
     Every section must be present, but may be empty (a blank key). Keys a
     script doesn't list are rejected, so a typo can't silently fall back to a
-    default.
+    default. Every script accepts ``Model.grid_name``, which ``GridFile``
+    uses to name the grid.
 
     Args:
         param_file (str):
@@ -96,7 +97,7 @@ def load_params(
     constants = raw["Constants"] or {}
     entries = raw["Axes"] or []
     sampling = raw["Sampling"] or {}
-    _check_keys(param_file, "Model", model, model_keys)
+    _check_keys(param_file, "Model", model, ["grid_name", *model_keys])
     _check_keys(param_file, "Constants", constants, constant_keys)
     _check_keys(param_file, "Sampling", sampling, SAMPLING_KEYS)
 

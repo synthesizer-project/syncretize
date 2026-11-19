@@ -168,7 +168,9 @@ class GridFile:
             param_file (str, optional)
                 The YAML parameter file used to make the grid. Its parameters
                 and verbatim contents are written to the ``ParameterFile``
-                group so the grid can be reproduced.
+                group so the grid can be reproduced. If its ``Model`` section
+                sets ``grid_name``, the file is named ``<grid_name>.hdf5`` (in
+                the same directory) instead of the name in ``filepath``.
         """
         # The file is read once, here, so the stored copy is the one checked
         self._param_contents = None
@@ -181,6 +183,16 @@ class GridFile:
                     f"{param_file} has a 'contents' mapping, which clashes "
                     "with the ParameterFile/contents dataset."
                 )
+
+            # A config can fix the grid's name, so a published grid is remade
+            # under its published name whatever the script would call it
+            model = params.get("Model")
+            grid_name = (
+                model.get("grid_name") if isinstance(model, dict) else None
+            )
+            if grid_name:
+                filepath = str(Path(filepath).with_name(f"{grid_name}.hdf5"))
+                print(f"Writing {filepath} (grid_name in {param_file})")
 
         # Store the filepath for posterity
         self.filepath = filepath
