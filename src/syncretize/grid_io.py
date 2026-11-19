@@ -793,6 +793,10 @@ class GridFile:
             params (dict)
                 A dictionary containing the metadata of the Cloudy run.
         """
+        # Refuse clashing names before touching the file, so a refused call
+        # doesn't even create the CloudyParams group
+        _check_attr_names(params)
+
         # Open the file
         self._open_file()
 

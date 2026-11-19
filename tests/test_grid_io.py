@@ -231,3 +231,14 @@ def test_write_cloudy_metadata_rejects_clashing_key_names(tmp_path):
     with h5py.File(tmp_path / "grid.hdf5", "r") as hdf:
         assert set(hdf["CloudyParams"].attrs) == {"1"}
         assert "nested" not in hdf["CloudyParams"]
+
+
+def test_write_cloudy_metadata_refused_on_a_fresh_file(tmp_path):
+    grid = GridFile(str(tmp_path / "grid.hdf5"))
+
+    with pytest.raises(ValueError, match="more than once"):
+        grid.write_cloudy_metadata({"nested": {1: "a", "1": "b"}})
+
+    assert grid.hdf is None
+    with h5py.File(tmp_path / "grid.hdf5", "r") as hdf:
+        assert "CloudyParams" not in hdf
