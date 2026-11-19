@@ -209,3 +209,13 @@ def _fill(spec, arrays, results, n_points, verbose):
             arrays[name][location] = blocks[name]
         if verbose and n_points > 1:
             print(f"  point {done}/{n_points}: {index}", flush=True)
+
+
+def table_point(spec, index):
+    """generate_point for models read whole from a table.
+
+    Table models (e.g. BC03, BPASS, Maraston) read every spectrum at once in
+    ``setup``, keep the arrays in ``spec.data["outputs"]`` and have no point
+    axes, so their single point is the whole table.
+    """
+    return spec.data["outputs"]

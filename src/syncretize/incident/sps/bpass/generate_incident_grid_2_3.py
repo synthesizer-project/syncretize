@@ -28,7 +28,12 @@ Example:
 import numpy as np
 from unyt import Hz, angstrom, dimensionless, erg, s, yr
 
-from syncretize.grid_io import GridFile
+from syncretize.incident.builder import (
+    GridSpec,
+    Output,
+    build_grid,
+    table_point,
+)
 from syncretize.incident.sps.utils import get_model_filename
 from syncretize.parser import Parser, get_choice, load_params
 
@@ -90,15 +95,8 @@ def parse_spectra_file(filename):
     return wavelength, spectra
 
 
-def make_single_alpha_grid(
-    original_model_name,
-    input_dir,
-    grid_dir,
-    ae="+00",
-    bs="bin",
-    param_file=None,
-):
-    """make a grid for a single alpha enhancement"""
+def read_single_alpha_grid(original_model_name, input_dir, ae="+00", bs="bin"):
+    """Read a grid for a single alpha enhancement (a single point)."""
 
     # convert bpass alpha code (e.g. '+02' into a numerical alpha e.g. 0.2)
     alpha = float(ae) / 10.0
@@ -112,9 +110,6 @@ def make_single_alpha_grid(
     synthesizer_model_name = get_model_filename(model)
 
     print(synthesizer_model_name)
-
-    # this is the full path to the ultimate HDF5 grid file
-    out_filename = f"{grid_dir}/{synthesizer_model_name}.hdf5"
 
     # input directory of this specific bpass model (hence the trailing "_")
     input_dir_ = f"{input_dir}/{model['original_model_name']}"
@@ -180,45 +175,33 @@ def make_single_alpha_grid(
             spec_ *= wavelengths / nu  # erg s^-1 Hz^-1 Msol^-1
             spectra[ia, imetal, :] = spec_
 
-    # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename, param_file=param_file)
-
-    # A dictionary with Boolean values for each axis, where True
-    # indicates that the attribute should be interpolated in
-    # logarithmic space.
-    log_on_read = {"ages": True, "metallicities": True}
-
-    # Write everything out thats common to all models
-    out_grid.write_grid_common(
+    return GridSpec(
+        grid_name=synthesizer_model_name,
         model=model,
         axes={
             "ages": ages * yr,
             "metallicities": metallicities * dimensionless,
         },
         wavelength=wavelengths * angstrom,
-        spectra={"incident": spectra * erg / s / Hz},
+        outputs={"incident": Output(units=erg / s / Hz)},
         alt_axes=("log10ages", "metallicities"),
-        log_on_read=log_on_read,
+        # A dictionary with Boolean values for each axis, where True
+        # indicates that the attribute should be interpolated in
+        # logarithmic space.
+        log_on_read={"ages": True, "metallicities": True},
         weight="initial_masses",
+        data={"outputs": {"incident": spectra}},
     )
 
-    # Include the specific ionising photon luminosity
-    out_grid.add_specific_ionising_lum()
 
-
-def make_full_grid(
-    original_model_name, input_dir, grid_dir, bs="bin", param_file=None
-):
-    """make a full grid for different alpha-ehancements"""
+def read_full_grid(original_model_name, input_dir, bs="bin"):
+    """Read a full grid for different alpha-ehancements (a single point)."""
 
     # returns a dictionary containing the sps model parameters
     model, bpass_imf = resolve_name(original_model_name, bs)
 
     # generate the synthesizer_model_name
     synthesizer_model_name = get_model_filename(model)
-
-    # this is the full path to the ultimate HDF5 grid file
-    out_filename = f"{grid_dir}/{synthesizer_model_name}.hdf5"
 
     # input directory of this specific bpass model (hence the trailing "_")
     input_dir_ = f"{input_dir}/{model['original_model_name']}"
@@ -303,33 +286,73 @@ def make_full_grid(
 
                 spectra[ia, imetal, iae, :] = spec_  # Lsol AA^-1 10^6 Msol^-1
 
-    # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename, param_file=param_file)
-
-    log_on_read = {
-        "ages": True,
-        "metallicities": False,
-        "alpha_enhancement": False,
-    }
-
-    # Write everything out thats common to all models
-    out_grid.write_grid_common(
+    return GridSpec(
+        grid_name=synthesizer_model_name,
         model=model,
         axes={
             "ages": ages * yr,
             "metallicities": metallicities * dimensionless,
             "alpha_enhancement": alpha_enhancements * dimensionless,
         },
-        descriptions={"alpha_enhancement": r"alpha ehanncement [\alpha/Fe]"},
         wavelength=wavelengths * angstrom,
-        spectra={"incident": spectra * erg / s / Hz},
+        outputs={"incident": Output(units=erg / s / Hz)},
+        descriptions={"alpha_enhancement": r"alpha ehanncement [\alpha/Fe]"},
         alt_axes=("log10ages", "metallicities", "alpha_enhancements"),
-        log_on_read=log_on_read,
+        log_on_read={
+            "ages": True,
+            "metallicities": False,
+            "alpha_enhancement": False,
+        },
         weight="initial_masses",
+        data={"outputs": {"incident": spectra}},
     )
 
-    # Include the specific ionising photon luminosity
-    out_grid.add_specific_ionising_lum()
+
+def setup(config_file, input_dir):
+    """Read the config and the BPASS tables (see syncretize.incident.builder).
+
+    Args:
+        config_file (str)
+            The parameter file.
+        input_dir (str)
+            The directory holding the source data, in bpass/<model>.
+
+    Returns:
+        GridSpec
+            The whole grid, as a single point.
+    """
+    # open the config file and extract parameters
+    config = load_params(
+        config_file,
+        constant_keys=["alpha_enhancement"],
+        axis_names=["alpha_enhancement"],
+    )
+
+    # The BPASS file codes for each alpha enhancement
+    alpha_codes = {-0.2: "-02", 0.0: "+00", 0.2: "+02", 0.4: "+04", 0.6: "+06"}
+
+    # (the only model available; no single star models)
+    model, bs = "bpass_v2.3_imf135_300", "bin"
+    input_dir = f"{input_dir}/bpass"
+
+    # make a full 3D grid if alpha enhancement is an axis
+    if "alpha_enhancement" in config.axes:
+        if list(config.axes["alpha_enhancement"]) != list(alpha_codes):
+            raise ValueError(
+                f"The alpha_enhancement axis must be {list(alpha_codes)}"
+            )
+        return read_full_grid(model, input_dir, bs=bs)
+
+    # otherwise a grid with a single alpha enahancement value
+    alpha = get_choice(config.constants, "alpha_enhancement", alpha_codes)
+    print(alpha_codes[alpha])
+    return read_single_alpha_grid(
+        model, input_dir, ae=alpha_codes[alpha], bs=bs
+    )
+
+
+#: The whole table is read in setup, so the grid is a single point
+generate_point = table_point
 
 
 if __name__ == "__main__":
@@ -342,64 +365,10 @@ if __name__ == "__main__":
     # Unpack the arguments
     args = parser.parse_args()
 
-    # open the config file and extract parameters
-    config = load_params(
-        args.config_file,
-        constant_keys=["alpha_enhancement"],
-        axis_names=["alpha_enhancement"],
+    build_grid(
+        setup(args.config_file, args.input_dir),
+        generate_point,
+        args.grid_dir,
+        param_file=args.config_file,
+        cores=args.cores,
     )
-
-    # The BPASS file codes for each alpha enhancement
-    alpha_codes = {-0.2: "-02", 0.0: "+00", 0.2: "+02", 0.4: "+04", 0.6: "+06"}
-
-    # flags whether to build individual grids or the full grid.
-    full = "alpha_enhancement" in config.axes
-    individual = not full
-    if full and list(config.axes["alpha_enhancement"]) != list(alpha_codes):
-        raise ValueError(
-            f"The alpha_enhancement axis must be {list(alpha_codes)}"
-        )
-
-    # the directory to store downloaded input files
-    input_dir = args.input_dir
-
-    # the directory to store the grid
-    grid_dir = args.grid_dir
-
-    # define sps name used to store the input files
-    sps_name = "bpass"
-
-    # append sps_name to input_dir to define where to store downloaded input
-    # files
-    input_dir += f"/{sps_name}"
-
-    # (the only model available)
-    models = ["bpass_v2.3_imf135_300"]
-
-    for model in models:
-        for bs in ["bin"]:  # no single star models , 'sin'
-            # make a grid with a single alpha enahancement value
-            if individual:
-                alpha = get_choice(
-                    config.constants, "alpha_enhancement", alpha_codes
-                )
-                for ae in [alpha_codes[alpha]]:
-                    print(ae)
-                    out_filename = make_single_alpha_grid(
-                        model,
-                        input_dir,
-                        grid_dir,
-                        ae=ae,
-                        bs=bs,
-                        param_file=args.config_file,
-                    )
-
-            # make a full 3D grid
-            if full:
-                out_filename = make_full_grid(
-                    model,
-                    input_dir,
-                    grid_dir,
-                    bs=bs,
-                    param_file=args.config_file,
-                )

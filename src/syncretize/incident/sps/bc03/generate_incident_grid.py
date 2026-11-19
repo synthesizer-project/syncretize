@@ -19,7 +19,12 @@ import requests
 from tqdm import tqdm
 from unyt import Hz, angstrom, dimensionless, erg, s, yr
 
-from syncretize.grid_io import GridFile
+from syncretize.incident.builder import (
+    GridSpec,
+    Output,
+    build_grid,
+    table_point,
+)
 from syncretize.incident.sps.utils import get_model_filename
 from syncretize.parser import Parser, load_params
 
@@ -213,23 +218,39 @@ def convertBC03(files=None):
     )
 
 
-def make_grid(input_dir, grid_dir, synthesizer_model_name, param_file=None):
-    """Main function to convert BC03 grids and
-    produce grids used by synthesizer.
+def setup(config_file, input_dir):
+    """Read the config and the BC03 tables (see syncretize.incident.builder).
 
-    Arguments:
+    Args:
+        config_file (str)
+            The parameter file.
         input_dir (str)
-            The directory where input files are downloaded.
-        grid_dir (str)
-            The directory where the grid is created.
-        synthesizer_model_name (str)
-            The name of the model used as the filename.
-        param_file (str)
-            The parameter file to store in the grid.
-    """
+            The directory holding the source data, in a bc03 subdirectory.
 
-    # output filename
-    out_filename = f"{grid_dir}/{synthesizer_model_name}.hdf5"
+    Returns:
+        GridSpec
+            The whole grid, as a single point.
+    """
+    # open the config file (BC03 2003 has nothing to choose)
+    load_params(config_file)
+
+    model = {
+        "sps_name": "bc03",
+        "sps_version": "2003",
+        "sps_variant": "padova00",
+        "imf_type": "chabrier03",  # named IMF or bpl (broken power law)
+        "imf_masses": [0.1, 100],
+        "imf_slopes": False,
+        "alpha_enhancement": False,
+    }
+
+    # Create synthesizer style model name
+    synthesizer_model_name = get_model_filename(model)
+    print(synthesizer_model_name)
+
+    # The downloaded data are in <input_dir>/bc03, which holds the bc03
+    # release directory
+    input_dir = f"{input_dir}/bc03"
 
     # Define base path
     basepath = f"{input_dir}/bc03/models/Padova2000/chabrier/"
@@ -261,31 +282,27 @@ def make_grid(input_dir, grid_dir, synthesizer_model_name, param_file=None):
     spec *= 3.826e33  # erg s^-1 AA^-1 Msol^-1
     spec *= lam / nu  # erg s^-1 Hz^-1 Msol^-1
 
-    # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename, param_file=param_file)
-
-    # A dictionary with Boolean values for each axis, where True
-    # indicates that the attribute should be interpolated in
-    # logarithmic space.
-    log_on_read = {"ages": True, "metallicities": False}
-
-    # Write everything out thats common to all models
-    out_grid.write_grid_common(
+    return GridSpec(
+        grid_name=synthesizer_model_name,
         model=model,
         axes={
             "ages": ages * yr,
             "metallicities": metallicities * dimensionless,
         },
         wavelength=lam * angstrom,
-        spectra={"incident": spec * erg / s / Hz},
+        outputs={"incident": Output(units=erg / s / Hz)},
         alt_axes=("ages", "metallicities"),
-        log_on_read=log_on_read,
+        # A dictionary with Boolean values for each axis, where True
+        # indicates that the attribute should be interpolated in
+        # logarithmic space.
+        log_on_read={"ages": True, "metallicities": False},
         weight="initial_masses",
+        data={"outputs": {"incident": spec}},
     )
 
-    # Include the specific ionising photon luminosity
-    print("Calculating and saving specific ionising luminosity")
-    out_grid.add_specific_ionising_lum()
+
+#: The whole table is read in setup, so the grid is a single point
+generate_point = table_point
 
 
 if __name__ == "__main__":
@@ -298,20 +315,8 @@ if __name__ == "__main__":
     # Unpack the arguments
     args = parser.parse_args()
 
-    # open the config file (BC03 2003 has nothing to choose)
-    load_params(args.config_file)
-
     # the directory to store downloaded input files
-    input_dir = args.input_dir
-
-    # the directory to store the grid
-    grid_dir = args.grid_dir
-
-    sps_name = "bc03"
-
-    # append sps_name to input_dir to define where to store downloaded input
-    # files
-    input_dir += f"/{sps_name}"
+    input_dir = f"{args.input_dir}/bc03"
 
     # create directory to store downloaded output if it doesn't exist
     if not os.path.exists(input_dir):
@@ -321,24 +326,11 @@ if __name__ == "__main__":
     if args.download:
         download_data(input_dir)
 
-    model = {
-        "sps_name": sps_name,
-        "sps_version": "2003",
-        "sps_variant": "padova00",
-        "imf_type": "chabrier03",  # named IMF or bpl (broken power law)
-        "imf_masses": [0.1, 100],
-        "imf_slopes": False,
-        "alpha_enhancement": False,
-    }
-
-    # Create synthesizer style model name
-    synthesizer_model_name = get_model_filename(model)
-    print(synthesizer_model_name)
-
     # Get and write the grid
-    out_filename = make_grid(
-        input_dir,
-        grid_dir,
-        synthesizer_model_name,
+    build_grid(
+        setup(args.config_file, args.input_dir),
+        generate_point,
+        args.grid_dir,
         param_file=args.config_file,
+        cores=args.cores,
     )

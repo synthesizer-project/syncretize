@@ -38,7 +38,12 @@ from spectres import spectres
 from tqdm import tqdm
 from unyt import Hz, angstrom, c, dimensionless, erg, s, yr
 
-from syncretize.grid_io import GridFile
+from syncretize.incident.builder import (
+    GridSpec,
+    Output,
+    build_grid,
+    table_point,
+)
 from syncretize.incident.sps.utils import get_model_filename
 from syncretize.parser import Parser, get_choice, load_params
 
@@ -166,11 +171,8 @@ def convertPOPIII(fileloc):
     )
 
 
-def make_grid(
-    input_dir, grid_dir, ver, fcov, model, grid_lam, param_file=None
-):
-    """Main function to convert POPIII grids and
-    produce grids used by synthesizer"""
+def read_grid(input_dir, ver, fcov, model, grid_lam):
+    """Read one POPIII model into a GridSpec (a single point)."""
 
     # Generate model filename
     synthesizer_model_name = get_model_filename(model)
@@ -199,55 +201,108 @@ def make_grid(
 
     spec *= (lam**2) / light_speed  # now in erg s^-1 Hz^-1 Msol^-1
 
-    # Create the grid file
-    out_grid = GridFile(
-        f"{grid_dir}/{synthesizer_model_name}.hdf5", param_file=param_file
-    )
-
-    # A dictionary with Boolean values for each axis, where True
-    # indicates that the attribute should be interpolated in
-    # logarithmic space.
-    log_on_read = {"ages": True, "metallicities": False}
-
     if fcov != "0":
         # Add a suffix to non common nebular model
         add = "" if fcov == "1" else f"_fcov_{fcov}"
-
-        out_grid.write_grid_common(
-            model=model,
-            axes={
-                "ages": ages * yr,
-                "metallicities": metallicities * dimensionless,
-            },
-            wavelength=lam * angstrom,
-            spectra={f"nebular{add}": spec * erg / s / Hz},
-            alt_axes=("log10ages", "metallicities"),
-            log_on_read=log_on_read,
-            weight="initial_masses",
-        )
-
-    if fcov == "0":
+        name = f"nebular{add}"
+        wavelength = lam * angstrom
+    else:
         # incident spectra
         interp_spec = np.zeros((len(ages), len(metallicities), len(grid_lam)))
         for ii, _spec in enumerate(spec):
             interp_spec[ii] = spectres(grid_lam, lam, _spec)
         interp_spec[np.isnan(interp_spec)] = 0.0
+        name, spec, wavelength = "incident", interp_spec, grid_lam
 
-        out_grid.write_grid_common(
-            model=model,
-            axes={
-                "ages": ages * yr,
-                "metallicities": metallicities * dimensionless,
-            },
-            wavelength=grid_lam,
-            spectra={"incident": interp_spec * erg / s / Hz},
-            alt_axes=("log10ages", "metallicities"),
-            log_on_read=log_on_read,
-            weight="initial_masses",
-        )
+    return GridSpec(
+        grid_name=synthesizer_model_name,
+        model=model,
+        axes={
+            "ages": ages * yr,
+            "metallicities": metallicities * dimensionless,
+        },
+        wavelength=wavelength,
+        outputs={name: Output(units=erg / s / Hz)},
+        alt_axes=("log10ages", "metallicities"),
+        # A dictionary with Boolean values for each axis, where True
+        # indicates that the attribute should be interpolated in
+        # logarithmic space.
+        log_on_read={"ages": True, "metallicities": False},
+        weight="initial_masses",
+        # Include the specific ionising photon luminosity of the incident
+        # spectra
+        ionising_luminosity=fcov == "0",
+        data={"outputs": {name: spec}},
+    )
 
-        # Include the specific ionising photon luminosity
-        out_grid.add_specific_ionising_lum()
+
+def choices(config_file):
+    """The population version and covering fraction in the config."""
+    config = load_params(
+        config_file, model_keys=["population", "covering_fraction"]
+    )
+    populations = {
+        "PopIII.1": ".1",
+        "PopIII.2": ".2",
+        "PopIII_kroupa": "_kroupa_IMF",
+    }
+    ver = populations[get_choice(config.model, "population", populations)]
+    fcov_codes = {0: "0", 0.5: "0.5", 1: "1"}
+    fcov = fcov_codes[
+        get_choice(config.model, "covering_fraction", fcov_codes)
+    ]
+    return ver, fcov
+
+
+def setup(config_file, input_dir):
+    """Read the config and the Yggdrasil tables.
+
+    See syncretize.incident.builder.
+
+    Args:
+        config_file (str)
+            The parameter file.
+        input_dir (str)
+            The directory holding the source data, in yggdrasil.
+
+    Returns:
+        GridSpec
+            The whole grid, as a single point.
+    """
+    ver, fcov = choices(config_file)
+    input_dir = f"{input_dir}/yggdrasil"
+
+    # Different forms of the IMFs
+    imf_type = {".1": "salpeter", ".2": "lognormal", "_kroupa_IMF": "kroupa"}
+    imf_masses = {
+        ".1": [50, 500],
+        ".2": [10, 1, 500],
+        "_kroupa_IMF": [0.1, 100],
+    }
+
+    model = {
+        "sps_name": "yggdrasil",
+        "sps_variant": "PopIII",
+        "sps_version": "1.3.3",
+        "imf_masses": imf_masses[ver],
+        "imf_type": imf_type[ver],
+        "alpha_enhancement": False,
+    }
+    # Update name to include the covering fraction
+    # if run has nebular data
+    if fcov != "0":
+        model.update({"sps_variant": f"POPIII-fcov_{fcov}"})
+
+    # Standardising the wavelength to the nebular grid: the pure stellar
+    # (incident) is resampled onto the fcov = 1 wavelengths, which can be
+    # done with minimal errors, as it is featureless
+    lam = convertPOPIII(f"{input_dir}/PopIII{ver}_fcov_1_SFR_inst_Spectra")[3]
+
+    return read_grid(input_dir, ver, fcov, model, lam * angstrom)
+
+
+#: The whole table is read in setup, so the grid is a single point
+generate_point = table_point
 
 
 if __name__ == "__main__":
@@ -259,92 +314,18 @@ if __name__ == "__main__":
 
     # Unpack the arguments
     args = parser.parse_args()
-    grid_dir = args.grid_dir
-    input_dir = args.input_dir
 
-    # open the config file and extract parameters
-    config = load_params(
-        args.config_file, model_keys=["population", "covering_fraction"]
+    # Download the data if necessary. The fcov = 1 data are always needed,
+    # since their wavelengths are used for every grid.
+    if args.download:
+        ver, chosen_fcov = choices(args.config_file)
+        for fcov in {"1", chosen_fcov}:
+            download_data(f"{args.input_dir}/yggdrasil", ver, fcov)
+
+    build_grid(
+        setup(args.config_file, args.input_dir),
+        generate_point,
+        args.grid_dir,
+        param_file=args.config_file,
+        cores=args.cores,
     )
-
-    sps_name = "yggdrasil"
-
-    # append sps_name to input_dir to define where to store downloaded input
-    # files
-    input_dir += f"/{sps_name}"
-
-    # Different forms of the IMFs
-    vers = np.array([".1", ".2", "_kroupa_IMF"])
-    imf_type = {
-        vers[0]: "salpeter",
-        vers[1]: "lognormal",
-        vers[2]: "kroupa",
-    }
-    imf_masses = {
-        vers[0]: [50, 500],
-        vers[1]: [10, 1, 500],
-        vers[2]: [0.1, 100],
-    }
-
-    # Different gas covering fractions for nebular emission model
-    # We run the nebular emission first since that has the highest
-    # resolution in wavelengths.
-    # The pure stellar (incident) is resampled and can be done with
-    # minimal errors, as it is featureless
-    fcovs = np.array(["1", "0.5", "0"])
-
-    # Only make the grid chosen in the config file. The fcov = 1 data are
-    # always read, since their wavelengths are used for every grid.
-    populations = {
-        "PopIII.1": ".1",
-        "PopIII.2": ".2",
-        "PopIII_kroupa": "_kroupa_IMF",
-    }
-    vers = [populations[get_choice(config.model, "population", populations)]]
-    fcov_codes = {0: "0", 0.5: "0.5", 1: "1"}
-    chosen_fcov = fcov_codes[
-        get_choice(config.model, "covering_fraction", fcov_codes)
-    ]
-    fcovs = [fcov for fcov in fcovs if fcov in ("1", chosen_fcov)]
-
-    grid_lam = None
-
-    for ii, ver in enumerate(vers):
-        for fcov in fcovs:
-            model = {
-                "sps_name": sps_name,
-                "sps_variant": "PopIII",
-                "sps_version": "1.3.3",
-                "imf_masses": imf_masses[ver],
-                "imf_type": imf_type[ver],
-                "alpha_enhancement": False,
-            }
-            # Update name to include the covering fraction
-            # if run has nebular data
-            if fcov != "0":
-                model.update({"sps_variant": f"POPIII-fcov_{fcov}"})
-
-            # Download the data if necessary
-            if args.download:
-                download_data(input_dir, ver, fcov)
-
-            # Store the grid_lam wavelength from fcov = "1"
-            # Standardising the wavelength to the nebular grid
-            if fcov == "1":
-                lam = convertPOPIII(
-                    f"{input_dir}/PopIII{ver}_fcov_{fcov}_SFR_inst_Spectra"
-                )[3]
-                grid_lam = lam * angstrom
-
-            if fcov != chosen_fcov:
-                continue
-
-            make_grid(
-                input_dir,
-                grid_dir,
-                ver,
-                fcov,
-                model,
-                grid_lam,
-                param_file=args.config_file,
-            )

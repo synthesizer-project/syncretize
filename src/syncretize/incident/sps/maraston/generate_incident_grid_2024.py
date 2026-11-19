@@ -9,16 +9,18 @@ import numpy as np
 from synthesizer.conversions import llam_to_lnu
 from unyt import Angstrom, Hz, dimensionless, erg, s, yr
 
-from syncretize.grid_io import GridFile
+from syncretize.incident.builder import (
+    GridSpec,
+    Output,
+    build_grid,
+    table_point,
+)
 from syncretize.incident.sps.utils import get_model_filename
 from syncretize.parser import Parser, get_choice, load_params
 
 
-def make_grid(
-    model, rotation, model_type, imf, input_dir, grid_dir, param_file=None
-):
-    """Main function to convert Maraston 2024 and
-    produce grids used by synthesizer
+def read_grid(model, rotation, model_type, imf, input_dir):
+    """Read the Maraston 2024 tables into a GridSpec (a single point).
     Args:
         model (dict):
             dictionary containing model parameters.
@@ -32,11 +34,8 @@ def make_grid(
             either "kr" for a Kroupa IMF or "ss" for Salpeter.
         input_dir (string):
             directory where the raw Maraston+24 files are read from.
-        grid_dir (string):
-            directory where the grids are created.
     Returns:
-        fname (string):
-            output filename
+        GridSpec
     """
 
     synthesizer_model_name = get_model_filename(model)
@@ -77,13 +76,6 @@ def make_grid(
 
     spec = np.zeros((len(ages), len(metallicities), len(lam)))
 
-    # Create the GridFile ready to take outputs
-    out_grid = GridFile(
-        f"{grid_dir}/{synthesizer_model_name}.hdf5", param_file=param_file
-    )
-
-    log_on_read = {"ages": True, "metallicities": False}
-
     # At each point in spec convert the units
     for imetal, metallicity in enumerate(metallicities):
         for ia, age_Gyr in enumerate(ages_Gyr):
@@ -98,22 +90,75 @@ def make_grid(
             lnu = llam_to_lnu(lam, llam)
             spec[ia, imetal] = lnu
 
-    # Write everything out thats common to all models
-    out_grid.write_grid_common(
+    return GridSpec(
+        grid_name=synthesizer_model_name,
         model=model,
         axes={
             "ages": ages * yr,
             "metallicities": metallicities * dimensionless,
         },
         wavelength=lam,
-        spectra={"incident": spec * erg / s / Hz},  # check this unit
+        outputs={"incident": Output(units=erg / s / Hz)},
         alt_axes=("log10ages", "metallicities"),
-        log_on_read=log_on_read,
+        # A dictionary with Boolean values for each axis, where True
+        # indicates that the attribute should be interpolated in
+        # logarithmic space.
+        log_on_read={"ages": True, "metallicities": False},
         weight="initial_masses",
+        data={"outputs": {"incident": spec}},
     )
 
-    # Include the specific ionising photon luminosity
-    out_grid.add_specific_ionising_lum()
+
+def setup(config_file, input_dir):
+    """Read the config and the Maraston 2024 tables.
+
+    See syncretize.incident.builder.
+
+    Args:
+        config_file (str)
+            The parameter file.
+        input_dir (str)
+            The directory holding the source data, in maraston24.
+
+    Returns:
+        GridSpec
+            The whole grid, as a single point.
+    """
+    # open the config file and extract parameters
+    config = load_params(
+        config_file, model_keys=["imf_type", "rotation", "model_type"]
+    )
+
+    # The model chosen in the config file
+    rotation_codes = {0.0: "00", 0.4: "40"}
+    rotation = rotation_codes[
+        get_choice(config.model, "rotation", rotation_codes)
+    ]
+    model_type = get_choice(config.model, "model_type", ["Te", "Tenc"])
+    imf_codes = {"kroupa": "kr", "salpeter": "ss"}
+    imf_type = get_choice(config.model, "imf_type", imf_codes)
+
+    # Define the model metadata
+    model = {
+        "sps_name": "maraston24",
+        "sps_version": False,
+        "sps_variant": f"{model_type}{rotation}",
+        "imf_type": imf_type,
+        "imf_masses": [0.1, 100],
+        "imf_slopes": False,
+        "alpha_enhancement": False,
+    }
+    return read_grid(
+        model,
+        rotation,
+        model_type,
+        imf_codes[imf_type],
+        f"{input_dir}/maraston24",
+    )
+
+
+#: The whole table is read in setup, so the grid is a single point
+generate_point = table_point
 
 
 if __name__ == "__main__":
@@ -125,67 +170,20 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # open the config file and extract parameters
-    config = load_params(
-        args.config_file,
-        model_keys=["imf_type", "rotation", "model_type"],
-    )
-
-    grid_dir = args.grid_dir
-
-    # Define the model metadata
-    sps_name = "maraston24"
-    rotations = ["00", "40"]
-
-    model_types = ["Te", "Tenc"]
-    imfs = ["kr", "ss"]
-
-    # Only make the grid chosen in the config file
-    rotation_codes = {0.0: "00", 0.4: "40"}
-    rotations = [
-        rotation_codes[get_choice(config.model, "rotation", rotation_codes)]
-    ]
-    model_types = [get_choice(config.model, "model_type", model_types)]
-    imf_codes = {"kroupa": "kr", "salpeter": "ss"}
-    imfs = [imf_codes[get_choice(config.model, "imf_type", imf_codes)]]
-
-    input_dir = f"{args.input_dir}/{sps_name}"
-
     # NOTE: there is no public download URL for this model
     # (checked 2026-07-29). The input data must be obtained by other
     # means (e.g. from the authors) and placed in input_dir before
     # running.
 
     # Create directory to store downloaded output if it doesn't exist
+    input_dir = f"{args.input_dir}/maraston24"
     if not os.path.exists(input_dir):
         os.mkdir(input_dir)
 
-    for imf in imfs:
-        for model_type in model_types:
-            for rotation in rotations:
-                if imf == "kr":
-                    imf_type = "kroupa"
-                if imf == "ss":
-                    imf_type = "salpeter"
-
-                variant_name = f"{model_type}{rotation}"
-
-                model = {
-                    "sps_name": sps_name,
-                    "sps_version": False,
-                    "sps_variant": variant_name,
-                    "imf_type": imf_type,
-                    "imf_masses": [0.1, 100],
-                    "imf_slopes": False,
-                    "alpha_enhancement": False,
-                }
-
-                make_grid(
-                    model,
-                    rotation,
-                    model_type,
-                    imf,
-                    input_dir,
-                    grid_dir,
-                    param_file=args.config_file,
-                )
+    build_grid(
+        setup(args.config_file, args.input_dir),
+        generate_point,
+        args.grid_dir,
+        param_file=args.config_file,
+        cores=args.cores,
+    )

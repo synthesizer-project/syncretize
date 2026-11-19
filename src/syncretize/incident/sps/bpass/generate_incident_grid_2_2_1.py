@@ -24,7 +24,12 @@ import tarfile
 import numpy as np
 from unyt import Hz, angstrom, dimensionless, erg, s, yr
 
-from syncretize.grid_io import GridFile
+from syncretize.incident.builder import (
+    GridSpec,
+    Output,
+    build_grid,
+    table_point,
+)
 from syncretize.incident.sps.utils import get_model_filename
 from syncretize.parser import Parser, get_choice, load_params
 
@@ -91,15 +96,13 @@ def untar_data(model, filename, input_dir):
     os.remove(filename)
 
 
-def make_grid(original_model_name, bin, input_dir, grid_dir, param_file=None):
+def read_grid(original_model_name, bin, input_dir):
+    """Read one BPASS model's tables into a GridSpec (a single point)."""
     # returns a dictionary containing the sps model parameters
     model, bpass_imf = resolve_name(original_model_name, bin)
 
     # generate the synthesizer_model_name
     synthesizer_model_name = get_model_filename(model)
-
-    # this is the full path to the ultimate HDF5 grid file
-    out_filename = f"{grid_dir}/{synthesizer_model_name}.hdf5"
 
     # input directory of this specific bpass model (hence the trailing "_")
     input_dir_ = f"{input_dir}/{model['original_model_name']}"
@@ -170,44 +173,81 @@ def make_grid(original_model_name, bin, input_dir, grid_dir, param_file=None):
     # convert log10ages to ages
     ages = 10**log10ages
 
-    # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename, param_file=param_file)
-
-    # A dictionary with Boolean values for each axis, where True
-    # indicates that the attribute should be interpolated in
-    # logarithmic space.
-    log_on_read = {"ages": True, "metallicities": True}
-
-    # Write everything out thats common to all models
-    out_grid.write_grid_common(
+    return GridSpec(
+        grid_name=synthesizer_model_name,
         model=model,
         axes={
             "ages": ages * yr,
             "metallicities": metallicities * dimensionless,
         },
         wavelength=wavelengths * angstrom,
-        spectra={"incident": spectra * erg / s / Hz},
+        outputs={
+            "incident": Output(units=erg / s / Hz),
+            "star_fraction": Output(
+                spectra=False,
+                description="Two-dimensional remaining stellar fraction "
+                "grid, [age, Z]",
+            ),
+            "remnant_fraction": Output(
+                spectra=False,
+                description="Two-dimensional remaining remnant fraction "
+                "grid, [age, Z]",
+            ),
+        },
         alt_axes=("log10ages", "metallicities"),
-        log_on_read=log_on_read,
+        # A dictionary with Boolean values for each axis, where True
+        # indicates that the attribute should be interpolated in
+        # logarithmic space.
+        log_on_read={"ages": True, "metallicities": True},
         weight="initial_masses",
+        data={
+            "outputs": {
+                "incident": spectra,
+                "star_fraction": stellar_fraction,
+                "remnant_fraction": remnant_fraction,
+            }
+        },
     )
 
-    # Write datasets specific to BPASS
-    out_grid.write_dataset(
-        "star_fraction",
-        stellar_fraction * dimensionless,
-        "Two-dimensional remaining stellar fraction grid, [age, Z]",
-        log_on_read=False,
-    )
-    out_grid.write_dataset(
-        "remnant_fraction",
-        remnant_fraction * dimensionless,
-        "Two-dimensional remaining remnant fraction grid, [age, Z]",
-        log_on_read=False,
-    )
 
-    # Include the specific ionising photon luminosity
-    out_grid.add_specific_ionising_lum()
+def setup(config_file, input_dir):
+    """Read the config and the BPASS tables (see syncretize.incident.builder).
+
+    Args:
+        config_file (str)
+            The parameter file.
+        input_dir (str)
+            The directory holding the source data, in bpass/<bpass_model>.
+
+    Returns:
+        GridSpec
+            The whole grid, as a single point.
+    """
+    # open the config file and extract parameters
+    config = load_params(config_file, model_keys=["bpass_model", "variant"])
+
+    # get the model chosen in the config file
+    model = get_choice(
+        config.model,
+        "bpass_model",
+        [
+            "bpass_v2.2.1_imf_chab100",
+            "bpass_v2.2.1_imf_chab300",
+            "bpass_v2.2.1_imf100_300",
+            "bpass_v2.2.1_imf135_300",
+            "bpass_v2.2.1_imf170_300",
+            "bpass_v2.2.1_imf100_100",
+            "bpass_v2.2.1_imf135_100",
+            "bpass_v2.2.1_imf170_100",
+        ],
+    )
+    bin = get_choice(config.model, "variant", ["bin", "sin"])
+    print(model, bin)
+    return read_grid(model, bin, f"{input_dir}/bpass")
+
+
+#: The whole table is read in setup, so the grid is a single point
+generate_point = table_point
 
 
 if __name__ == "__main__":
@@ -220,48 +260,10 @@ if __name__ == "__main__":
     # Unpack the arguments
     args = parser.parse_args()
 
-    # open the config file and extract parameters
-    config = load_params(
-        args.config_file,
-        model_keys=["bpass_model", "variant"],
+    build_grid(
+        setup(args.config_file, args.input_dir),
+        generate_point,
+        args.grid_dir,
+        param_file=args.config_file,
+        cores=args.cores,
     )
-
-    # the directory to store downloaded input files
-    input_dir = args.input_dir
-
-    # the directory to store the grid
-    grid_dir = args.grid_dir
-
-    # define base sps model
-    sps_name = "bpass"
-
-    # append sps_name to input_dir to define where to store downloaded input
-    # files
-    input_dir += f"/{sps_name}"
-
-    # get the model chosen in the config file
-    models = [
-        get_choice(
-            config.model,
-            "bpass_model",
-            [
-                "bpass_v2.2.1_imf_chab100",
-                "bpass_v2.2.1_imf_chab300",
-                "bpass_v2.2.1_imf100_300",
-                "bpass_v2.2.1_imf135_300",
-                "bpass_v2.2.1_imf170_300",
-                "bpass_v2.2.1_imf100_100",
-                "bpass_v2.2.1_imf135_100",
-                "bpass_v2.2.1_imf170_100",
-            ],
-        )
-    ]
-
-    # loop over all models
-    for model in models:
-        print("-" * 50)
-        print(model)
-        for bin in [get_choice(config.model, "variant", ["bin", "sin"])]:
-            make_grid(
-                model, bin, input_dir, grid_dir, param_file=args.config_file
-            )
