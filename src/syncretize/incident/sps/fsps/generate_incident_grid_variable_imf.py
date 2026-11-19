@@ -4,14 +4,17 @@ Example:
     python generate_incident_grid_variable_imf.py \
         --grid-dir path/to/grid/dir \
         --config-file \
-        parameter_files/incident/sps/fsps/variable_high_mass_slope.yaml
+        parameter_files/incident/sps/fsps/variable_high_mass_slope.yaml \
+        [--cores 4]
 """
 
 import fsps
-import numpy as np
 from unyt import Hz, Msun, angstrom, dimensionless, erg, s, yr
 
-from syncretize.grid_io import GridFile
+from syncretize.incident.builder import GridSpec, Output, build_grid
+from syncretize.incident.sps.fsps.generate_incident_grid import (
+    stellar_population,
+)
 from syncretize.incident.sps.fsps_utils import (
     check_fsps_version,
     expand_fsps_slopes,
@@ -44,8 +47,22 @@ def _set_imf_parameters(sp, boundaries, slopes):
         sp.params[f"imf{index}"] = slope
 
 
-def generate_grid(config, grid_dir, config_file):
-    """Generate an FSPS grid from a validated IMF configuration."""
+def setup(config_file, input_dir=None):
+    """Read the config and describe the grid (see syncretize.incident.builder).
+
+    Args:
+        config_file (str)
+            The IMF parameter file.
+        input_dir (str)
+            Unused; FSPS has no source data to read.
+
+    Returns:
+        GridSpec
+            The grid, with one point per (IMF axis value, metallicity), or
+            per metallicity without an IMF axis.
+    """
+    config = load_fsps_imf_config(config_file)
+
     # The FSPS version is fixed when FSPS is built, so check the installation
     # matches the config before making anything
     check_fsps_version(config["sps_version"], fsps.__version__)
@@ -53,14 +70,15 @@ def generate_grid(config, grid_dir, config_file):
     fixed_boundaries = config["boundaries"]
     fixed_slopes = config["slopes"]
     fsps_slopes = expand_fsps_slopes(fixed_slopes)
-    sp = fsps.StellarPopulation(
-        imf_type=2,
-        imf_lower_limit=fixed_boundaries[0],
-        imf_upper_limit=fixed_boundaries[-1],
-        imf1=fsps_slopes[0],
-        imf2=fsps_slopes[1],
-        imf3=fsps_slopes[2],
-    )
+    sp_args = {
+        "imf_type": 2,
+        "imf_lower_limit": float(fixed_boundaries[0]),
+        "imf_upper_limit": float(fixed_boundaries[-1]),
+        "imf1": float(fsps_slopes[0]),
+        "imf2": float(fsps_slopes[1]),
+        "imf3": float(fsps_slopes[2]),
+    }
+    sp = stellar_population(sp_args)
 
     libraries = fsps_libraries(sp, config["libraries"])
     variant = "".join(libraries[:2])
@@ -81,77 +99,61 @@ def generate_grid(config, grid_dir, config_file):
         model["variable_imf_parameter"] = axis["name"]
         model["variable_imf_axis"] = axis["axis_name"]
 
-    model_name = get_model_filename(
-        model, axis_name=None if axis is None else axis["axis_name"]
-    )
-    out_filename = f"{grid_dir}/{model_name}.hdf5"
-
-    lam = sp.wavelengths
-    log10ages = sp.log_age
-    ages = 10**log10ages
-    metallicities = sp.zlegend
-
-    axis_values = np.array([0.0]) if axis is None else axis["axis_values"]
-    grid_shape = (len(ages), len(metallicities))
-    if axis is not None:
-        grid_shape += (len(axis_values),)
-    spec = np.zeros((*grid_shape, len(lam)))
-    stellar_fraction = np.zeros(grid_shape)
-
-    for axis_index, axis_value in enumerate(axis_values):
-        if axis is not None:
-            print(
-                f"IMF axis {axis_index + 1}/{len(axis_values)}: "
-                f"{axis['axis_name']}={axis_value:g}",
-                flush=True,
-            )
-        boundaries, slopes = imf_values_at_axis(
-            config, None if axis is None else axis_value
-        )
-        _set_imf_parameters(sp, boundaries, slopes)
-
-        for metallicity_index in range(len(metallicities)):
-            spectra = sp.get_spectrum(zmet=metallicity_index + 1)[1]
-            remaining_fraction = sp.stellar_mass / sp.formed_mass
-            output_index = (slice(None), metallicity_index)
-            if axis is not None:
-                output_index += (axis_index,)
-            spec[output_index] = spectra * 3.826e33
-            stellar_fraction[output_index] = remaining_fraction
-
     axes = {
-        "ages": ages * yr,
-        "metallicities": metallicities * dimensionless,
+        "ages": 10**sp.log_age * yr,
+        "metallicities": sp.zlegend * dimensionless,
     }
     descriptions = {}
     log_on_read = {"ages": True, "metallicities": False}
+    point_axes = ("metallicities",)
     if axis is not None:
         axis_units = (
             Msun if axis["group"] == "mass_boundaries" else dimensionless
         )
-        axes[axis["axis_name"]] = axis_values * axis_units
+        axes[axis["axis_name"]] = axis["axis_values"] * axis_units
         descriptions[axis["axis_name"]] = _axis_description(config)
         log_on_read[axis["axis_name"]] = axis["log_on_read"]
+        # The IMF axis outermost, so FSPS rebuilds its SSPs once per value
+        point_axes = (axis["axis_name"], "metallicities")
 
-    out_grid = GridFile(out_filename, param_file=config_file)
-    print(f"Writing {out_filename}", flush=True)
-    out_grid.write_grid_common(
+    return GridSpec(
+        grid_name=get_model_filename(
+            model, axis_name=None if axis is None else axis["axis_name"]
+        ),
         model=model,
         axes=axes,
-        wavelength=lam * angstrom,
-        spectra={"incident": spec * erg / s / Hz},
-        descriptions=descriptions,
+        wavelength=sp.wavelengths * angstrom,
+        outputs={
+            "incident": Output(units=erg / s / Hz),
+            "star_fraction": Output(
+                spectra=False,
+                description="Remaining stellar mass fraction with "
+                "dimensions matching the grid axes",
+            ),
+        },
+        point_axes=point_axes,
         log_on_read=log_on_read,
+        descriptions=descriptions,
         weight="initial_masses",
+        data={"sp_args": sp_args, "config": config},
     )
-    out_grid.write_dataset(
-        "star_fraction",
-        stellar_fraction * dimensionless,
-        "Remaining stellar mass fraction with dimensions matching "
-        "the grid axes",
-        log_on_read=False,
-    )
-    out_grid.add_specific_ionising_lum()
+
+
+def generate_point(spec, index):
+    """Return every age's spectrum and stellar fraction at one point."""
+    config = spec.data["config"]
+    axis = config["axis"]
+    sp = stellar_population(spec.data["sp_args"])
+    value = None
+    if axis is not None:
+        value = spec.axes[axis["axis_name"]].value[index[axis["axis_name"]]]
+    boundaries, slopes = imf_values_at_axis(config, value)
+    _set_imf_parameters(sp, boundaries, slopes)
+    spectra = sp.get_spectrum(zmet=index["metallicities"] + 1)[1]
+    return {
+        "incident": spectra * 3.826e33,
+        "star_fraction": sp.stellar_mass / sp.formed_mass,
+    }
 
 
 if __name__ == "__main__":
@@ -166,8 +168,10 @@ if __name__ == "__main__":
     if args.download:
         print("FSPS is a Python package; no separate download is required")
 
-    generate_grid(
-        load_fsps_imf_config(args.config_file),
+    build_grid(
+        setup(args.config_file),
+        generate_point,
         args.grid_dir,
-        args.config_file,
+        param_file=args.config_file,
+        cores=args.cores,
     )

@@ -309,6 +309,14 @@ class Parser(argparse.ArgumentParser):
             help="Should the data be downloaded?",
         )
 
+        # Number of processes to compute grid points with
+        self.add_argument(
+            "--cores",
+            type=int,
+            default=1,
+            help="Processes to compute grid points with (default 1).",
+        )
+
     def _add_cloudy_args(self):
         """Add arguments for cloudy grids."""
         # Path to directory where cloudy runs are
