@@ -352,8 +352,7 @@ if __name__ == "__main__":
     # The BPASS file codes for each alpha enhancement
     alpha_codes = {-0.2: "-02", 0.0: "+00", 0.2: "+02", 0.4: "+04", 0.6: "+06"}
 
-    # flags whether to build an individual grid (a fixed alpha enhancement)
-    # or the full grid (alpha enhancement as an axis, with all five values)
+    # flags whether to build individual grids or the full grid.
     full = "alpha_enhancement" in config.axes
     individual = not full
     if full and list(config.axes["alpha_enhancement"]) != list(alpha_codes):

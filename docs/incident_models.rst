@@ -28,7 +28,7 @@ SPS models
      - ``fsps/generate_incident_grid.py``
      - Ages, metallicities
      - Working python-FSPS/FSPS installation
-     - Ready. Broken power-law or Chabrier IMF.
+     - Ready. BPL or Chabrier IMF, set in the config file.
    * - FSPS variable IMF
      - ``fsps/generate_incident_grid_variable_imf.py``
      - Ages, metallicities, optional IMF parameter
@@ -84,8 +84,7 @@ SPS models
 FSPS
 ^^^^
 
-Generate an FSPS grid for the IMF in the config file (a broken power law or
-Chabrier IMF):
+Generate the FSPS grid set in the config file:
 
 .. code-block:: console
 
@@ -95,8 +94,9 @@ Chabrier IMF):
 
 The result depends on the libraries compiled into the local FSPS installation.
 The grid records them in its ``fsps_libraries`` model attribute. To insist on
-particular ones, list them as ``Model.libraries`` in the config, e.g.
-``[mist, miles]``; the script stops if FSPS was compiled with others.
+particular ones, list them as
+``Model.libraries`` in its config, e.g. ``[mist, miles]``; the script stops
+if FSPS was compiled with others.
 
 The variable-IMF conversion adds one slope or outer mass boundary as a genuine
 grid axis:
@@ -115,8 +115,8 @@ a time and keeps internal mass breaks fixed at 0.5 and 1.0 solar masses.
 BPASS
 ^^^^^
 
-Place downloaded BPASS data beneath ``<input-dir>/bpass/``. Generate all
-supported BPASS 2.2.1 IMF variant chosen in the config file with:
+Place downloaded BPASS data beneath ``<input-dir>/bpass/``. Generate the
+BPASS 2.2.1 IMF variant set in the config file with:
 
 .. code-block:: console
 
@@ -125,7 +125,7 @@ supported BPASS 2.2.1 IMF variant chosen in the config file with:
        --grid-dir grids \
        --config-file src/syncretize/incident/sps/bpass/bpass-2.2.1.yaml
 
-BPASS 2.3 adds alpha enhancement as a third axis. Give
+BPASS 2.3 adds alpha enhancement as a third axis in its combined grid. Give
 ``alpha_enhancement`` in the config file's ``Constants`` for a grid at one
 value, or in its ``Axes`` for the combined grid.
 

@@ -210,8 +210,7 @@ if __name__ == "__main__":
     # get the arguments
     args = parser.parse_args()
 
-    # open the config file and extract parameters; fixed values and axes
-    # are read the same way below
+    # open the config file and extract parameters
     config = load_params(
         args.config_file,
         model_keys=["grid_name"],

@@ -56,8 +56,7 @@ For example, an existing FSPS installation can be converted with:
        --grid-dir grids \
        --config-file src/syncretize/incident/sps/fsps/fsps.yaml
 
-The config file chooses the IMF. The script writes one ``.hdf5`` file to
-``grids``. Other models may
+The script writes one ``.hdf5`` file to ``grids``. Other models may
 also need ``--input-dir`` to locate downloaded source data. See
 :doc:`incident_models` for available conversions, required inputs, and known
 limitations.

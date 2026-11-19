@@ -19,7 +19,7 @@ datasets and attributes.
 
 Example usage:
 
-    # Create a grid file, storing the YAML parameter file used to make it
+    # Create a grid file
     grid = GridFile("grid.hdf5", param_file="params.yaml")
 
     # Write out the common parts of the grid
