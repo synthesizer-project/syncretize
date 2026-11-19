@@ -95,10 +95,11 @@ Generate the default FSPS grid and optional variants:
        --config-file parameter_files/incident/sps/fsps/generate_incident_grid_template.yaml
 
 The result depends on the libraries compiled into the local FSPS installation.
-The grid records them in its ``fsps_libraries`` model attribute. To insist on
-particular ones, list them as
-``Model.libraries`` in its config, e.g. ``[mist, miles]``; the script stops
-if FSPS was compiled with others.
+The grid records them in its ``fsps_libraries`` model attribute. The config
+must give them as ``Model.libraries``, e.g. ``[mist, c3k_lr]``, and the FSPS
+version as ``Model.sps_version``; the script stops if FSPS was built
+differently. ``src/syncretize/incident/sps/fsps/README.md`` describes how to
+build each FSPS version with chosen libraries.
 
 The variable-IMF conversion adds one slope or outer mass boundary as a genuine
 grid axis:

@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from syncretize.incident.sps.fsps_utils import (
+    check_fsps_version,
     expand_fsps_slopes,
     fsps_libraries,
     imf_values_at_axis,
@@ -118,7 +119,11 @@ def test_rejects_variable_internal_boundary(tmp_path):
 def test_fixed_imf_config_has_no_axis():
     config = parse_fsps_imf_config(
         SimpleNamespace(
-            model={"sps_version": "4.0", "imf_type": "bpl"},
+            model={
+                "sps_version": "4.0",
+                "imf_type": "bpl",
+                "libraries": ["mist", "c3k_lr"],
+            },
             constants={"imf_masses": [0.08, 120.0], "imf_slopes": [2.3]},
             axes={},
             axis_info={},
@@ -150,3 +155,19 @@ def test_fsps_libraries_checks_expected():
     assert fsps_libraries(sp, ["mist", "miles"]) == ["mist", "miles", "DL07"]
     with pytest.raises(ValueError, match="compiled with"):
         fsps_libraries(sp, ["mist", "c3k_lr"])
+
+
+def test_check_fsps_version():
+    check_fsps_version("4.0", "0.5.0")
+    check_fsps_version("3.2", "0.4.7")
+    with pytest.raises(ValueError, match="need python-fsps 0.5.0"):
+        check_fsps_version("4.0", "0.4.7")
+    with pytest.raises(ValueError, match="must be one of"):
+        check_fsps_version("3.3", "0.5.0")
+
+
+def test_variable_imf_config_needs_libraries(tmp_path):
+    raw = _raw_config()
+    del raw["Model"]["libraries"]
+    with pytest.raises(ValueError, match="Model.libraries is required"):
+        _parse(raw, tmp_path)

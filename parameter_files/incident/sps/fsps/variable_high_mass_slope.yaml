@@ -47,11 +47,13 @@
 # Slope axes are dimensionless; mass-boundary axis values are interpreted as
 # solar masses and written with Msun units.
 
-# Model.libraries (optional) lists the [isochrones, spectra, dust] FSPS
-# must have been compiled with; the script stops if they differ.
+# Model.sps_version and Model.libraries give the FSPS version and the
+# [isochrones, spectra, dust] FSPS was compiled with; the script stops if the
+# installation differs (see src/syncretize/incident/sps/fsps/README.md).
 
 Model:
   sps_version: "4.0"
+  libraries: [mist, c3k_lr]
   imf_type: bpl
 
 Constants:

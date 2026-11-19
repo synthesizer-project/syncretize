@@ -21,6 +21,40 @@ PARAMETER_NAMES = {
 #: The Constants list each axis target indexes into
 TARGET_GROUPS = {"imf_masses": "mass_boundaries", "imf_slopes": "slopes"}
 
+#: The python-fsps release that provides each FSPS version. Each release
+#: bundles one FSPS commit: 0.4.7 bundles 82a8735 (May 2024, the build the
+#: published fsps-3.2 grids were made with) and 0.5.0 bundles v4.0.
+FSPS_VERSIONS = {"3.2": "0.4.7", "4.0": "0.5.0"}
+
+#: Where to find how to build FSPS for a given version and set of libraries
+FSPS_README = "src/syncretize/incident/sps/fsps/README.md"
+
+
+def check_fsps_version(sps_version, installed):
+    """Check the installed python-fsps provides the FSPS version asked for.
+
+    FSPS is compiled into python-fsps, so the version can't be chosen at run
+    time; a different installation raises rather than silently making a
+    grid with another FSPS.
+
+    Args:
+        sps_version (str)
+            The FSPS version the parameter file asks for, e.g. "4.0".
+        installed (str)
+            The installed python-fsps version (``fsps.__version__``).
+    """
+    if sps_version not in FSPS_VERSIONS:
+        raise ValueError(
+            f"Model.sps_version must be one of {list(FSPS_VERSIONS)}, got "
+            f"{sps_version!r}. See {FSPS_README}."
+        )
+    if installed != FSPS_VERSIONS[sps_version]:
+        raise ValueError(
+            f"FSPS {sps_version} grids need python-fsps "
+            f"{FSPS_VERSIONS[sps_version]}, but {installed} is installed. "
+            f"See {FSPS_README} for how to install it."
+        )
+
 
 def parse_fsps_imf_config(params):
     """Validate an FSPS IMF configuration and return normalized values.
@@ -42,8 +76,9 @@ def parse_fsps_imf_config(params):
     model = params.model
     if model.get("imf_type") != "bpl":
         raise ValueError("Only Model.imf_type='bpl' is currently supported")
-    if "sps_version" not in model:
-        raise ValueError("Model.sps_version is required")
+    for key in ("sps_version", "libraries"):
+        if key not in model:
+            raise ValueError(f"Model.{key} is required. See {FSPS_README}.")
 
     fixed = {}
     for key in TARGET_GROUPS:
@@ -173,7 +208,7 @@ def fsps_libraries(sp, expected=None):
         raise ValueError(
             f"FSPS was compiled with libraries {libraries}, but the "
             f"parameter file expects {list(expected)}. Rebuild FSPS with "
-            "the expected libraries."
+            f"the expected libraries; see {FSPS_README}."
         )
     return libraries
 

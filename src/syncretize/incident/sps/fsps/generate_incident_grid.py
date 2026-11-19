@@ -14,7 +14,11 @@ import numpy as np
 from unyt import Hz, angstrom, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
-from syncretize.incident.sps.fsps_utils import fsps_libraries
+from syncretize.incident.sps.fsps_utils import (
+    FSPS_README,
+    check_fsps_version,
+    fsps_libraries,
+)
 from syncretize.incident.sps.utils import get_model_filename
 from syncretize.parser import Parser, get_choice, load_params
 
@@ -140,9 +144,16 @@ if __name__ == "__main__":
     # open the config file and extract parameters
     config = load_params(
         args.config_file,
-        model_keys=["imf_type", "libraries"],
+        model_keys=["sps_version", "imf_type", "libraries"],
         constant_keys=["imf_masses", "imf_slopes"],
     )
+
+    # The FSPS version and libraries are fixed when FSPS is built, so check
+    # the installation matches the config before making anything
+    for key in ("sps_version", "libraries"):
+        if key not in config.model:
+            raise ValueError(f"Model.{key} is required. See {FSPS_README}.")
+    check_fsps_version(str(config.model["sps_version"]), fsps.__version__)
 
     # No download for FSPS
     if args.download:
@@ -159,7 +170,7 @@ if __name__ == "__main__":
         "imf_slopes": [1.3, 2.3, 2.3],
         "alpha_enhancement": False,
         "pyfsps_version": str(fsps.__version__),
-        "sps_version": "3.2",
+        "sps_version": str(config.model["sps_version"]),
     }
 
     # The IMF chosen in the config file. bpl needs imf_masses
