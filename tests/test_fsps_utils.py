@@ -7,6 +7,8 @@ import pytest
 import yaml
 
 from syncretize.incident.sps.fsps_utils import (
+    check_fsps_model,
+    check_fsps_version,
     expand_fsps_slopes,
     fsps_libraries,
     imf_values_at_axis,
@@ -118,7 +120,11 @@ def test_rejects_variable_internal_boundary(tmp_path):
 def test_fixed_imf_config_has_no_axis():
     config = parse_fsps_imf_config(
         SimpleNamespace(
-            model={"sps_version": "4.0", "imf_type": "bpl"},
+            model={
+                "sps_version": "4.0",
+                "imf_type": "bpl",
+                "libraries": ["mist", "c3k_lr"],
+            },
             constants={"imf_masses": [0.08, 120.0], "imf_slopes": [2.3]},
             axes={},
             axis_info={},
@@ -150,3 +156,38 @@ def test_fsps_libraries_checks_expected():
     assert fsps_libraries(sp, ["mist", "miles"]) == ["mist", "miles", "DL07"]
     with pytest.raises(ValueError, match="compiled with"):
         fsps_libraries(sp, ["mist", "c3k_lr"])
+
+
+def test_check_fsps_version():
+    check_fsps_version("4.0", "0.5.0")
+    check_fsps_version("3.2", "0.4.7")
+    with pytest.raises(ValueError, match="need python-fsps 0.5.0"):
+        check_fsps_version("4.0", "0.4.7")
+    with pytest.raises(ValueError, match="must be one of"):
+        check_fsps_version("3.3", "0.5.0")
+
+
+@pytest.mark.parametrize(
+    "libraries, message",
+    [
+        (None, "non-empty list"),
+        ([], "non-empty list"),
+        ("mist", "non-empty list"),
+        ("missing", "Model.libraries is required"),
+    ],
+)
+def test_fsps_configs_need_libraries(tmp_path, libraries, message):
+    """Both scripts check the Model section with check_fsps_model."""
+    model = {"sps_version": "4.0", "imf_type": "bpl", "libraries": libraries}
+    if libraries == "missing":
+        del model["libraries"]
+    with pytest.raises(ValueError, match=message):
+        check_fsps_model(model)
+
+    raw = _raw_config()
+    raw["Model"] = model
+    with pytest.raises(ValueError, match=message):
+        _parse(raw, tmp_path)
+
+    # A prefix of the compiled libraries is still accepted
+    check_fsps_model({"sps_version": "4.0", "libraries": ["mist", "c3k_lr"]})

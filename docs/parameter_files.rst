@@ -143,12 +143,12 @@ metallicities) come from the source data.
    * - Model (template)
      - Keys
    * - FSPS (``fsps/generate_incident_grid_template.yaml``)
-     - ``Model.imf_type``: ``bpl`` or ``chabrier03``.
+     - ``Model.sps_version``: ``"3.2"`` or ``"4.0"``.
+       ``Model.libraries``: the ``[isochrones, spectra, dust]`` FSPS was
+       compiled with. ``Model.imf_type``: ``bpl`` or ``chabrier03``.
        ``Constants.imf_masses``: ``[m_low, 0.5, 1.0, m_high]`` for ``bpl``,
        ``[m_low, m_high]`` with ``0 < m_low < m_high`` for ``chabrier03``.
        ``Constants.imf_slopes``: the three ``bpl`` slopes.
-       ``Model.libraries`` (optional): the ``[isochrones, spectra, dust]``
-       FSPS must have been compiled with.
    * - FSPS variable IMF (``fsps/generate_incident_grid_variable_imf_template.yaml``)
      - See `FSPS variable IMF`_ below.
    * - BPASS 2.2.1 (``bpass/generate_incident_grid_2_2_1_template.yaml``)
@@ -191,6 +191,7 @@ in ``Constants`` and the axis names the entry it varies with ``target``:
    Model:
      sps_version: "4.0"
      imf_type: bpl            # only bpl is supported
+     libraries: [mist, c3k_lr]
    Constants:
      imf_masses: [0.08, 0.5, 1.0, 120.0]
      imf_slopes: [1.3, 2.3, 2.3]
@@ -208,8 +209,13 @@ one axis may be given. The value in ``Constants`` at the target is used in the
 grid name and must lie within the axis. ``log_on_read`` sets whether
 Synthesizer interpolates the axis in log space; it doesn't change how the
 values are sampled. Slopes are dimensionless and masses are in Msun.
-``Model.libraries`` optionally lists the ``[isochrones, spectra, dust]`` FSPS
-must have been compiled with.
+``Model.sps_version`` and ``Model.libraries`` are as for the FSPS script.
+
+Both FSPS scripts check ``Model.sps_version`` (``"3.2"`` needs python-fsps
+0.4.7, ``"4.0"`` needs 0.5.0) and ``Model.libraries`` against the installed
+python-fsps, and stop if they differ, as FSPS is compiled into python-fsps.
+``src/syncretize/incident/sps/fsps/README.md`` describes how to build each
+version with chosen libraries.
 
 Black hole models
 ^^^^^^^^^^^^^^^^^

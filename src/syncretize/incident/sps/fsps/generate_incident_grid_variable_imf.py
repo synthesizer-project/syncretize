@@ -13,6 +13,7 @@ from unyt import Hz, Msun, angstrom, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.fsps_utils import (
+    check_fsps_version,
     expand_fsps_slopes,
     fsps_libraries,
     imf_values_at_axis,
@@ -45,6 +46,10 @@ def _set_imf_parameters(sp, boundaries, slopes):
 
 def generate_grid(config, grid_dir, config_file):
     """Generate an FSPS grid from a validated IMF configuration."""
+    # The FSPS version is fixed when FSPS is built, so check the installation
+    # matches the config before making anything
+    check_fsps_version(config["sps_version"], fsps.__version__)
+
     fixed_boundaries = config["boundaries"]
     fixed_slopes = config["slopes"]
     fsps_slopes = expand_fsps_slopes(fixed_slopes)
