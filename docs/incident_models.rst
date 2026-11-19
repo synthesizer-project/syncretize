@@ -11,8 +11,8 @@ Every script takes a YAML config file (``--config-file``) describing the one
 grid it makes. ``parameter_files/`` at the repository root, laid out like
 ``src/syncretize``, holds a commented template for each script (named after
 it, e.g. ``generate_incident_grid_template.yaml``) and example configs, and
-:doc:`parameter_files` describes the format. The file is stored in the grid's ``ParameterFile``
-group, so every grid records how it was made.
+:doc:`parameter_files` describes the format. The file is stored in the grid's
+``ParameterFile`` group, so every grid records how it was made.
 
 SPS models
 ----------
@@ -30,7 +30,7 @@ SPS models
      - ``fsps/generate_incident_grid.py``
      - Ages, metallicities
      - Working python-FSPS/FSPS installation
-     - Ready. BPL or Chabrier IMF, set in the config file.
+     - Ready. Default BPL IMF; optional Chabrier and IMF variants.
    * - FSPS variable IMF
      - ``fsps/generate_incident_grid_variable_imf.py``
      - Ages, metallicities, optional IMF parameter
@@ -86,7 +86,7 @@ SPS models
 FSPS
 ^^^^
 
-Generate the FSPS grid set in the config file:
+Generate the default FSPS grid and optional variants:
 
 .. code-block:: console
 
@@ -117,8 +117,8 @@ a time and keeps internal mass breaks fixed at 0.5 and 1.0 solar masses.
 BPASS
 ^^^^^
 
-Place downloaded BPASS data beneath ``<input-dir>/bpass/``. Generate the
-BPASS 2.2.1 IMF variant set in the config file with:
+Place downloaded BPASS data beneath ``<input-dir>/bpass/``. Generate a
+supported BPASS 2.2.1 IMF variant with:
 
 .. code-block:: console
 
