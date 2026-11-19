@@ -1,0 +1,37 @@
+# Template parameter file for src/syncretize/incident/blackholes/broken_power_law/generate_incident_grid.py
+# (broken power law).
+#
+# Every key is listed with what it does and its allowed values; copy this file
+# and edit it to make a grid.
+#
+#   python src/syncretize/incident/blackholes/broken_power_law/generate_incident_grid.py \
+#       --config-file parameter_files/incident/blackholes/broken_power_law/generate_incident_grid_template.yaml \
+#       --grid-dir <grid-dir>
+#
+# Every section must be present, but may be left blank. Unknown keys stop
+# the script with an error.
+
+# Which model to make
+Model:
+  grid_name: bpl  # Name of the grid; it is written to <grid-dir>/<grid_name>.hdf5.
+
+# Fixed parameters
+Constants:
+  edges: [10.0, 2500.0, 100000.0, 1000000.0]  # The four wavelengths (Angstrom) bounding the three power laws.
+
+# Grid axes: the slope alpha_i of each power law, with L_nu ~ nu^alpha_i
+# between consecutive edges. All three are axes; only alpha1 may currently
+# hold more than one value.
+Axes:
+  - name: alpha1                                  # Slope between the first two edges.
+    type: values                                  # How the axis is sampled. Options: values (an explicit list), linear-range or log-range (give min, max and n instead of values; both limits included).
+    values: [-2.0, -1.8, -1.6, -1.4, -1.2, -1.0]  # The axis values, strictly increasing.
+  - name: alpha2                                  # Slope between the middle two edges (one value).
+    type: values                                  # How the axis is sampled. Options: values (an explicit list), linear-range or log-range (give min, max and n instead of values; both limits included).
+    values: [-0.5]                                # The axis values, strictly increasing.
+  - name: alpha3                                  # Slope between the last two edges (one value).
+    type: values                                  # How the axis is sampled. Options: values (an explicit list), linear-range or log-range (give min, max and n instead of values; both limits included).
+    values: [2.0]                                 # The axis values, strictly increasing.
+
+# Sobol sampling settings
+Sampling:  # (Not used: this script can't Sobol-sample its axes)

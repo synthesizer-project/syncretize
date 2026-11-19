@@ -1,4 +1,0 @@
-model: 'qsosed-isotropic-limited'
-log10masses: [6.,7.,8.,9.,10.]
-log10accretion_rates_eddington: [-1.5,-1.,0.,0.5]
-cosine_inclinations: 0.5

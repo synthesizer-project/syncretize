@@ -1,2 +1,0 @@
-model: 'blackbody-limited'
-log10blackbody_temperature: [4.0, 4.5, 5.0, 5.5, 6.0]

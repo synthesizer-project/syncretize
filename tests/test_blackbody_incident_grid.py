@@ -74,8 +74,16 @@ def test_normalised_to_unit_bolometric_luminosity():
 def test_grid_axis_and_ionising_luminosity(tmp_path):
     """The temperatures become the axis, with cloudy's Q(HI) per erg/s."""
     config = {
-        "model": "blackbody-unit-test",
-        "log10blackbody_temperature": [4.0, float(np.log10(5.0e4))],
+        "Model": {"grid_name": "blackbody-unit-test"},
+        "Constants": None,
+        "Axes": [
+            {
+                "name": "log10blackbody_temperature",
+                "type": "values",
+                "values": [4.0, float(np.log10(5.0e4))],
+            }
+        ],
+        "Sampling": None,
     }
     config_file = tmp_path / "config.yaml"
     config_file.write_text(yaml.safe_dump(config))
@@ -109,8 +117,16 @@ def test_grid_axis_and_ionising_luminosity(tmp_path):
 def test_rejects_temperatures_not_increasing(tmp_path):
     """A repeated or decreasing temperature stops the script."""
     config = {
-        "model": "blackbody-unit-test",
-        "log10blackbody_temperature": [4.0, 5.0, 5.0],
+        "Model": {"grid_name": "blackbody-unit-test"},
+        "Constants": None,
+        "Axes": [
+            {
+                "name": "log10blackbody_temperature",
+                "type": "values",
+                "values": [4.0, 5.0, 5.0],
+            }
+        ],
+        "Sampling": None,
     }
     config_file = tmp_path / "config.yaml"
     config_file.write_text(yaml.safe_dump(config))

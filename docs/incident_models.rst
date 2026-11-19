@@ -7,6 +7,13 @@ configuration files together. All write into ``--grid-dir``. File-backed
 conversions also need ``--input-dir`` even though the shared command-line
 parser marks it as optional.
 
+Every script takes a YAML config file (``--config-file``) describing the one
+grid it makes. ``parameter_files/`` at the repository root, laid out like
+``src/syncretize``, holds a commented template for each script (named after
+it, e.g. ``generate_incident_grid_template.yaml``) and example configs, and
+:doc:`parameter_files` describes the format. The file is stored in the grid's
+``ParameterFile`` group, so every grid records how it was made.
+
 SPS models
 ----------
 
@@ -38,7 +45,7 @@ SPS models
      - ``bpass/generate_incident_grid_2_3.py``
      - Ages, metallicities, alpha enhancement
      - Manual BPASS download
-     - Constrained. Writes both separate and combined grids regardless of flags.
+     - Ready with data. One alpha enhancement, or alpha enhancement as an axis.
    * - BC03
      - ``bc03/generate_incident_grid.py``
      - Ages, metallicities
@@ -85,13 +92,12 @@ Generate the default FSPS grid and optional variants:
 
    python src/syncretize/incident/sps/fsps/generate_incident_grid.py \
        --grid-dir grids \
-       --include-chabrier \
-       --include-imf-variants
+       --config-file parameter_files/incident/sps/fsps/generate_incident_grid_template.yaml
 
 The result depends on the libraries compiled into the local FSPS installation.
 The grid records them in its ``fsps_libraries`` model attribute. To insist on
-particular ones with the variable-IMF script, list them as
-``model.libraries`` in its config, e.g. ``[mist, miles]``; the script stops
+particular ones, list them as
+``Model.libraries`` in its config, e.g. ``[mist, miles]``; the script stops
 if FSPS was compiled with others.
 
 The variable-IMF conversion adds one slope or outer mass boundary as a genuine
@@ -102,7 +108,7 @@ grid axis:
    python src/syncretize/incident/sps/fsps/generate_incident_grid_variable_imf.py \
        --grid-dir grids \
        --config-file \
-       src/syncretize/incident/sps/fsps/configs/variable_high_mass_slope.yaml
+       parameter_files/incident/sps/fsps/variable_high_mass_slope.yaml
 
 The provided configurations demonstrate explicit axis values and generated
 ranges. The current FSPS implementation supports one variable IMF parameter at
@@ -111,19 +117,19 @@ a time and keeps internal mass breaks fixed at 0.5 and 1.0 solar masses.
 BPASS
 ^^^^^
 
-Place downloaded BPASS data beneath ``<input-dir>/bpass/``. Generate all
-supported BPASS 2.2.1 IMF variants with:
+Place downloaded BPASS data beneath ``<input-dir>/bpass/``. Generate a
+supported BPASS 2.2.1 IMF variant with:
 
 .. code-block:: console
 
    python src/syncretize/incident/sps/bpass/generate_incident_grid_2_2_1.py \
        --input-dir model-data \
        --grid-dir grids \
-       --models all
+       --config-file parameter_files/incident/sps/bpass/generate_incident_grid_2_2_1_template.yaml
 
-BPASS 2.3 adds alpha enhancement as a third axis in its combined grid. The
-current script writes both individual and combined outputs regardless of the
-``--individual`` and ``--full`` flags.
+BPASS 2.3 adds alpha enhancement as a third axis in its combined grid. Give
+``alpha_enhancement`` in the config file's ``Constants`` for a grid at one
+value, or in its ``Axes`` for the combined grid.
 
 BC03 and Maraston
 ^^^^^^^^^^^^^^^^^
@@ -141,7 +147,8 @@ Other file-backed SPS conversions follow this command shape:
 
    python src/syncretize/incident/sps/<model>/generate_incident_grid*.py \
        --input-dir model-data \
-       --grid-dir grids
+       --grid-dir grids \
+       --config-file parameter_files/incident/sps/<model>/generate_incident_grid*_template.yaml
 
 Add ``--download`` only for BC03, BC03 2016, or Yggdrasil. Other scripts need
 manually obtained files in the model-specific directory beneath
@@ -200,7 +207,7 @@ Run the self-contained broken-power-law model with:
    python src/syncretize/incident/blackholes/broken_power_law/generate_incident_grid.py \
        --grid-dir grids \
        --config-file \
-       src/syncretize/incident/blackholes/broken_power_law/bpl-feltre16.yaml
+       parameter_files/incident/blackholes/broken_power_law/bpl-feltre16.yaml
 
 The supplied configuration varies only its first slope. The current
 implementation does not correctly support multiple values on the second or

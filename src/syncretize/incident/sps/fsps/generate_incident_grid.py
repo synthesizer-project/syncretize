@@ -16,7 +16,7 @@ from unyt import Hz, angstrom, dimensionless, erg, s, yr
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.fsps_utils import fsps_libraries
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import Parser
+from syncretize.parser import Parser, get_choice, load_params
 
 
 def generate_grid(model):
@@ -59,7 +59,7 @@ def generate_grid(model):
 
     # Record the compiled libraries; the isochrones and spectra name the
     # variant
-    libraries = fsps_libraries(sp)
+    libraries = fsps_libraries(sp, config.model.get("libraries"))
     model["fsps_libraries"] = ",".join(libraries)
     model["sps_variant"] = "".join(libraries[:2])
     print(model["sps_variant"])
@@ -91,7 +91,7 @@ def generate_grid(model):
             stellar_fraction[ia, imetal] = _mfrac[ia]
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=args.config_file)
 
     print("metallicities:", metallicities)
 
@@ -130,25 +130,19 @@ if __name__ == "__main__":
     # Set up the command line arguments
     parser = Parser(description="FSPS download and grid creation")
 
-    # Include Chabrier IMF
-    parser.add_argument(
-        "--include-chabrier",
-        action="store_true",
-        help="Include Chabrier?",
-    )
-
-    # Include IMF variants
-    parser.add_argument(
-        "--include-imf-variants",
-        action="store_true",
-        help="Include IMF variants?",
-    )
+    # parameter file to use
+    parser.add_argument("--config-file", type=str, required=True)
 
     # Unpack the arguments
     args = parser.parse_args()
     grid_dir = args.grid_dir
-    include_chabrier = args.include_chabrier
-    include_imf_variants = args.include_imf_variants
+
+    # open the config file and extract parameters
+    config = load_params(
+        args.config_file,
+        model_keys=["imf_type", "libraries"],
+        constant_keys=["imf_masses", "imf_slopes"],
+    )
 
     # No download for FSPS
     if args.download:
@@ -168,40 +162,28 @@ if __name__ == "__main__":
         "sps_version": "3.2",
     }
 
-    # List of models to create
-    models = []
-
-    # Add default model
-    models += [{}]
-
-    # Add Chabrier IMF model
-    if include_chabrier:
-        models += [
-            {
-                "imf_type": "chabrier03",
-                "imf_masses": [0.08, 120],
-                "imf_slopes": [],
-            },
-        ]
-
-    # Include IMF variants
-    if include_imf_variants:
-        # Add models with varying high-mass slopes
-        models += [
-            {"imf_slopes": [1.3, 2.3, a3]} for a3 in np.arange(1.5, 3.01, 0.1)
-        ]
-
-        # Add Chabrier models with varying high-mass cut-offs
-        models += [
-            {"imf_type": "chabrier03", "imf_masses": [0.08, hmc]}
-            for hmc in [1, 2, 5, 10, 20, 50, 100]
-        ]
-
-        # Add Chabrier models with varying high-mass cut-offs
-        models += [
-            {"imf_type": "chabrier03", "imf_masses": [lmc, 120]}
-            for lmc in [0.5, 1, 2, 5, 10, 20, 50]
-        ]
+    # The IMF chosen in the config file. bpl needs imf_masses
+    # [m_low, 0.5, 1.0, m_high] and three imf_slopes; chabrier03 needs
+    # imf_masses [m_low, m_high].
+    imf_type = get_choice(config.model, "imf_type", ["bpl", "chabrier03"])
+    imf_masses = config.constants["imf_masses"]
+    imf_slopes = config.constants.get("imf_slopes", [])
+    if imf_type == "bpl" and len(imf_slopes) != 3:
+        raise ValueError("The bpl IMF needs three imf_slopes")
+    if imf_type == "chabrier03" and not (
+        len(imf_masses) == 2 and 0 < imf_masses[0] < imf_masses[1]
+    ):
+        raise ValueError(
+            "The chabrier03 IMF needs imf_masses [m_low, m_high] "
+            "with 0 < m_low < m_high"
+        )
+    models = [
+        {
+            "imf_type": imf_type,
+            "imf_masses": imf_masses,
+            "imf_slopes": imf_slopes if imf_type == "bpl" else [],
+        }
+    ]
 
     # Loop over models
     for model_ in models:

@@ -1,0 +1,28 @@
+# Template parameter file for src/syncretize/incident/blackholes/blackbody/generate_incident_grid.py
+# (blackbody).
+#
+# Every key is listed with what it does and its allowed values; copy this file
+# and edit it to make a grid.
+#
+#   python src/syncretize/incident/blackholes/blackbody/generate_incident_grid.py \
+#       --config-file parameter_files/incident/blackholes/blackbody/generate_incident_grid_template.yaml \
+#       --grid-dir <grid-dir>
+#
+# Every section must be present, but may be left blank. Unknown keys stop
+# the script with an error.
+
+# Which model to make
+Model:
+  grid_name: blackbody  # Name of the grid; it is written to <grid-dir>/<grid_name>.hdf5.
+
+# Fixed parameters
+Constants:  # (None for this model)
+
+# Grid axes
+Axes:
+  - name: log10blackbody_temperature   # log10 of the blackbody temperature in K. Cloudy accepts any T; 4.0-6.0 covers stellar and accretion disc temperatures.
+    type: values                       # How the axis is sampled. Options: values (an explicit list), linear-range or log-range (give min, max and n instead of values; both limits included).
+    values: [4.0, 4.5, 5.0, 5.5, 6.0]  # The axis values, strictly increasing.
+
+# Sobol sampling settings
+Sampling:  # (Not used: this script can't Sobol-sample its axes)

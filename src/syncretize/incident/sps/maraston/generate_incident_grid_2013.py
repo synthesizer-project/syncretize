@@ -10,10 +10,10 @@ from unyt import Angstrom, Hz, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import Parser
+from syncretize.parser import Parser, get_choice, load_params
 
 
-def make_grid(model, imf, input_dir, grid_dir):
+def make_grid(model, imf, input_dir, grid_dir, param_file=None):
     """Main function to convert Maraston 2013 and
     produce grids used by synthesizer
     Args:
@@ -64,7 +64,7 @@ def make_grid(model, imf, input_dir, grid_dir):
     spec = np.zeros((len(ages), len(metallicities), len(lam)))
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=param_file)
 
     # at each point in spec convert the units
     for iZ, Z in enumerate(metallicities):
@@ -104,13 +104,25 @@ if __name__ == "__main__":
     # Set up the command line arguments
     parser = Parser(description="Maraston+13 download and grid creation")
 
+    # parameter file to use
+    parser.add_argument("--config-file", type=str, required=True)
+
     args = parser.parse_args()
+
+    # open the config file and extract parameters
+    config = load_params(
+        args.config_file,
+        model_keys=["imf_type"],
+    )
 
     grid_dir = args.grid_dir
 
     # Define the model metadata
     sps_name = "maraston13"
     imfs = ["salpeter", "kroupa"]
+
+    # Only make the grid chosen in the config file
+    imfs = [get_choice(config.model, "imf_type", imfs)]
     imf_code = {"salpeter": "ss", "kroupa": "kr"}
 
     input_dir = args.input_dir
@@ -136,4 +148,4 @@ if __name__ == "__main__":
             "alpha_enhancement": False,
         }
 
-        make_grid(model, imf, input_dir, grid_dir)
+        make_grid(model, imf, input_dir, grid_dir, param_file=args.config_file)

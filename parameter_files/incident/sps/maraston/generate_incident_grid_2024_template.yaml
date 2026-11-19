@@ -1,0 +1,31 @@
+# Template parameter file for src/syncretize/incident/sps/maraston/generate_incident_grid_2024.py
+# (Maraston 2024).
+#
+# Every key is listed with what it does and its allowed values; copy this file
+# and edit it to make a grid.
+#
+#   python src/syncretize/incident/sps/maraston/generate_incident_grid_2024.py \
+#       --config-file parameter_files/incident/sps/maraston/generate_incident_grid_2024_template.yaml \
+#       --grid-dir <grid-dir> --input-dir <input-dir>
+#
+# Every section must be present, but may be left blank. Unknown keys stop
+# the script with an error.
+#
+# The source data must be obtained from the authors and placed in
+# <input-dir>/maraston24.
+
+# Which model to make
+Model:
+  imf_type: kroupa  # IMF. Options: kroupa or salpeter.
+  rotation: 0.0     # Initial stellar rotation (v_ini). Options: 0.0 or 0.4.
+  model_type: Te    # Options: Te (corrected effective temperatures) or Tenc (not corrected).
+  # grid_name: my-grid  # (Optional) Write <grid-dir>/<grid_name>.hdf5 instead of the name built from the model.
+
+# Fixed parameters
+Constants:  # (None for this model)
+
+# Grid axes
+Axes:  # (None: the ages and metallicities come from the source data)
+
+# Sobol sampling settings
+Sampling:  # (Not used: this script can't Sobol-sample its axes)

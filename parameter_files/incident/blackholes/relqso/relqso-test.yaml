@@ -1,0 +1,17 @@
+Model:
+  grid_name: relqso-test
+Constants:
+Axes:
+  - name: log10masses
+    type: values
+    values: [8., 9.]
+  - name: log10accretion_rates_eddington
+    type: values
+    values: [-1., 0.]
+  - name: cosine_inclinations
+    type: values
+    values: [0.09, 0.5, 0.98]
+  - name: spins
+    type: values
+    values: [0, 0.998]
+Sampling:

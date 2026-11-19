@@ -1,0 +1,18 @@
+Model:
+  grid_name: cloudy_agn
+Constants:
+  alpha_x: -1.0
+Axes:
+  - name: log10blue_bump_temperature
+    type: values
+    values: [
+      4.0, 4.05, 4.1, 4.15, 4.2, 4.25, 4.3,
+      4.4, 4.5, 4.6, 4.7, 4.8, 4.9, 5.0, 5.1, 5.2, 5.3, 5.4, 5.5,
+      5.75, 6.0, 6.25, 6.5]
+  - name: alpha_ox
+    type: values
+    values: [-2.0, -1.4, -1.0]
+  - name: alpha_uv
+    type: values
+    values: [-1.0, -0.5, 0.3333]
+Sampling:

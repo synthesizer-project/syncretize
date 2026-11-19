@@ -1,216 +1,124 @@
 """Configuration helpers for YAML-driven FSPS IMF grids."""
 
-from pathlib import Path
+import re
 
 import numpy as np
-import yaml
+
+from syncretize.parser import load_params
+
+#: The name of each IMF parameter, by position, for each number of entries
+PARAMETER_NAMES = {
+    "mass_boundaries": {
+        2: ["lower_mass", "upper_mass"],
+        4: ["lower_mass", "low_mass_break", "high_mass_break", "upper_mass"],
+    },
+    "slopes": {
+        1: ["slope"],
+        3: ["low_mass_slope", "intermediate_mass_slope", "high_mass_slope"],
+    },
+}
+
+#: The Constants list each axis target indexes into
+TARGET_GROUPS = {"imf_masses": "mass_boundaries", "imf_slopes": "slopes"}
 
 
-def _numeric_value(value, field):
-    """Return a finite float or raise a configuration error."""
-    if isinstance(value, bool):
-        raise ValueError(f"{field} must be numeric")
-    try:
-        value = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{field} must be numeric") from exc
-    if not np.isfinite(value):
-        raise ValueError(f"{field} must be finite")
-    return value
-
-
-def _axis_values(axis, field):
-    """Build and validate an axis from explicit values or a range."""
-    if not isinstance(axis, dict):
-        raise ValueError(f"{field}.axis must be a mapping")
-
-    has_values = "values" in axis
-    has_range = "range" in axis
-    if has_values == has_range:
-        raise ValueError(
-            f"{field}.axis must contain exactly one of 'values' or 'range'"
-        )
-
-    if has_values:
-        if not isinstance(axis["values"], list) or len(axis["values"]) < 2:
-            raise ValueError(
-                f"{field}.axis.values must contain at least 2 values"
-            )
-        values = np.array(
-            [
-                _numeric_value(value, f"{field}.axis.values")
-                for value in axis["values"]
-            ]
-        )
-    else:
-        range_config = axis["range"]
-        if not isinstance(range_config, dict):
-            raise ValueError(f"{field}.axis.range must be a mapping")
-        required = {"minimum", "maximum", "number", "spacing"}
-        missing = required - set(range_config)
-        if missing:
-            raise ValueError(
-                f"{field}.axis.range is missing: {', '.join(sorted(missing))}"
-            )
-
-        minimum = _numeric_value(
-            range_config["minimum"], f"{field}.axis.range.minimum"
-        )
-        maximum = _numeric_value(
-            range_config["maximum"], f"{field}.axis.range.maximum"
-        )
-        number = range_config["number"]
-        if (
-            isinstance(number, bool)
-            or not isinstance(number, int)
-            or number < 2
-        ):
-            raise ValueError(
-                f"{field}.axis.range.number must be an integer >= 2"
-            )
-        if maximum <= minimum:
-            raise ValueError(f"{field}.axis.range.maximum must exceed minimum")
-
-        spacing = range_config["spacing"]
-        if spacing == "linear":
-            values = np.linspace(minimum, maximum, number)
-        elif spacing == "log":
-            if minimum <= 0:
-                raise ValueError(
-                    f"{field}.axis log spacing requires positive limits"
-                )
-            values = np.geomspace(minimum, maximum, number)
-        else:
-            raise ValueError(
-                f"{field}.axis.range.spacing must be 'linear' or 'log'"
-            )
-
-    if np.any(np.diff(values) <= 0):
-        raise ValueError(f"{field}.axis values must be unique and increasing")
-    return values
-
-
-def _parse_parameters(parameters, group):
-    """Validate one ordered group of IMF parameters."""
-    if not isinstance(parameters, list) or not parameters:
-        raise ValueError(f"imf.{group} must be a non-empty list")
-
-    parsed = []
-    for index, parameter in enumerate(parameters):
-        field = f"imf.{group}[{index}]"
-        if not isinstance(parameter, dict):
-            raise ValueError(f"{field} must be a mapping")
-        for required in ("name", "fixed_value", "vary_axis"):
-            if required not in parameter:
-                raise ValueError(f"{field} is missing '{required}'")
-        if not isinstance(parameter["name"], str) or not parameter["name"]:
-            raise ValueError(f"{field}.name must be a non-empty string")
-        if not isinstance(parameter["vary_axis"], bool):
-            raise ValueError(f"{field}.vary_axis must be true or false")
-
-        item = {
-            "name": parameter["name"],
-            "fixed_value": _numeric_value(
-                parameter["fixed_value"], f"{field}.fixed_value"
-            ),
-            "vary_axis": parameter["vary_axis"],
-            "group": group,
-            "index": index,
-        }
-        if item["vary_axis"]:
-            axis = parameter.get("axis")
-            if not isinstance(axis, dict):
-                raise ValueError(
-                    f"{field}.axis is required when vary_axis is true"
-                )
-            if not isinstance(axis.get("name"), str) or not axis["name"]:
-                raise ValueError(
-                    f"{field}.axis.name must be a non-empty string"
-                )
-            item["axis_name"] = axis["name"]
-            item["axis_values"] = _axis_values(axis, field)
-            item["log_on_read"] = axis.get("log_on_read", False)
-            if not isinstance(item["log_on_read"], bool):
-                raise ValueError(
-                    f"{field}.axis.log_on_read must be true or false"
-                )
-            if item["axis_name"] in {"ages", "metallicities"}:
-                raise ValueError(
-                    f"{field}.axis.name conflicts with a standard axis"
-                )
-            if not (
-                item["axis_values"][0]
-                <= item["fixed_value"]
-                <= item["axis_values"][-1]
-            ):
-                raise ValueError(
-                    f"{field}.fixed_value must lie within the axis"
-                )
-            if item["log_on_read"] and item["axis_values"][0] <= 0:
-                raise ValueError(
-                    f"{field}.axis.log_on_read requires positive values"
-                )
-        elif "axis" in parameter:
-            raise ValueError(
-                f"{field}.axis is only valid when vary_axis is true"
-            )
-        parsed.append(item)
-    return parsed
-
-
-def parse_fsps_imf_config(config):
+def parse_fsps_imf_config(params):
     """Validate an FSPS IMF configuration and return normalized values.
+
+    The IMF is given by ``Constants.imf_masses`` and ``Constants.imf_slopes``.
+    At most one axis may vary one of them, named by its ``target``, e.g.
+    ``imf_slopes[2]``; the value in Constants is then the nominal one used in
+    the filename.
 
     The current generator uses FSPS ``imf_type=2``. It supports any one of
     the three slopes or either outer mass limit as an axis. FSPS fixes its two
     internal boundaries at 0.5 and 1.0 solar masses, so varying those entries
     is rejected until custom ``imf_type=5`` files can be supplied safely.
-    """
-    if not isinstance(config, dict):
-        raise ValueError("Configuration must be a mapping")
-    model = config.get("model")
-    imf = config.get("imf")
-    if not isinstance(model, dict) or not isinstance(imf, dict):
-        raise ValueError("Configuration requires 'model' and 'imf' mappings")
-    if model.get("imf_type") != "bpl":
-        raise ValueError("Only model.imf_type='bpl' is currently supported")
-    if "sps_version" not in model:
-        raise ValueError("model.sps_version is required")
 
-    boundaries = _parse_parameters(
-        imf.get("mass_boundaries"), "mass_boundaries"
-    )
-    slopes = _parse_parameters(imf.get("slopes"), "slopes")
-    if len(boundaries) != len(slopes) + 1:
-        raise ValueError(
-            "IMF requires exactly one more mass boundary than slope"
-        )
-    if (len(boundaries), len(slopes)) not in {(2, 1), (4, 3)}:
+    Args:
+        params (SimpleNamespace)
+            The parameters, as returned by ``load_params``.
+    """
+    model = params.model
+    if model.get("imf_type") != "bpl":
+        raise ValueError("Only Model.imf_type='bpl' is currently supported")
+    if "sps_version" not in model:
+        raise ValueError("Model.sps_version is required")
+
+    fixed = {}
+    for key in TARGET_GROUPS:
+        if key not in params.constants:
+            raise ValueError(f"Constants.{key} is required")
+        try:
+            fixed[key] = np.array(params.constants[key], dtype=float)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Constants.{key} must be numeric") from exc
+        if fixed[key].ndim != 1 or not np.all(np.isfinite(fixed[key])):
+            raise ValueError(f"Constants.{key} must be a list of numbers")
+    fixed_boundaries = fixed["imf_masses"]
+    fixed_slopes = fixed["imf_slopes"]
+    if (len(fixed_boundaries), len(fixed_slopes)) not in {(2, 1), (4, 3)}:
         raise ValueError(
             "FSPS imf_type=2 requires either 2 boundaries and 1 slope or "
             "4 boundaries and 3 slopes"
         )
 
-    names = [item["name"] for item in boundaries + slopes]
-    if len(names) != len(set(names)):
-        raise ValueError("IMF parameter names must be unique")
-
-    active = [item for item in boundaries + slopes if item["vary_axis"]]
-    if len(active) > 1:
-        raise ValueError("At most one IMF parameter may have vary_axis=true")
-    active = active[0] if active else None
+    if len(params.axis_info) > 1:
+        raise ValueError("At most one IMF parameter may be an axis")
+    active = None
+    for axis_name, entry in params.axis_info.items():
+        match = re.fullmatch(
+            r"(imf_masses|imf_slopes)\[(\d+)\]", str(entry.get("target"))
+        )
+        if match is None:
+            raise ValueError(
+                f"Axis {axis_name} needs a target such as imf_slopes[2]"
+            )
+        group = TARGET_GROUPS[match.group(1)]
+        index = int(match.group(2))
+        if index >= len(fixed[match.group(1)]):
+            raise ValueError(f"Axis {axis_name} target is out of range")
+        if axis_name in {"ages", "metallicities"}:
+            raise ValueError(
+                f"Axis {axis_name} conflicts with a standard axis"
+            )
+        values = params.axes[axis_name]
+        if len(values) < 2:
+            raise ValueError(f"Axis {axis_name} needs at least 2 values")
+        fixed_value = fixed[match.group(1)][index]
+        if not values[0] <= fixed_value <= values[-1]:
+            raise ValueError(
+                f"The {match.group(1)} value the axis {axis_name} varies "
+                "must lie within the axis"
+            )
+        log_on_read = entry.get("log_on_read", False)
+        if not isinstance(log_on_read, bool):
+            raise ValueError(f"Axis {axis_name} log_on_read must be a bool")
+        if log_on_read and values[0] <= 0:
+            raise ValueError(
+                f"Axis {axis_name} log_on_read requires positive values"
+            )
+        active = {
+            "name": PARAMETER_NAMES[group][len(fixed[match.group(1)])][index],
+            "fixed_value": fixed_value,
+            "group": group,
+            "index": index,
+            "axis_name": axis_name,
+            "axis_values": values,
+            "log_on_read": log_on_read,
+        }
 
     # A single power law spans both outer limits, so FSPS's internal breaks
     # are irrelevant. A three-part IMF must match the hard-coded breaks.
-    if len(boundaries) == 4 and (
-        not np.isclose(boundaries[1]["fixed_value"], 0.5)
-        or not np.isclose(boundaries[2]["fixed_value"], 1.0)
+    if len(fixed_boundaries) == 4 and (
+        not np.isclose(fixed_boundaries[1], 0.5)
+        or not np.isclose(fixed_boundaries[2], 1.0)
     ):
         raise ValueError(
             "FSPS imf_type=2 requires internal boundaries 0.5 and 1.0"
         )
     if (
-        len(boundaries) == 4
+        len(fixed_boundaries) == 4
         and active is not None
         and active["group"] == "mass_boundaries"
         and active["index"] in (1, 2)
@@ -220,8 +128,6 @@ def parse_fsps_imf_config(config):
             "custom imf_type=5 support is required"
         )
 
-    fixed_boundaries = np.array([item["fixed_value"] for item in boundaries])
-    fixed_slopes = np.array([item["fixed_value"] for item in slopes])
     axis_values = [None] if active is None else active["axis_values"]
     for value in axis_values:
         candidate = fixed_boundaries.copy()
@@ -274,10 +180,14 @@ def fsps_libraries(sp, expected=None):
 
 def load_fsps_imf_config(path):
     """Load and validate an FSPS IMF YAML configuration file."""
-    path = Path(path)
-    with path.open() as stream:
-        config = yaml.safe_load(stream)
-    return parse_fsps_imf_config(config)
+    return parse_fsps_imf_config(
+        load_params(
+            path,
+            model_keys=["sps_version", "imf_type", "libraries"],
+            constant_keys=list(TARGET_GROUPS),
+            axis_names=None,
+        )
+    )
 
 
 def imf_values_at_axis(config, value=None):

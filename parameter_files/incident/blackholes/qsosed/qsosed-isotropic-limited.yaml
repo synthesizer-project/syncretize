@@ -1,0 +1,12 @@
+Model:
+  grid_name: qsosed-isotropic-limited
+Constants:
+  cosine_inclinations: 0.5
+Axes:
+  - name: log10masses
+    type: values
+    values: [6.,7.,8.,9.,10.]
+  - name: log10accretion_rates_eddington
+    type: values
+    values: [-1.5,-1.,0.,0.5]
+Sampling:

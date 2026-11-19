@@ -1,0 +1,32 @@
+# Template parameter file for src/syncretize/incident/sps/fsps/generate_incident_grid.py
+# (FSPS).
+#
+# Every key is listed with what it does and its allowed values; copy this file
+# and edit it to make a grid.
+#
+#   python src/syncretize/incident/sps/fsps/generate_incident_grid.py \
+#       --config-file parameter_files/incident/sps/fsps/generate_incident_grid_template.yaml \
+#       --grid-dir <grid-dir>
+#
+# Every section must be present, but may be left blank. Unknown keys stop
+# the script with an error.
+#
+# Needs a working python-FSPS installation (SPS_HOME set). The isochrones and
+# spectral library are those FSPS was compiled with.
+
+# Which model to make
+Model:
+  imf_type: bpl  # IMF. Options: bpl (broken power law) or chabrier03.
+  # libraries: [mist, miles]  # (Optional) The [isochrones, spectra, dust] FSPS must have been compiled with; trailing ones may be left out. The script stops if FSPS differs.
+  # grid_name: my-grid  # (Optional) Write <grid-dir>/<grid_name>.hdf5 instead of the name built from the model.
+
+# Fixed parameters
+Constants:
+  imf_masses: [0.08, 0.5, 1, 120]  # IMF mass boundaries in Msun. bpl: [m_low, 0.5, 1.0, m_high] (FSPS fixes the internal ones); chabrier03: [m_low, m_high].
+  imf_slopes: [1.3, 2.3, 2.3]      # bpl only: the three slopes alpha_i, with dN/dM ~ M^-alpha_i between consecutive imf_masses.
+
+# Grid axes
+Axes:  # (None: the ages and metallicities come from the source data)
+
+# Sobol sampling settings
+Sampling:  # (Not used: this script can't Sobol-sample its axes)

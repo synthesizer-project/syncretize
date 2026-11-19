@@ -21,7 +21,7 @@ from unyt import Hz, angstrom, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import Parser
+from syncretize.parser import Parser, load_params
 
 
 def decompress_gz_recursively(directory):
@@ -213,7 +213,7 @@ def convertBC03(files=None):
     )
 
 
-def make_grid(input_dir, grid_dir, synthesizer_model_name):
+def make_grid(input_dir, grid_dir, synthesizer_model_name, param_file=None):
     """Main function to convert BC03 grids and
     produce grids used by synthesizer.
 
@@ -224,6 +224,8 @@ def make_grid(input_dir, grid_dir, synthesizer_model_name):
             The directory where the grid is created.
         synthesizer_model_name (str)
             The name of the model used as the filename.
+        param_file (str)
+            The parameter file to store in the grid.
     """
 
     # output filename
@@ -260,7 +262,7 @@ def make_grid(input_dir, grid_dir, synthesizer_model_name):
     spec *= lam / nu  # erg s^-1 Hz^-1 Msol^-1
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=param_file)
 
     # A dictionary with Boolean values for each axis, where True
     # indicates that the attribute should be interpolated in
@@ -290,8 +292,14 @@ if __name__ == "__main__":
     # Set up the command line arguments
     parser = Parser(description="BC03 download and grid creation")
 
+    # parameter file to use
+    parser.add_argument("--config-file", type=str, required=True)
+
     # Unpack the arguments
     args = parser.parse_args()
+
+    # open the config file (BC03 2003 has nothing to choose)
+    load_params(args.config_file)
 
     # the directory to store downloaded input files
     input_dir = args.input_dir
@@ -328,4 +336,9 @@ if __name__ == "__main__":
     print(synthesizer_model_name)
 
     # Get and write the grid
-    out_filename = make_grid(input_dir, grid_dir, synthesizer_model_name)
+    out_filename = make_grid(
+        input_dir,
+        grid_dir,
+        synthesizer_model_name,
+        param_file=args.config_file,
+    )

@@ -26,7 +26,7 @@ from unyt import Hz, angstrom, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import Parser
+from syncretize.parser import Parser, get_choice, load_params
 
 
 def extract_and_decompress_ised_files(directory):
@@ -281,7 +281,7 @@ def convertBC03(files=None):
     )
 
 
-def make_grid(variant, imf_type, input_dir, out_filename):
+def make_grid(variant, imf_type, input_dir, out_filename, param_file=None):
     """Main function to convert BC03 grids and
     produce grids used by synthesizer"""
 
@@ -330,7 +330,7 @@ def make_grid(variant, imf_type, input_dir, out_filename):
     spec *= lam / nu  # erg s^-1 Hz^-1 Msol^-1
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=param_file)
 
     # A dictionary with Boolean values for each axis, where True
     # indicates that the attribute should be interpolated in
@@ -387,8 +387,17 @@ if __name__ == "__main__":
     # Set up the command line arguments
     parser = Parser(description="BC03-2016 download and grid creation")
 
+    # parameter file to use
+    parser.add_argument("--config-file", type=str, required=True)
+
     # Unpack the arguments
     args = parser.parse_args()
+
+    # open the config file and extract parameters
+    config = load_params(
+        args.config_file,
+        model_keys=["variant", "imf_type"],
+    )
 
     # the directory to store downloaded input files
     input_dir = args.input_dir
@@ -422,6 +431,10 @@ if __name__ == "__main__":
     # not worth the hassle.
     imf_types = ["kroupa", "salpeter", "chabrier"]
 
+    # Only make (and download) the grid chosen in the config file
+    variants = [get_choice(config.model, "variant", variants)]
+    imf_types = [get_choice(config.model, "imf_type", imf_types)]
+
     if args.download:
         # download and compile the BC03 utility, only needed to convert
         # the downloaded binary files to ascii
@@ -448,4 +461,10 @@ if __name__ == "__main__":
             # this is the full path to the ultimate HDF5 grid file
             out_filename = f"{grid_dir}/{synthesizer_model_name}.hdf5"
 
-            make_grid(variant, imf_type, input_dir, out_filename)
+            make_grid(
+                variant,
+                imf_type,
+                input_dir,
+                out_filename,
+                param_file=args.config_file,
+            )

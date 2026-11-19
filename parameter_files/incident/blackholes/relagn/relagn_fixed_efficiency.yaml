@@ -1,0 +1,17 @@
+Model:
+  grid_name: relagn_incident_fixed_rad_efficiency_0p1
+Constants:
+Axes:
+  - name: log10masses
+    type: values
+    values: [6., 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10.]
+  - name: log10accretion_rates_eddington
+    type: values
+    values: [-4.5, -4.0, -3.5, -3, -2.5, -2, -1.5, -1, -0.5, 0., 0.5, 1., 1.5, 2., 2.5]
+  - name: cosine_inclinations
+    type: values
+    values: [0.2, 0.4, 0.6, 0.8, 1.0]
+  - name: radiative_efficiencies
+    type: values
+    values: [0.1]
+Sampling:

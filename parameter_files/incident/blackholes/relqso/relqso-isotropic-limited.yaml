@@ -1,0 +1,15 @@
+Model:
+  grid_name: relqso-limited-limited
+Constants:
+  cosine_inclinations: 0.5
+Axes:
+  - name: log10masses
+    type: values
+    values: [7., 8., 9., 10.]
+  - name: log10accretion_rates_eddington
+    type: values
+    values: [-3., -2., -1., 0.]
+  - name: spins
+    type: values
+    values: [0, 0.5, 0.9, 0.998]
+Sampling:

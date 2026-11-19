@@ -53,7 +53,8 @@ For example, an existing FSPS installation can be converted with:
 
    mkdir -p grids
    python src/syncretize/incident/sps/fsps/generate_incident_grid.py \
-       --grid-dir grids
+       --grid-dir grids \
+       --config-file parameter_files/incident/sps/fsps/generate_incident_grid_template.yaml
 
 The script writes one or more ``.hdf5`` files to ``grids``. Other models may
 also need ``--input-dir`` to locate downloaded source data. See

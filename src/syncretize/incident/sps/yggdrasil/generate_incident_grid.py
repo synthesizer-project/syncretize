@@ -40,7 +40,7 @@ from unyt import Hz, angstrom, c, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import Parser
+from syncretize.parser import Parser, get_choice, load_params
 
 
 def download_data(input_dir, ver, fcov):
@@ -166,7 +166,9 @@ def convertPOPIII(fileloc):
     )
 
 
-def make_grid(input_dir, grid_dir, ver, fcov, model, grid_lam):
+def make_grid(
+    input_dir, grid_dir, ver, fcov, model, grid_lam, param_file=None
+):
     """Main function to convert POPIII grids and
     produce grids used by synthesizer"""
 
@@ -198,7 +200,9 @@ def make_grid(input_dir, grid_dir, ver, fcov, model, grid_lam):
     spec *= (lam**2) / light_speed  # now in erg s^-1 Hz^-1 Msol^-1
 
     # Create the grid file
-    out_grid = GridFile(f"{grid_dir}/{synthesizer_model_name}.hdf5")
+    out_grid = GridFile(
+        f"{grid_dir}/{synthesizer_model_name}.hdf5", param_file=param_file
+    )
 
     # A dictionary with Boolean values for each axis, where True
     # indicates that the attribute should be interpolated in
@@ -250,10 +254,18 @@ if __name__ == "__main__":
     # Set up the command line arguments
     parser = Parser(description="Yggdrasil download and grid creation")
 
+    # parameter file to use
+    parser.add_argument("--config-file", type=str, required=True)
+
     # Unpack the arguments
     args = parser.parse_args()
     grid_dir = args.grid_dir
     input_dir = args.input_dir
+
+    # open the config file and extract parameters
+    config = load_params(
+        args.config_file, model_keys=["population", "covering_fraction"]
+    )
 
     sps_name = "yggdrasil"
 
@@ -280,6 +292,20 @@ if __name__ == "__main__":
     # The pure stellar (incident) is resampled and can be done with
     # minimal errors, as it is featureless
     fcovs = np.array(["1", "0.5", "0"])
+
+    # Only make the grid chosen in the config file. The fcov = 1 data are
+    # always read, since their wavelengths are used for every grid.
+    populations = {
+        "PopIII.1": ".1",
+        "PopIII.2": ".2",
+        "PopIII_kroupa": "_kroupa_IMF",
+    }
+    vers = [populations[get_choice(config.model, "population", populations)]]
+    fcov_codes = {0: "0", 0.5: "0.5", 1: "1"}
+    chosen_fcov = fcov_codes[
+        get_choice(config.model, "covering_fraction", fcov_codes)
+    ]
+    fcovs = [fcov for fcov in fcovs if fcov in ("1", chosen_fcov)]
 
     grid_lam = None
 
@@ -310,4 +336,15 @@ if __name__ == "__main__":
                 )[3]
                 grid_lam = lam * angstrom
 
-            make_grid(input_dir, grid_dir, ver, fcov, model, grid_lam)
+            if fcov != chosen_fcov:
+                continue
+
+            make_grid(
+                input_dir,
+                grid_dir,
+                ver,
+                fcov,
+                model,
+                grid_lam,
+                param_file=args.config_file,
+            )

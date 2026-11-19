@@ -11,10 +11,12 @@ from unyt import Angstrom, Hz, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import Parser
+from syncretize.parser import Parser, get_choice, load_params
 
 
-def make_grid(model, rotation, model_type, imf, input_dir, grid_dir):
+def make_grid(
+    model, rotation, model_type, imf, input_dir, grid_dir, param_file=None
+):
     """Main function to convert Maraston 2024 and
     produce grids used by synthesizer
     Args:
@@ -76,7 +78,9 @@ def make_grid(model, rotation, model_type, imf, input_dir, grid_dir):
     spec = np.zeros((len(ages), len(metallicities), len(lam)))
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(f"{grid_dir}/{synthesizer_model_name}.hdf5")
+    out_grid = GridFile(
+        f"{grid_dir}/{synthesizer_model_name}.hdf5", param_file=param_file
+    )
 
     log_on_read = {"ages": True, "metallicities": False}
 
@@ -116,7 +120,16 @@ if __name__ == "__main__":
     # Set up the command line arguments
     parser = Parser(description="Maraston+24 download and grid creation")
 
+    # parameter file to use
+    parser.add_argument("--config-file", type=str, required=True)
+
     args = parser.parse_args()
+
+    # open the config file and extract parameters
+    config = load_params(
+        args.config_file,
+        model_keys=["imf_type", "rotation", "model_type"],
+    )
 
     grid_dir = args.grid_dir
 
@@ -126,6 +139,15 @@ if __name__ == "__main__":
 
     model_types = ["Te", "Tenc"]
     imfs = ["kr", "ss"]
+
+    # Only make the grid chosen in the config file
+    rotation_codes = {0.0: "00", 0.4: "40"}
+    rotations = [
+        rotation_codes[get_choice(config.model, "rotation", rotation_codes)]
+    ]
+    model_types = [get_choice(config.model, "model_type", model_types)]
+    imf_codes = {"kroupa": "kr", "salpeter": "ss"}
+    imfs = [imf_codes[get_choice(config.model, "imf_type", imf_codes)]]
 
     input_dir = f"{args.input_dir}/{sps_name}"
 
@@ -165,4 +187,5 @@ if __name__ == "__main__":
                     imf,
                     input_dir,
                     grid_dir,
+                    param_file=args.config_file,
                 )

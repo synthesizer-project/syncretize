@@ -1,5 +1,6 @@
 import copy
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -16,7 +17,7 @@ from syncretize.incident.sps.utils import get_model_filename
 
 CONFIG = (
     Path(__file__).parents[1]
-    / "src/syncretize/incident/sps/fsps/configs"
+    / "parameter_files/incident/sps/fsps"
     / "variable_high_mass_slope.yaml"
 )
 SINGLE_SLOPE_CONFIG = CONFIG.with_name("variable_single_slope.yaml")
@@ -26,6 +27,13 @@ def _raw_config():
     """Return an independent copy of the documented example configuration."""
     with CONFIG.open() as stream:
         return yaml.safe_load(stream)
+
+
+def _parse(raw, tmp_path):
+    """Write a modified configuration and parse it like the script does."""
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    return load_fsps_imf_config(path)
 
 
 def test_explicit_imf_axis_config():
@@ -41,32 +49,28 @@ def test_explicit_imf_axis_config():
     np.testing.assert_allclose(slopes, [1.3, 2.3, 1.8])
 
 
-def test_generated_log_imf_axis_config():
+def test_generated_log_imf_axis_config(tmp_path):
     raw = _raw_config()
-    axis = raw["imf"]["slopes"][-1]["axis"]
+    axis = raw["Axes"][0]
     axis.pop("values")
-    axis["range"] = {
-        "minimum": 1.0,
-        "maximum": 4.0,
-        "number": 3,
-        "spacing": "log",
-    }
-    config = parse_fsps_imf_config(raw)
+    axis.update(type="log-range", min=1.0, max=4.0, n=3)
+    config = _parse(raw, tmp_path)
 
     np.testing.assert_allclose(config["axis"]["axis_values"], [1.0, 2.0, 4.0])
 
 
-def test_outer_mass_boundary_can_be_axis():
+def test_outer_mass_boundary_can_be_axis(tmp_path):
     raw = _raw_config()
-    raw["imf"]["slopes"][-1]["vary_axis"] = False
-    raw["imf"]["slopes"][-1].pop("axis")
-    boundary = raw["imf"]["mass_boundaries"][-1]
-    boundary["vary_axis"] = True
-    boundary["axis"] = {
-        "name": "imf_upper_mass",
-        "values": [100.0, 120.0, 150.0],
-    }
-    config = parse_fsps_imf_config(raw)
+    raw["Axes"] = [
+        {
+            "name": "imf_upper_mass",
+            "target": "imf_masses[3]",
+            "type": "values",
+            "values": [100.0, 120.0, 150.0],
+        }
+    ]
+    config = _parse(raw, tmp_path)
+    assert config["axis"]["name"] == "upper_mass"
 
     boundaries, slopes = imf_values_at_axis(config, 150.0)
     np.testing.assert_allclose(boundaries, [0.08, 0.5, 1.0, 150.0])
@@ -84,32 +88,43 @@ def test_single_power_law_config():
     assert len(config["axis"]["axis_values"]) == 18
 
 
-def test_rejects_multiple_imf_axes():
+def test_rejects_multiple_imf_axes(tmp_path):
     raw = _raw_config()
-    second_axis = raw["imf"]["slopes"][0]
-    second_axis["vary_axis"] = True
-    second_axis["axis"] = copy.deepcopy(raw["imf"]["slopes"][-1]["axis"])
-    second_axis["axis"]["name"] = "imf_low_mass_slope"
+    second_axis = copy.deepcopy(raw["Axes"][0])
+    second_axis.update(name="imf_low_mass_slope", target="imf_slopes[0]")
+    raw["Axes"].append(second_axis)
 
     with pytest.raises(ValueError, match="At most one IMF parameter"):
-        parse_fsps_imf_config(raw)
+        _parse(raw, tmp_path)
 
 
-def test_rejects_variable_internal_boundary():
+def test_rejects_variable_internal_boundary(tmp_path):
     raw = _raw_config()
-    raw["imf"]["slopes"][-1]["vary_axis"] = False
-    raw["imf"]["slopes"][-1].pop("axis")
-    boundary = raw["imf"]["mass_boundaries"][1]
-    boundary["vary_axis"] = True
-    boundary["axis"] = {
-        "name": "imf_low_mass_break",
-        "values": [0.4, 0.5, 0.6],
-    }
+    raw["Axes"] = [
+        {
+            "name": "imf_low_mass_break",
+            "target": "imf_masses[1]",
+            "type": "values",
+            "values": [0.4, 0.5, 0.6],
+        }
+    ]
 
     with pytest.raises(
         ValueError, match="cannot vary internal mass boundaries"
     ):
-        parse_fsps_imf_config(raw)
+        _parse(raw, tmp_path)
+
+
+def test_fixed_imf_config_has_no_axis():
+    config = parse_fsps_imf_config(
+        SimpleNamespace(
+            model={"sps_version": "4.0", "imf_type": "bpl"},
+            constants={"imf_masses": [0.08, 120.0], "imf_slopes": [2.3]},
+            axes={},
+            axis_info={},
+        )
+    )
+    assert config["axis"] is None
 
 
 def test_variable_axis_filename_follows_canonical_prefix():
@@ -130,8 +145,6 @@ def test_variable_axis_filename_follows_canonical_prefix():
 
 
 def test_fsps_libraries_checks_expected():
-    from types import SimpleNamespace
-
     sp = SimpleNamespace(libraries=(b"mist", b"miles", b"DL07"))
     assert fsps_libraries(sp) == ["mist", "miles", "DL07"]
     assert fsps_libraries(sp, ["mist", "miles"]) == ["mist", "miles", "DL07"]

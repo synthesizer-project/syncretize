@@ -30,7 +30,7 @@ from unyt import Hz, angstrom, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import Parser
+from syncretize.parser import Parser, get_choice, load_params
 
 
 def resolve_name(original_model_name, bin, alpha=False):
@@ -91,7 +91,12 @@ def parse_spectra_file(filename):
 
 
 def make_single_alpha_grid(
-    original_model_name, input_dir, grid_dir, ae="+00", bs="bin"
+    original_model_name,
+    input_dir,
+    grid_dir,
+    ae="+00",
+    bs="bin",
+    param_file=None,
 ):
     """make a grid for a single alpha enhancement"""
 
@@ -176,7 +181,7 @@ def make_single_alpha_grid(
             spectra[ia, imetal, :] = spec_
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=param_file)
 
     # A dictionary with Boolean values for each axis, where True
     # indicates that the attribute should be interpolated in
@@ -201,7 +206,9 @@ def make_single_alpha_grid(
     out_grid.add_specific_ionising_lum()
 
 
-def make_full_grid(original_model_name, input_dir, grid_dir, bs="bin"):
+def make_full_grid(
+    original_model_name, input_dir, grid_dir, bs="bin", param_file=None
+):
     """make a full grid for different alpha-ehancements"""
 
     # returns a dictionary containing the sps model parameters
@@ -297,7 +304,7 @@ def make_full_grid(original_model_name, input_dir, grid_dir, bs="bin"):
                 spectra[ia, imetal, iae, :] = spec_  # Lsol AA^-1 10^6 Msol^-1
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=param_file)
 
     log_on_read = {
         "ages": True,
@@ -327,24 +334,31 @@ def make_full_grid(original_model_name, input_dir, grid_dir, bs="bin"):
 
 if __name__ == "__main__":
     # Set up the command line arguments
-    parser = Parser(
-        description="BPASS_2.3 download and grid creation",
-        with_alpha=True,
-    )
+    parser = Parser(description="BPASS_2.3 download and grid creation")
 
-    parser.add_argument(
-        "-models",
-        "--models",
-        default="bpass_v2.3_imf135_300",
-        type=lambda arg: arg.split(","),
-    )
-
-    # flags whether to build individual grids or the full grid.
-    individual = True
-    full = True
+    # parameter file to use
+    parser.add_argument("--config-file", type=str, required=True)
 
     # Unpack the arguments
     args = parser.parse_args()
+
+    # open the config file and extract parameters
+    config = load_params(
+        args.config_file,
+        constant_keys=["alpha_enhancement"],
+        axis_names=["alpha_enhancement"],
+    )
+
+    # The BPASS file codes for each alpha enhancement
+    alpha_codes = {-0.2: "-02", 0.0: "+00", 0.2: "+02", 0.4: "+04", 0.6: "+06"}
+
+    # flags whether to build individual grids or the full grid.
+    full = "alpha_enhancement" in config.axes
+    individual = not full
+    if full and list(config.axes["alpha_enhancement"]) != list(alpha_codes):
+        raise ValueError(
+            f"The alpha_enhancement axis must be {list(alpha_codes)}"
+        )
 
     # the directory to store downloaded input files
     input_dir = args.input_dir
@@ -359,20 +373,33 @@ if __name__ == "__main__":
     # files
     input_dir += f"/{sps_name}"
 
-    models = args.models
+    # (the only model available)
+    models = ["bpass_v2.3_imf135_300"]
 
     for model in models:
         for bs in ["bin"]:  # no single star models , 'sin'
             # make a grid with a single alpha enahancement value
             if individual:
-                for ae in ["-02", "+00", "+02", "+04", "+06"]:
+                alpha = get_choice(
+                    config.constants, "alpha_enhancement", alpha_codes
+                )
+                for ae in [alpha_codes[alpha]]:
                     print(ae)
                     out_filename = make_single_alpha_grid(
-                        model, input_dir, grid_dir, ae=ae, bs=bs
+                        model,
+                        input_dir,
+                        grid_dir,
+                        ae=ae,
+                        bs=bs,
+                        param_file=args.config_file,
                     )
 
             # make a full 3D grid
             if full:
                 out_filename = make_full_grid(
-                    model, input_dir, grid_dir, bs=bs
+                    model,
+                    input_dir,
+                    grid_dir,
+                    bs=bs,
+                    param_file=args.config_file,
                 )

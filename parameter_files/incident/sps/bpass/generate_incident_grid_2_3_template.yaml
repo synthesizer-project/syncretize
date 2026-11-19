@@ -1,0 +1,34 @@
+# Template parameter file for src/syncretize/incident/sps/bpass/generate_incident_grid_2_3.py
+# (BPASS v2.3).
+#
+# Every key is listed with what it does and its allowed values; copy this file
+# and edit it to make a grid.
+#
+#   python src/syncretize/incident/sps/bpass/generate_incident_grid_2_3.py \
+#       --config-file parameter_files/incident/sps/bpass/generate_incident_grid_2_3_template.yaml \
+#       --grid-dir <grid-dir> --input-dir <input-dir>
+#
+# Every section must be present, but may be left blank. Unknown keys stop
+# the script with an error.
+#
+# The source data must be downloaded manually (see the script docstring).
+# There is one model (bpass_v2.3_imf135_300, binary stars).
+
+# Which model to make
+Model:
+  # grid_name: my-grid  # (Optional) Write <grid-dir>/<grid_name>.hdf5 instead of the name built from the model.
+
+# Fixed parameters
+Constants:
+  alpha_enhancement: 0.0  # [alpha/Fe] of a grid at one value. Options: -0.2, 0.0, 0.2, 0.4, 0.6. Remove this to use the axis below instead.
+
+# Grid axes (ages and metallicities come from the source data)
+Axes:
+  # Uncomment instead of Constants.alpha_enhancement for a grid with alpha
+  # enhancement as an axis (all five values are required):
+  # - name: alpha_enhancement
+  #   type: values
+  #   values: [-0.2, 0.0, 0.2, 0.4, 0.6]
+
+# Sobol sampling settings
+Sampling:  # (Not used: this script can't Sobol-sample its axes)

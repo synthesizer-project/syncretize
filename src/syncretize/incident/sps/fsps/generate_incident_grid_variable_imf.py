@@ -3,7 +3,8 @@
 Example:
     python generate_incident_grid_variable_imf.py \
         --grid-dir path/to/grid/dir \
-        --config-file fsps/configs/variable_high_mass_slope.yaml
+        --config-file \
+        parameter_files/incident/sps/fsps/variable_high_mass_slope.yaml
 """
 
 import fsps
@@ -127,7 +128,7 @@ def generate_grid(config, grid_dir, config_file):
         descriptions[axis["axis_name"]] = _axis_description(config)
         log_on_read[axis["axis_name"]] = axis["log_on_read"]
 
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=config_file)
     print(f"Writing {out_filename}", flush=True)
     out_grid.write_grid_common(
         model=model,

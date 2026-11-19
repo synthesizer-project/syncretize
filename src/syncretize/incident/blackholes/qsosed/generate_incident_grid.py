@@ -15,12 +15,11 @@ installed.
 import sys
 
 import numpy as np
-import yaml
 from synthesizer.utils.integrate import trapezoid
 from unyt import Angstrom, Hz, Msun, c, dimensionless, erg, s
 
 from syncretize.grid_io import GridFile
-from syncretize.parser import Parser
+from syncretize.parser import Parser, load_params
 
 sys.path.append("RELAGN/src/python_version")
 
@@ -57,10 +56,19 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # open the config file and extract parameters
-    with open(args.config_file, "r") as file:
-        parameters = yaml.safe_load(file)
+    config = load_params(
+        args.config_file,
+        model_keys=["grid_name"],
+        constant_keys=["cosine_inclinations"],
+        axis_names=[
+            "log10masses",
+            "log10accretion_rates_eddington",
+            "cosine_inclinations",
+        ],
+    )
+    parameters = {**config.constants, **config.axes}
 
-    model_name = parameters["model"]
+    model_name = config.model["grid_name"]
     mass = 10 ** np.array(parameters["log10masses"])
     accretion_rate_eddington = 10 ** np.array(
         parameters["log10accretion_rates_eddington"]
@@ -196,7 +204,7 @@ if __name__ == "__main__":
                     spec[i1, i2, i3] /= bolometric_luminosity
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=args.config_file)
 
     if not isotropic:
         log_on_read["cosine_inclinations"] = False

@@ -1,0 +1,15 @@
+Model:
+  grid_name: bpl-feltre16
+Constants:
+  edges: [10.0, 2500.0, 100000.0, 1000000.0] # Angstrom
+Axes:
+  - name: alpha1
+    type: values
+    values: [-2.0, -1.8, -1.6, -1.4, -1.2, -1.0]
+  - name: alpha2
+    type: values
+    values: [-0.5]
+  - name: alpha3
+    type: values
+    values: [2.0]
+Sampling:

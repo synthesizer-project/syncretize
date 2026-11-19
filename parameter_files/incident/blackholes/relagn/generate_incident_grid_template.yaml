@@ -1,0 +1,41 @@
+# Template parameter file for src/syncretize/incident/blackholes/relagn/generate_incident_grid.py
+# (RELAGN; needs RELAGN and XSPEC).
+#
+# Every key is listed with what it does and its allowed values; copy this file
+# and edit it to make a grid.
+#
+#   python src/syncretize/incident/blackholes/relagn/generate_incident_grid.py \
+#       --config-file parameter_files/incident/blackholes/relagn/generate_incident_grid_template.yaml \
+#       --grid-dir <grid-dir> [--num-procs 8]
+#
+# Every section must be present, but may be left blank. Unknown keys stop
+# the script with an error.
+
+# Which model to make
+Model:
+  grid_name: relagn  # Name of the grid; it is written to <grid-dir>/<grid_name>.hdf5.
+
+# Fixed parameters
+Constants:
+  # cosine_inclinations: 0.5  # (Optional) A single inclination for an isotropic grid, instead of the axis below.
+
+# Grid axes. Give exactly one of spins and radiative_efficiencies.
+Axes:
+  - name: log10masses                      # log10 of the black hole mass in Msun.
+    type: values                           # How the axis is sampled. Options: values (an explicit list), linear-range or log-range (give min, max and n instead of values; both limits included).
+    values: [6.0, 7.0, 8.0, 9.0, 10.0]     # The axis values, strictly increasing.
+  - name: log10accretion_rates_eddington   # log10 of the accretion rate in units of the Eddington rate.
+    type: values                           # How the axis is sampled. Options: values (an explicit list), linear-range or log-range (give min, max and n instead of values; both limits included).
+    values: [-1.5, -1.0, 0.0, 0.5]         # The axis values, strictly increasing.
+  - name: cosine_inclinations              # cos(inclination), in [0.09, 1.0]. For an isotropic grid remove this axis and set Constants.cosine_inclinations to one value (e.g. 0.5).
+    type: values                           # How the axis is sampled. Options: values (an explicit list), linear-range or log-range (give min, max and n instead of values; both limits included).
+    values: [0.09, 0.5, 0.98]              # The axis values, strictly increasing.
+  - name: spins                            # Dimensionless black hole spin, in [0, 0.998].
+    type: values                           # How the axis is sampled. Options: values (an explicit list), linear-range or log-range (give min, max and n instead of values; both limits included).
+    values: [0.0, 0.25, 0.5, 0.75, 0.998]  # The axis values, strictly increasing.
+  # - name: radiative_efficiencies  # Radiative efficiencies, converted to spins; use instead of spins.
+  #   type: values
+  #   values: [0.1]
+
+# Sobol sampling settings
+Sampling:  # (Not used: this script can't Sobol-sample its axes)

@@ -26,7 +26,7 @@ from unyt import Hz, angstrom, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import Parser
+from syncretize.parser import Parser, get_choice, load_params
 
 
 def resolve_name(original_model_name, bin):
@@ -91,7 +91,7 @@ def untar_data(model, filename, input_dir):
     os.remove(filename)
 
 
-def make_grid(original_model_name, bin, input_dir, grid_dir):
+def make_grid(original_model_name, bin, input_dir, grid_dir, param_file=None):
     # returns a dictionary containing the sps model parameters
     model, bpass_imf = resolve_name(original_model_name, bin)
 
@@ -171,7 +171,7 @@ def make_grid(original_model_name, bin, input_dir, grid_dir):
     ages = 10**log10ages
 
     # Create the GridFile ready to take outputs
-    out_grid = GridFile(out_filename)
+    out_grid = GridFile(out_filename, param_file=param_file)
 
     # A dictionary with Boolean values for each axis, where True
     # indicates that the attribute should be interpolated in
@@ -214,18 +214,17 @@ if __name__ == "__main__":
     # Set up the command line arguments
     parser = Parser(description="BPASS_2.2.1 download and grid creation")
 
-    # add argument to specify the specific bpass model/IMF
-    parser.add_argument(
-        "-models",
-        "--models",
-        help="""list of models to process, separated by ','.
-        By default uses 'bpass_v2.2.1_imf_chab100'.
-        Use 'all' to process all models.""",
-        default="bpass_v2.2.1_imf_chab100",
-    )
+    # parameter file to use
+    parser.add_argument("--config-file", type=str, required=True)
 
     # Unpack the arguments
     args = parser.parse_args()
+
+    # open the config file and extract parameters
+    config = load_params(
+        args.config_file,
+        model_keys=["bpass_model", "variant"],
+    )
 
     # the directory to store downloaded input files
     input_dir = args.input_dir
@@ -240,27 +239,29 @@ if __name__ == "__main__":
     # files
     input_dir += f"/{sps_name}"
 
-    # get list of models
-    models = args.models
-
-    # If all models are specified
-    if models == "all":
-        models = [
-            "bpass_v2.2.1_imf_chab100",
-            "bpass_v2.2.1_imf_chab300",
-            "bpass_v2.2.1_imf100_300",
-            "bpass_v2.2.1_imf135_300",
-            "bpass_v2.2.1_imf170_300",
-            "bpass_v2.2.1_imf100_100",
-            "bpass_v2.2.1_imf135_100",
-            "bpass_v2.2.1_imf170_100",
-        ]
-    else:
-        models = models.split(",")
+    # get the model chosen in the config file
+    models = [
+        get_choice(
+            config.model,
+            "bpass_model",
+            [
+                "bpass_v2.2.1_imf_chab100",
+                "bpass_v2.2.1_imf_chab300",
+                "bpass_v2.2.1_imf100_300",
+                "bpass_v2.2.1_imf135_300",
+                "bpass_v2.2.1_imf170_300",
+                "bpass_v2.2.1_imf100_100",
+                "bpass_v2.2.1_imf135_100",
+                "bpass_v2.2.1_imf170_100",
+            ],
+        )
+    ]
 
     # loop over all models
     for model in models:
         print("-" * 50)
         print(model)
-        for bin in ["bin", "sin"]:
-            make_grid(model, bin, input_dir, grid_dir)
+        for bin in [get_choice(config.model, "variant", ["bin", "sin"])]:
+            make_grid(
+                model, bin, input_dir, grid_dir, param_file=args.config_file
+            )
