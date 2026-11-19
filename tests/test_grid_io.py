@@ -222,4 +222,23 @@ def test_write_cloudy_metadata_rejects_clashing_key_names(tmp_path):
     # A single numeric key is fine; 1 and "1" would both be named "1"
     grid.write_cloudy_metadata({1: "a"})
     with pytest.raises(ValueError, match="more than once"):
+        grid.write_cloudy_metadata(
+            {"cloudy_version": "c23.01", "nested": {1: "a", "1": "b"}}
+        )
+
+    # The file is closed again and nothing from the refused call was written
+    assert grid.hdf is None
+    with h5py.File(tmp_path / "grid.hdf5", "r") as hdf:
+        assert set(hdf["CloudyParams"].attrs) == {"1"}
+        assert "nested" not in hdf["CloudyParams"]
+
+
+def test_write_cloudy_metadata_refused_on_a_fresh_file(tmp_path):
+    grid = GridFile(str(tmp_path / "grid.hdf5"))
+
+    with pytest.raises(ValueError, match="more than once"):
         grid.write_cloudy_metadata({"nested": {1: "a", "1": "b"}})
+
+    assert grid.hdf is None
+    with h5py.File(tmp_path / "grid.hdf5", "r") as hdf:
+        assert "CloudyParams" not in hdf
