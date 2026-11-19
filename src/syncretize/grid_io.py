@@ -46,6 +46,7 @@ from tqdm import tqdm
 from unyt import Lsun, dimensionless, unyt_array
 
 from syncretize._version import __version__ as syncretize_version
+from syncretize.parser import YAMLLoader
 from syncretize.photoionisation import EDGE_IONS, Ions, edge_wavelength
 
 #: Offset (Angstrom) of the points inserted either side of an edge.
@@ -173,7 +174,7 @@ class GridFile:
         self._param_contents = None
         if param_file is not None:
             self._param_contents = Path(param_file).read_text()
-            params = yaml.safe_load(self._param_contents) or {}
+            params = yaml.load(self._param_contents, Loader=YAMLLoader) or {}
             # Checked before the output file is opened (and truncated)
             if isinstance(params.get("contents"), dict):
                 raise ValueError(
@@ -222,7 +223,7 @@ class GridFile:
         """
         contents = self._param_contents
         grp = self.hdf.create_group("ParameterFile")
-        _write_attrs(grp, yaml.safe_load(contents) or {})
+        _write_attrs(grp, yaml.load(contents, Loader=YAMLLoader) or {})
         dset = grp.create_dataset(
             "contents",
             data=contents,

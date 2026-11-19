@@ -132,6 +132,26 @@ def test_load_params_builds_axes_and_checks_keys(tmp_path):
         load_params(path, ["variant"], ["max_age"], ["a", "b"])
 
 
+def test_load_params_rejects_bad_entries(tmp_path):
+    base = "Model:\nConstants:\n"
+    cases = {
+        "Axes:\n  - {name: a, type: linear-range, min: 0}\nSampling:\n": (
+            r"needs \['max', 'n'\]"
+        ),
+        "Axes:\n  - {name: a, type: sobol, min: 1, max: 2, scale: Log}\n"
+        "Sampling:\n  n_samples: 4\n": "scale must be linear or log",
+        "Axes:\nSampling:\n  nsamples: 4\n": "unknown Sampling keys",
+        "Axes:\n  - a\nSampling:\n": "each axis must be a mapping",
+    }
+    for text, message in cases.items():
+        with pytest.raises(ValueError, match=message):
+            load_params(
+                _write(tmp_path, base + text),
+                axis_names=["a"],
+                allow_sobol=True,
+            )
+
+
 def test_load_params_needs_every_section(tmp_path):
     path = _write(tmp_path, "Model:\nConstants:\nAxes:\n")
     with pytest.raises(ValueError, match="missing \\['Sampling'\\]"):

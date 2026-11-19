@@ -216,6 +216,7 @@ if __name__ == "__main__":
 
     # parameter file to use
     parser.add_argument("--config-file", type=str, required=True)
+
     # Unpack the arguments
     args = parser.parse_args()
 

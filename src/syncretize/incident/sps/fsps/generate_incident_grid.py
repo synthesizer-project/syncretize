@@ -167,6 +167,9 @@ if __name__ == "__main__":
     # imf_masses [m_low, m_high].
     imf_type = get_choice(config.model, "imf_type", ["bpl", "chabrier03"])
     imf_masses = config.constants["imf_masses"]
+    imf_slopes = config.constants.get("imf_slopes", [])
+    if imf_type == "bpl" and len(imf_slopes) != 3:
+        raise ValueError("The bpl IMF needs three imf_slopes")
     if imf_type == "chabrier03" and not (
         len(imf_masses) == 2 and 0 < imf_masses[0] < imf_masses[1]
     ):
@@ -178,9 +181,7 @@ if __name__ == "__main__":
         {
             "imf_type": imf_type,
             "imf_masses": imf_masses,
-            "imf_slopes": config.constants.get("imf_slopes", [])
-            if imf_type == "bpl"
-            else [],
+            "imf_slopes": imf_slopes if imf_type == "bpl" else [],
         }
     ]
 

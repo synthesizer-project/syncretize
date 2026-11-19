@@ -21,15 +21,23 @@ from scipy.stats import qmc
 #: The sections every incident parameter file has, in order
 SECTIONS = ("Model", "Constants", "Axes", "Sampling")
 
-#: How an axis entry can be sampled
-AXIS_TYPES = ("values", "linear-range", "log-range", "sobol")
+#: How an axis entry can be sampled, and the keys each type needs
+AXIS_TYPES = {
+    "values": ("values",),
+    "linear-range": ("min", "max", "n"),
+    "log-range": ("min", "max", "n"),
+    "sobol": ("min", "max"),
+}
+
+#: The settings of the Sobol sampler
+SAMPLING_KEYS = ("n_samples", "seed", "scramble")
 
 
-class _Loader(yaml.SafeLoader):
+class YAMLLoader(yaml.SafeLoader):
     """A YAML loader that reads 1e6 and 1.0e6 as floats, not strings."""
 
 
-_Loader.add_implicit_resolver(
+YAMLLoader.add_implicit_resolver(
     "tag:yaml.org,2002:float",
     re.compile(
         r"^[-+]?(?:[0-9][0-9_]*\.[0-9_]*(?:[eE][-+]?[0-9]+)?"
@@ -71,7 +79,7 @@ def load_params(
             model), ``axis_info`` (name -> the axis entry) and ``sampling``.
     """
     with open(param_file) as file:
-        raw = yaml.load(file, Loader=_Loader) or {}
+        raw = yaml.load(file, Loader=YAMLLoader) or {}
     if not isinstance(raw, dict):
         raise ValueError(f"{param_file} must be a mapping of sections")
 
@@ -90,9 +98,12 @@ def load_params(
     sampling = raw["Sampling"] or {}
     _check_keys(param_file, "Model", model, model_keys)
     _check_keys(param_file, "Constants", constants, constant_keys)
+    _check_keys(param_file, "Sampling", sampling, SAMPLING_KEYS)
 
     axis_info = {}
     for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError(f"{param_file}: each axis must be a mapping")
         name = entry.get("name")
         if not isinstance(name, str) or (
             axis_names is not None and name not in axis_names
@@ -107,6 +118,15 @@ def load_params(
             raise ValueError(
                 f"{param_file}: axis {name} type must be one of "
                 f"{list(AXIS_TYPES)}, got {entry.get('type')!r}"
+            )
+        missing = [k for k in AXIS_TYPES[entry["type"]] if k not in entry]
+        if missing:
+            raise ValueError(
+                f"{param_file}: {entry['type']} axis {name} needs {missing}"
+            )
+        if entry.get("scale", "linear") not in ("linear", "log"):
+            raise ValueError(
+                f"{param_file}: axis {name} scale must be linear or log"
             )
         axis_info[name] = entry
 
@@ -139,6 +159,8 @@ def load_params(
 
 def _check_keys(param_file, section, values, allowed):
     """Reject keys in a section that the script doesn't accept."""
+    if not isinstance(values, dict):
+        raise ValueError(f"{param_file}: {section} must be a mapping")
     unknown = set(values) - set(allowed)
     if unknown:
         raise ValueError(

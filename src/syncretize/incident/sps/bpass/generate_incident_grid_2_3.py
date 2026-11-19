@@ -30,7 +30,7 @@ from unyt import Hz, angstrom, dimensionless, erg, s, yr
 
 from syncretize.grid_io import GridFile
 from syncretize.incident.sps.utils import get_model_filename
-from syncretize.parser import Parser, load_params
+from syncretize.parser import Parser, get_choice, load_params
 
 
 def resolve_name(original_model_name, bin, alpha=False):
@@ -381,11 +381,9 @@ if __name__ == "__main__":
         for bs in ["bin"]:  # no single star models , 'sin'
             # make a grid with a single alpha enahancement value
             if individual:
-                alpha = config.constants["alpha_enhancement"]
-                if alpha not in alpha_codes:
-                    raise ValueError(
-                        f"alpha_enhancement must be one of {list(alpha_codes)}"
-                    )
+                alpha = get_choice(
+                    config.constants, "alpha_enhancement", alpha_codes
+                )
                 for ae in [alpha_codes[alpha]]:
                     print(ae)
                     out_filename = make_single_alpha_grid(
