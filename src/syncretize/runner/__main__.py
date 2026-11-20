@@ -10,7 +10,7 @@ from syncretize.runner.log import log, setup
 def main():
     """Run one stage of a run."""
     parser = argparse.ArgumentParser(
-        prog="python -m syncretize.runner",
+        prog="syncretize",
         description="Run a grid from a run config (see "
         "parameter_files/runs/run_template.yaml).",
     )
@@ -24,15 +24,21 @@ def main():
             "work",
             "finish",
             "assemble",
+            "watch",
         ],
         help="run: every stage (submits the start job, or runs here with "
         "--local); resume: carry on a stopped run from its next stage; "
         "incident: only the incident grid, here. The Slurm jobs run start "
         "(incident grid, Cloudy inputs, first round), work (one Cloudy "
         "worker), finish (tidy the queue, submit the next job) and assemble "
-        "(the final grid)",
+        "(the final grid); watch: a live view of a run",
     )
-    parser.add_argument("run_file", help="The run config")
+    parser.add_argument(
+        "run_file",
+        nargs="?",
+        help="The run config (for watch, also a work directory; by default "
+        "the current directory)",
+    )
     parser.add_argument(
         "--local",
         action="store_true",
@@ -44,7 +50,27 @@ def main():
         help="work: the worker's time limit (it stops claiming models "
         "Run.cloudy.margin before it)",
     )
+    parser.add_argument(
+        "-n",
+        "--interval",
+        type=float,
+        default=2.0,
+        help="watch: seconds between redraws (default 2)",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="watch: print the view once and exit",
+    )
     args = parser.parse_args()
+
+    if args.stage == "watch":
+        from syncretize.runner.watch import watch
+
+        watch(args.run_file, interval=args.interval, once=args.once)
+        return
+    if args.run_file is None:
+        parser.error(f"{args.stage} needs the run config")
 
     runner = Runner(args.run_file)
     job = os.environ.get("SLURM_JOB_ID")

@@ -184,7 +184,26 @@ workers' logs have a line per model, with why it failed. What the incident
 model and Cloudy scripts print goes to a ``.details`` file beside it instead,
 and any warnings in it are repeated in the logs.
 
-To see how a round is doing while its workers run:
+Watching a run
+--------------
+
+.. code-block:: console
+
+   syncretize watch [run.yaml | work_dir]
+
+shows a live view of a run that fills the terminal, redrawn every 2 seconds
+(``-n`` to change): progress with the rate and an ETA, the queue, the current
+round (workers running and queued, models finished, failed, retried and
+stopped, run times), the run's jobs, every round so far, the models given up
+on and the end of ``run.log``. Press ``f`` for a full-screen list of the models
+given up on, ``l`` for a full-screen ``run.log`` and ``q`` to quit; ``--once``
+prints the view once. With no argument it watches the run in the current
+directory. It only reads the run's files (and asks Slurm about its jobs every
+30 seconds), so it can be left running anywhere. ``syncretize`` also takes the
+other stages, e.g. ``syncretize run run.yaml``, the same as
+``python -m syncretize.runner``.
+
+Without it, to see how a round is doing while its workers run:
 
 .. code-block:: console
 

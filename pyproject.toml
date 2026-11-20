@@ -85,8 +85,12 @@ dependencies = [
   "gdown",
   "hoki",
   "fsps",
-  "gitpython"
+  "gitpython",
+  "rich"
 ]
+
+[project.scripts]
+syncretize = "syncretize.runner.__main__:main"
 
 # Optional dependencies for specific use cases.
 [project.optional-dependencies]

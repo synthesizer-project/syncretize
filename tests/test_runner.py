@@ -399,6 +399,25 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
         assert text in run_log
     assert "0_9 done" not in run_log
 
+    # syncretize watch draws the run, filling the terminal it's given
+    from rich.console import Console
+
+    from syncretize.runner.watch import Watcher, render
+
+    work_dir = str(tmp_path / "work")
+    snapshot = Watcher(work_dir).read() | {"work_dir": work_dir, "interval": 2}
+    console = Console(record=True, width=120, height=40)
+    console.print(render(snapshot, 120, 40))
+    screen = console.export_text()
+    assert len(screen.splitlines()) == 40
+    for text in (
+        "189/192 done",
+        "Given up (3)",
+        "1_3",
+        "Round 1 has finished",
+    ):
+        assert text in screen
+
     # A finished run is resumed by doing nothing, and isn't run again
     assert runner.resume(local=True) is None
     with pytest.raises(ValueError, match="use resume"):
