@@ -184,6 +184,18 @@ def create_empty_grid(
             for ion in hf["log10_specific_ionising_luminosity"].keys()
         }
 
+        # The fractions of the formed mass left in stars and remnants
+        # (synthesizer reads star_fraction for surviving masses), as stored
+        fractions = {
+            key: (
+                hf[key][...],
+                hf[key].attrs.get("Units", "dimensionless"),
+                hf[key].attrs.get("Description", key),
+            )
+            for key in ("star_fraction", "remnant_fraction")
+            if key in hf
+        }
+
     # Compute the amount we may have to expand the axes (if we don't need to
     # expand this is harmless)
     expansion = int(
@@ -220,6 +232,16 @@ def create_empty_grid(
                 f" for {ion}",
                 log_on_read=False,
             )
+
+    # Copy over the stellar and remnant fractions, which depend only on the
+    # incident model, unchanged
+    for key, (values, units, description) in fractions.items():
+        out_grid.write_dataset(
+            key=key,
+            data=unyt_array(values, units),
+            description=description,
+            log_on_read=False,
+        )
 
     # Copy over the weight attribute from the incident grid
     weight_var = getattr(incident_grid, "_weight_var", None)

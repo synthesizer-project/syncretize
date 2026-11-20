@@ -63,6 +63,13 @@ def _write_incident_grid(path, weight):
         weight=weight,
     )
 
+    grid.write_dataset(
+        "star_fraction",
+        np.array([0.9, 0.7]) * dimensionless,
+        "Remaining stellar fraction",
+        log_on_read=False,
+    )
+
     for ion, values in INCIDENT_LOG10_Q.items():
         grid.write_dataset(
             f"log10_specific_ionising_luminosity/{ion}",
@@ -102,6 +109,9 @@ def test_create_empty_grid_copies_stored_ionising_luminosity(
 
     with h5py.File(tmp_path / "new.hdf5", "r") as hf:
         assert hf.attrs["WeightVariable"] == weight
+        # The stellar fraction comes across unchanged, with its units
+        np.testing.assert_array_equal(hf["star_fraction"][...], [0.9, 0.7])
+        assert hf["star_fraction"].attrs["Units"] == "dimensionless"
         for ion, expected in INCIDENT_LOG10_Q.items():
             stored = hf["log10_specific_ionising_luminosity"][ion][...]
             if extra_axis:
