@@ -494,12 +494,21 @@ class Runner:
             self._save_models(models)
             # Its rounds (until the assembly) are the PerturbCloudy phase
             self._save_state(perturbing=True)
-            points = {run.partition("p")[0] for run in runs}
-            log.info(
-                f"Perturbing {_count(len(points), 'failed model')}: queued "
-                f"{_count(len(runs), 'run')} either side of their Cloudy "
-                "parameters, to interpolate them from"
-            )
+            # A run's level ends its name (e.g. 1_3p0-2): level 1 is a model
+            # just perturbed, a higher one a failed side tried further out
+            new = [run for run in runs if run.endswith(("-1", "+1"))]
+            points = {run.partition("p")[0] for run in new}
+            if new:
+                log.info(
+                    f"Perturbing {_count(len(points), 'failed model')}: "
+                    f"queued {_count(len(new), 'run')} either side of their "
+                    "Cloudy parameters, to interpolate them from"
+                )
+            if len(runs) > len(new):
+                log.info(
+                    f"Retrying {_count(len(runs) - len(new), 'perturbed run')}"
+                    " that failed, twice as far out"
+                )
         return runs
 
     def assemble(self):
@@ -951,8 +960,9 @@ class Runner:
             lines.append(
                 f"  and {len(failures) - LIST_FAILURES} more (see state.yaml)"
             )
+        models = _count(len(failures), "model")
         log.info(
-            f"{len(failures)} models failed every attempt {when}".rstrip()
+            f"{models} failed every attempt {when}".rstrip()
             + " (with why the last failed):\n"
             + "\n".join(lines)
         )

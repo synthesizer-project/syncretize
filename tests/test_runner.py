@@ -725,6 +725,7 @@ def test_failed_models_are_interpolated_from_perturbed_runs(
 
     run_log = (tmp_path / "work" / "run.log").read_text()
     assert "Perturbing 3 failed models" in run_log
+    assert "Retrying 15 perturbed runs that failed, twice as far" in run_log
     assert "1 interpolated from perturbed runs, 2 failed" in run_log
     assert sorted(runner._load_state()["failures"]) == ["2_5", "3_1"]
     # The perturbed runs' rounds are the PerturbCloudy phase
