@@ -6,6 +6,7 @@ Creates a folder for every incident grid point and then input files for every
 individual photoionisation model.
 """
 
+import json
 import shutil
 from pathlib import Path
 
@@ -426,6 +427,29 @@ def create_cloudy_inputs(
     # Save parameters_to_save dictionary to a YAML file
     with open(f"{output_directory}/grid_parameters.yaml", "w") as file:
         yaml.dump(parameters_to_save, file, default_flow_style=False)
+
+    # Save each model's grid point: incident point <i> and photoionisation
+    # point <j> of the inputs <i>/<j>.in, by index and value
+    if len(variable_photoionisation_params) > 0:
+        photoionisation_points = {
+            "axes": list(photoionisation_axes),
+            "indices": np.asarray(photoionisation_index_list).tolist(),
+            "values": np.asarray(photoionisation_model_list).tolist(),
+        }
+    else:
+        photoionisation_points = {"axes": [], "indices": [[]], "values": [[]]}
+    with open(f"{output_directory}/grid_points.json", "w") as file:
+        json.dump(
+            {
+                "incident": {
+                    "axes": list(incident_axes),
+                    "indices": np.asarray(incident_index_list).tolist(),
+                    "values": np.asarray(incident_model_list).tolist(),
+                },
+                "photoionisation": photoionisation_points,
+            },
+            file,
+        )
 
     # Also save the cloudy parameter file to the output folder
     shutil.copy(cloudy_paramfile, f"{output_directory}/")

@@ -3,7 +3,6 @@
 import argparse
 import os
 
-from syncretize.runner import Runner
 from syncretize.runner.log import log, setup
 
 
@@ -71,6 +70,9 @@ def main():
         return
     if args.run_file is None:
         parser.error(f"{args.stage} needs the run config")
+
+    # Imported here, since it imports synthesizer, which watch doesn't need
+    from syncretize.runner import Runner
 
     runner = Runner(args.run_file)
     job = os.environ.get("SLURM_JOB_ID")

@@ -11,12 +11,15 @@ anywhere the work directory is visible:
     run.log          its last lines
     squeue           the run's jobs (every 30 s, when Slurm is there)
 
-Keys: q quits, f toggles a full-screen list of the failed models (those that
-failed every attempt), l a full-screen run.log.
+Keys: q quits, and each of these toggles a full-screen view: f the failed
+models (those that failed every attempt), l run.log, m a map of the grid
+coloured by each point's state, s the slowest models so far.
 """
 
+import functools
 import getpass
 import json
+import math
 import os
 import select
 import shutil
@@ -36,6 +39,7 @@ from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
 
+from syncretize.runner.cloudy import iteration, model_path
 from syncretize.runner.queue import STATES
 
 #: The header's height (a panel of two lines)
@@ -75,9 +79,13 @@ def find_work_dir(path=None):
             raise ValueError(
                 f"{path} holds neither a run's state.yaml nor a run.yaml"
             )
-    from syncretize.runner.config import load_run
-
-    return load_run(path).run["work_dir"]
+    # Only work_dir is needed, so the config isn't checked (which would
+    # import synthesizer and take seconds)
+    with open(path) as file:
+        work_dir = os.path.expanduser(
+            (yaml.safe_load(file) or {})["Run"]["work_dir"]
+        )
+    return os.path.normpath(os.path.join(os.path.dirname(path), work_dir))
 
 
 class Watcher:
@@ -96,6 +104,9 @@ class Watcher:
         self._ended = {}  # job ID: how its tasks ended, from sacct
         self._running_cache, self._running_at = [], 0.0
         self._models, self._models_mtime = {}, None
+        self._finished = []  # every finished attempt, from models.json
+        self._names = {state: [] for state in STATES}  # the queue's models
+        self._grid_points = None
 
     def read(self):
         """Everything the view shows, as a dict."""
@@ -108,7 +119,11 @@ class Watcher:
             "slurm": self._slurm(state),
             "ended": self._ended,
             "attempts": self._attempts(),
+            "finished": self._finished,
             "running": self._running(),
+            "names": self._names,
+            "points": self._points(state.get("cloudy_dir")),
+            "cloudy_dir": state.get("cloudy_dir"),
             "now": datetime.now(timezone.utc),
         }
 
@@ -132,11 +147,25 @@ class Watcher:
         counts = {}
         for state in STATES:
             try:
-                counts[state] = len(os.listdir(self._path("queue", state)))
+                names = os.listdir(self._path("queue", state))
             except FileNotFoundError:
-                counts[state] = 0
+                names = []
+            self._names[state] = [name.partition("@")[0] for name in names]
+            counts[state] = len(names)
         self._counts, self._counted = counts, time.monotonic()
         return counts
+
+    def _points(self, cloudy_dir):
+        """Each model's grid point (grid_points.json, from the setup)."""
+        if self._grid_points is None and cloudy_dir is not None:
+            try:
+                with open(
+                    os.path.join(cloudy_dir, "grid_points.json")
+                ) as file:
+                    self._grid_points = json.load(file)
+            except (OSError, json.JSONDecodeError):
+                return None
+        return self._grid_points
 
     def _running(self):
         """The claimed models and how long they've run, longest first.
@@ -213,6 +242,12 @@ class Watcher:
             except (OSError, json.JSONDecodeError):
                 return self._models
             self._models = {m: len(e["attempts"]) for m, e in models.items()}
+            self._finished = [
+                attempt
+                for entry in models.values()
+                for attempt in entry["attempts"]
+                if attempt.get("result") in ("done", "failed")
+            ]
             self._models_mtime = mtime
         return self._models
 
@@ -325,7 +360,7 @@ def render(snapshot, width, height, view="main"):
         width, height (int)
             The terminal's size, which the view fills.
         view (str)
-            "main", "failures" or "log".
+            "main", or a full-screen "failures", "log", "map" or "slowest".
 
     Returns:
         rich.layout.Layout
@@ -334,7 +369,7 @@ def render(snapshot, width, height, view="main"):
     layout = Layout()
     header = _header(snapshot)
     footer = Text(
-        f" q quit · f failed models · l run.log · every "
+        f" q quit · f failed · l run.log · m map · s slowest · every "
         f"{snapshot['interval']:g}s"
         f" · {snapshot['work_dir']}",
         style="dim",
@@ -342,13 +377,14 @@ def render(snapshot, width, height, view="main"):
         overflow="ellipsis",
     )
 
-    if view in ("log", "failures"):
+    if view != "main":
         rows = height - HEADER - 1 - 2
-        body = (
-            _log_panel(snapshot["log"], rows, width - 4)
-            if view == "log"
-            else _failures_panel(snapshot, rows, full=True)
-        )
+        body = {
+            "log": lambda: _log_panel(snapshot["log"], rows, width - 4),
+            "failures": lambda: _failures_panel(snapshot, rows, full=True),
+            "map": lambda: _map_panel(snapshot, width - 4, rows),
+            "slowest": lambda: _slowest_panel(snapshot, rows - 1),
+        }[view]()
         layout.split_column(
             Layout(header, size=HEADER), Layout(body), Layout(footer, size=1)
         )
@@ -625,39 +661,284 @@ def _failures(snapshot):
     return failures
 
 
+#: How grid axes are shown: their label, and whether on a log scale
+AXIS_LABELS = {
+    "ages": ("log age", True),
+    "metallicities": ("Z", False),
+    "ionisation_parameter": ("log U", True),
+    "reference_ionisation_parameter": ("log U_ref", True),
+    "hydrogen_density": ("log nH", True),
+    "abundance_scalings.carbon_to_oxygen": ("C/O", False),
+    "abundance_scalings.nitrogen_to_oxygen": ("N/O", False),
+    "depletion_scale": ("depl", False),
+    "gas_metallicity": ("Z gas", False),
+    "alpha_enhancement": ("alpha", False),
+}
+
+
+def _point_columns(points):
+    """The grid's axes, incident then photoionisation, as columns.
+
+    Returns:
+        list of (label, log, part, position)
+    """
+    if points is None:
+        return []
+    columns = []
+    for part in ("incident", "photoionisation"):
+        for position, axis in enumerate(points[part]["axes"]):
+            label, log = AXIS_LABELS.get(axis, (axis.split(".")[-1], False))
+            columns.append((label, log, part, position))
+    return columns
+
+
+def _format(value, log):
+    if log and value > 0:
+        return f"{math.log10(value):.2f}"
+    return f"{value:.3g}"
+
+
+def _point(points, model, columns):
+    """A model's grid point, as text for each column."""
+    i, j = (int(index) for index in model.split("_"))
+    out = []
+    for _, log, part, position in columns:
+        try:
+            values = points[part]["values"][i if part == "incident" else j]
+            out.append(_format(values[position], log))
+        except (IndexError, TypeError, KeyError):
+            out.append("?")
+    return out
+
+
+@functools.lru_cache(maxsize=4096)
+def _ionisation_parameter(cloudy_dir, model):
+    """A model's ionisation parameter, as written into its input."""
+    try:
+        with open(model_path(cloudy_dir, model) + ".yaml") as file:
+            value = (yaml.safe_load(file) or {}).get("ionisation_parameter")
+        return None if value is None else float(value)
+    except (OSError, yaml.YAMLError, TypeError, ValueError):
+        return None
+
+
+def _models_table(snapshot, rows, extra_headers):
+    """A table of models with their grid points, and columns to add.
+
+    Returns:
+        (Table, columns, show_u): the table, the grid's columns, and whether
+        a "log U" column (the reference model's U, not an axis) is shown.
+    """
+    points = snapshot["points"]
+    columns = _point_columns(points)
+    show_u = "log U" not in [c[0] for c in columns]
+    # Columns as wide as their contents, so none is squeezed
+    table = Table(box=None, padding=(0, 1))
+    table.add_column("model", no_wrap=True, min_width=5)
+    for label, *_ in columns:
+        table.add_column(label, justify="right", no_wrap=True)
+    if show_u:
+        table.add_column("log U", justify="right", no_wrap=True)
+    for header in extra_headers:
+        table.add_column(header, justify="right", no_wrap=True)
+    return table, columns, show_u
+
+
+def _iteration_text(cloudy_dir, model):
+    if cloudy_dir is None:
+        return "?"
+    now, most = iteration(model_path(cloudy_dir, model))
+    if now is None:
+        return Text("–", style="yellow")
+    return f"{now}/{most}" if most else str(now)
+
+
 def _running_panel(snapshot, rows):
-    """The models running longest, flagging those slow for this round."""
-    running = snapshot["running"]
+    """The models running longest: grid point, iteration, worker, time.
+
+    Those running more than twice this round's median are yellow, to spot
+    one that hangs. Only the rows shown read their .out for the iteration.
+    """
+    running, cloudy_dir = snapshot["running"], snapshot["cloudy_dir"]
     times = [
         r["seconds"]
         for r in snapshot["records"]
         if r["result"] in ("done", "failed")
     ]
     slow = 2 * statistics.median(times) if times else None
-    table = Table(box=None, padding=(0, 1), expand=True, show_header=False)
-    table.add_column(no_wrap=True)
-    table.add_column(no_wrap=True, style="dim", overflow="ellipsis")
-    table.add_column(justify="right", no_wrap=True)
-    for model, owner, seconds in running[: max(rows, 0)]:
+    table, columns, show_u = _models_table(
+        snapshot, rows, ["iter", "worker", "time"]
+    )
+    for model, owner, seconds in running[: max(rows - 1, 0)]:
         style = "yellow" if slow is not None and seconds > slow else ""
-        table.add_row(model, owner, Text(_duration(seconds), style=style))
-    if not running:
-        table.add_row(Text("nothing running", style="dim"), "", "")
-    title = f"Running longest ({len(running)} running"
+        u = _ionisation_parameter(cloudy_dir, model) if cloudy_dir else None
+        table.add_row(
+            model,
+            *(_point(snapshot["points"], model, columns) if columns else []),
+            *([_format(u, True) if u else "?"] if show_u else []),
+            _iteration_text(cloudy_dir, model),
+            Text(owner, style="dim"),
+            Text(_duration(seconds), style=style),
+        )
+    title = f"Running now ({len(running)}"
     title += f", yellow > 2 x median {_duration(slow / 2)})" if slow else ")"
+    if not running:
+        return Panel(
+            Text("nothing running", style="dim"),
+            title=title,
+            title_align="left",
+        )
     return Panel(table, title=title, title_align="left")
+
+
+def _slowest_panel(snapshot, rows):
+    """The slowest Cloudy runs so far, with their grid points."""
+    finished = snapshot["finished"] + [
+        r for r in snapshot["records"] if r["result"] in ("done", "failed")
+    ]
+    finished.sort(key=lambda r: -r.get("seconds", 0))
+    table, columns, show_u = _models_table(
+        snapshot, rows, ["iterations", "result", "worker", "time"]
+    )
+    for record in finished[: max(rows, 0)]:
+        u = record.get("ionisation_parameter")
+        iterations = record.get("iterations")
+        table.add_row(
+            record["model"],
+            *(
+                _point(snapshot["points"], record["model"], columns)
+                if columns
+                else []
+            ),
+            *([_format(u, True) if u else "?"] if show_u else []),
+            "?" if iterations is None else str(iterations),
+            Text(
+                record["result"],
+                style="green" if record["result"] == "done" else "red",
+            ),
+            Text(record.get("owner", ""), style="dim"),
+            _duration(record.get("seconds", 0)),
+        )
+    return Panel(
+        table,
+        title=f"Slowest Cloudy runs ({len(finished)} finished)",
+        title_align="left",
+    )
+
+
+#: The map's shades, by the fraction of a cell's models done
+SHADES = " ░▒▓█"
+
+
+def _map_panel(snapshot, width, height):
+    """A map of the grid's first two incident axes, coloured by state.
+
+    Each cell holds every model at that point (all the other axes): its
+    shade is the fraction done, red if any failed, cyan if any running.
+    """
+    points = snapshot["points"]
+    if points is None:
+        return Panel(
+            Text(
+                "No grid_points.json: the run was set up before the setup "
+                "wrote it",
+                style="dim",
+            ),
+            title="Grid map",
+            title_align="left",
+        )
+    incident = points["incident"]
+    axes, indices = incident["axes"], incident["indices"]
+    nx = max(index[0] for index in indices) + 1
+    ny = max(index[1] for index in indices) + 1 if len(axes) > 1 else 1
+
+    # Values along each axis, for the labels
+    along = [{}, {}]
+    for index, values in zip(indices, incident["values"]):
+        for k in range(min(2, len(axes))):
+            along[k][index[k]] = values[k]
+    labels = [AXIS_LABELS.get(axis, (axis, False)) for axis in axes[:2]]
+
+    label_width = 8
+    columns = max(width - label_width - 2, 1)
+    bx = max(1, math.ceil(nx / columns))  # grid points per cell, across
+    by = max(1, math.ceil(ny / max(height - 6, 1)))  # and down
+    # As wide as fits (a small grid gets big cells)
+    cell = max(1, min(columns // math.ceil(nx / bx), 6))
+
+    cells = {}
+    for state, names in snapshot["names"].items():
+        for model in names:
+            try:
+                i = int(model.split("_")[0])
+                index = indices[i]
+            except (ValueError, IndexError):
+                continue
+            key = (index[0] // bx, (index[1] if ny > 1 else 0) // by)
+            tally = cells.setdefault(key, dict.fromkeys(STATES, 0))
+            tally[state] += 1
+
+    lines = Text()
+    for row in range(math.ceil(ny / by)):
+        value = along[1].get(row * by) if ny > 1 else None
+        label = (
+            _format(value, labels[1][1]) if value is not None else ""
+        ).rjust(label_width)
+        lines.append(label + " ", style="dim")
+        for col in range(math.ceil(nx / bx)):
+            tally = cells.get((col, row))
+            if not tally or not sum(tally.values()):
+                lines.append(" " * cell)
+                continue
+            total = sum(tally.values())
+            shade = SHADES[round(4 * tally["done"] / total)]
+            if shade == " ":
+                shade = "·"
+            style = (
+                "red"
+                if tally["failed"]
+                else "cyan"
+                if tally["claimed"]
+                else "green"
+                if tally["done"] == total
+                else "white"
+            )
+            lines.append(shade * cell, style=style)
+        lines.append("\n")
+    first, last = along[0].get(0), along[0].get(nx - 1)
+    axis_line = (
+        f"{_format(first, labels[0][1])} … {_format(last, labels[0][1])}"
+        if first is not None
+        else ""
+    )
+    lines.append(" " * (label_width + 1) + axis_line + "\n", style="dim")
+    lines.append(
+        f"across: {labels[0][0]}"
+        + (f" · down: {labels[1][0]}" if ny > 1 else "")
+        + f" · {bx * by} point(s) a cell · shade: fraction done"
+        " · green all done · cyan running · red failed\n",
+        style="dim",
+    )
+    return Panel(lines, title="Grid map", title_align="left")
 
 
 def _failures_panel(snapshot, rows, full=False):
     failures = _failures(snapshot)
     attempts = snapshot["attempts"]
     table = Table(box=None, padding=(0, 1), expand=True, show_header=False)
-    table.add_column(no_wrap=True, style="red")
-    table.add_column(justify="right", style="dim", no_wrap=True)
-    table.add_column(
-        no_wrap=not full, overflow="ellipsis" if not full else "fold"
-    )
     items = list(failures.items())
+    # The names and attempts are never squeezed; the reasons take the rest
+    table.add_column(
+        no_wrap=True,
+        style="red",
+        min_width=max((len(m) for m, _ in items), default=4),
+    )
+    table.add_column(justify="right", style="dim", no_wrap=True, min_width=3)
+    table.add_column(
+        no_wrap=not full,
+        overflow="ellipsis" if not full else "fold",
+        ratio=1,
+    )
     # All that fit, or room for "and N more" below the rest
     shown = items if full or len(items) <= rows else items[: max(rows - 1, 0)]
     for model, why in shown:
@@ -750,8 +1031,14 @@ def watch(path=None, interval=2.0, once=False):
                     key = sys.stdin.read(1).lower()
                     if key == "q":
                         return
-                    if key in ("f", "l"):
-                        new = {"f": "failures", "l": "log"}[key]
+                    views = {
+                        "f": "failures",
+                        "l": "log",
+                        "m": "map",
+                        "s": "slowest",
+                    }
+                    if key in views:
+                        new = views[key]
                         view = "main" if view == new else new
     except KeyboardInterrupt:
         pass

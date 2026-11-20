@@ -291,6 +291,7 @@ with open(j + ".out", "w") as file:
     if behaviour == "fail":
         file.write(" [Stop in cdMain, something went wrong]\\n")
         sys.exit(1)
+    file.write(" Start Iteration Number 2\\n Iteration 2 of 10.\\n")
     file.write(" [Stop in cdMain, Cloudy exited OK]\\n")
 # Continua (.cont: wavelength and 8 nu L_nu columns, blue last) and the
 # albedo (.refl, column 4)
@@ -381,6 +382,8 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
         "done",
     ]
     assert models["0_9"]["state"] == "done"
+    # with how far Cloudy got
+    assert models["0_9"]["attempts"][-1]["iterations"] == 2
     assert len(models["1_3"]["attempts"]) == 3
     assert models["1_3"]["state"] == "failed"
     assert not os.listdir(tmp_path / "work" / "state")
@@ -410,6 +413,13 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
     console.print(render(snapshot, 120, 40))
     screen = console.export_text()
     assert len(screen.splitlines()) == 40
+    for view, text in (
+        ("map", "across: log age · down: Z"),
+        ("slowest", "iterations"),
+    ):
+        console = Console(record=True, width=120, height=40)
+        console.print(render(snapshot, 120, 40, view))
+        assert text in console.export_text()
     for text in (
         "189/192 done",
         "Failed models (3",

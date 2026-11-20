@@ -11,13 +11,15 @@ it runs; the finish stage gathers these into the run's models.json.
 
 import json
 import os
+import re
 import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from syncretize.cloudy.create_synthesizer_grid import check_if_failed
+import yaml
+
 from syncretize.runner.log import duration, log
 from syncretize.runner.queue import Queue
 
@@ -133,6 +135,7 @@ def work(
                     "requeued": requeued,
                     "started": started,
                     "seconds": round(time.monotonic() - start, 1),
+                    **model_details(cloudy_dir, model),
                 }
                 with lock:
                     with open(record_file, "a") as file:
@@ -146,6 +149,59 @@ def work(
         for future in [pool.submit(loop, slot) for slot in range(slots)]:
             future.result()
     return records
+
+
+def model_details(cloudy_dir, model):
+    """What a model's files say about it, for its record.
+
+    Returns:
+        dict
+            "iterations" (how many Cloudy iterations it reached, or None)
+            and "ionisation_parameter" (as written into its input, or None).
+    """
+    path = model_path(cloudy_dir, model)
+    details = {"iterations": iteration(path)[0], "ionisation_parameter": None}
+    try:
+        with open(path + ".yaml") as file:
+            value = (yaml.safe_load(file) or {}).get("ionisation_parameter")
+        details["ionisation_parameter"] = (
+            None if value is None else float(value)
+        )
+    except (OSError, yaml.YAMLError, TypeError, ValueError):
+        pass
+    return details
+
+
+def model_path(cloudy_dir, model):
+    """A model's files, <cloudy_dir>/<i>/<j> (add .in, .out, ...)."""
+    incident_index, photoionisation_index = model.split("_")
+    return os.path.join(cloudy_dir, incident_index, photoionisation_index)
+
+
+#: Cloudy's iteration markers in its .out, e.g. "Start Iteration Number 3"
+#: and "Iteration 2 of 10"
+ITERATION = re.compile(rb"Iteration (?:Number )?(\d+)(?: of (\d+))?")
+
+
+def iteration(path, size=65536):
+    """The iteration a Cloudy run (path without .out) has reached.
+
+    Returns:
+        (int, int)
+            The iteration and the most it may take, either None when the
+            .out doesn't say (e.g. it has none yet).
+    """
+    try:
+        with open(path + ".out", "rb") as file:
+            file.seek(0, os.SEEK_END)
+            file.seek(max(0, file.tell() - size))
+            matches = ITERATION.findall(file.read())
+    except OSError:
+        return None, None
+    if not matches:
+        return None, None
+    most = next((int(m[1]) for m in reversed(matches) if m[1]), None)
+    return int(matches[-1][0]), most
 
 
 def run_model(cloudy_dir, model, executable, extensions, stop_at=None):
@@ -175,6 +231,10 @@ def run_model(cloudy_dir, model, executable, extensions, stop_at=None):
         process.kill()
         process.wait()
         return "stopped", "stopped at the time limit"
+    # Imported here: it imports synthesizer, which the watcher (using this
+    # module's iteration) shouldn't wait for
+    from syncretize.cloudy.create_synthesizer_grid import check_if_failed
+
     reason = check_if_failed(
         os.path.join(directory, photoionisation_index), extensions
     )
