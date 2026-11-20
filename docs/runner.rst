@@ -232,10 +232,9 @@ end of ``run.log``, the models that failed and the models running longest
 (with their grid points and Cloudy iterations; those slow for the round in
 yellow, to spot one that hangs). Every panel scrolls, with the keys or the
 mouse; ``Tab`` moves between them, and ``run.log`` follows new lines unless
-scrolled up. Press ``f`` or ``l`` to show the failed models or ``run.log``
-full screen (again to go back), ``m`` for a map of the grid coloured by each
-point's state, ``s`` for the slowest runs (``Esc`` to go back) and ``q`` to
-quit; ``--once`` prints a summary
+scrolled up. Press ``l`` or ``r`` to show ``run.log`` or the running models
+full screen (again to go back), ``s`` for your Slurm queue, refreshed every
+10 seconds (``s`` or ``Esc`` to go back), and ``q`` to quit; ``--once`` prints a summary
 once. With no argument it watches the run in the current
 directory. It only reads the run's files (and asks Slurm about its jobs every
 30 seconds), so it can be left running anywhere. ``syncretize`` also takes the

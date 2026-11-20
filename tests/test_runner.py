@@ -586,8 +586,7 @@ def check_watch(work_dir):
     from syncretize.runner.watch import (
         WatchApp,
         Watcher,
-        _map_text,
-        _slowest_rows,
+        _squeue_rows,
         summary,
     )
 
@@ -603,9 +602,12 @@ def check_watch(work_dir):
         "grid_limited",
     ):
         assert expected in text
-    assert "across: log age · down: Z" in _map_text(snapshot, 100, 30).plain
-    headers, rows, _ = _slowest_rows(snapshot)
-    assert "iterations" in headers and len(rows) == 199
+    # The Slurm queue, without squeue
+    assert _squeue_rows(snapshot) == ([], "Slurm queue (no squeue here)")
+    jobs = [["1", "serial", f"R1-{snapshot['state']['name']}-Cloudy"]]
+    jobs[0] += ["RUNNING", "1:00", "20:00", "1", "m1"]
+    rows, title = _squeue_rows({**snapshot, "squeue": jobs})
+    assert len(rows) == 1 and "1 running" in title
 
     async def drive():
         app = WatchApp(work_dir, interval=0.5)
@@ -614,15 +616,19 @@ def check_watch(work_dir):
             assert app.query_one("#failed", DataTable).row_count == 3
             assert app.query_one("#rounds", DataTable).row_count == 1
             assert len(app.query_one("#log", RichLog).lines) > 10
-            # The full-screen views open and close
-            await pilot.press("m")
-            await pilot.pause(0.5)
-            assert app.screen.key == "map"
+            # The Slurm queue opens and closes
             await pilot.press("s")
             await pilot.pause(0.5)
-            assert app.screen.key == "slowest"
-            assert app.screen.query_one("#view", DataTable).row_count == 199
-            await pilot.press("escape")
+            assert app.watcher.show_squeue
+            await pilot.press("s")
+            await pilot.pause(0.2)
+            assert not app.watcher.show_squeue
+            await pilot.pause(0.2)
+            assert not app.watcher.show_squeue
+            await pilot.press("r")
+            await pilot.pause(0.2)
+            assert app.screen.maximized is app.query_one("#running")
+            await pilot.press("r")
             await pilot.press("l")
             await pilot.pause(0.2)
             assert app.screen.maximized is app.query_one("#log")

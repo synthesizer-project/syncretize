@@ -13,9 +13,8 @@ running anywhere the work directory is visible:
     squeue, sacct    the run's jobs (every 30 s, when Slurm is there)
 
 Every panel scrolls (keys or mouse); Tab moves between them. run.log follows
-new lines unless scrolled up. Keys: f the failed models and l run.log full
-screen (again to go back), m a map of the grid coloured by each point's
-state, s the slowest models so far (Esc to go back), q quits.
+new lines unless scrolled up. Keys: l run.log and r the running models full
+screen (again to go back), s your Slurm queue (Esc to go back), q quits.
 """
 
 import functools
@@ -41,7 +40,7 @@ from rich.table import Table
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import DataTable, Footer, RichLog, Static
 
@@ -51,6 +50,22 @@ from syncretize.runner.queue import STATES
 
 #: How often squeue is asked about the run's jobs (s)
 SLURM_EVERY = 30
+
+#: How often the Slurm queue view asks squeue for all your jobs (s)
+SQUEUE_EVERY = 10
+
+#: The Slurm queue view's columns, and squeue's format for them
+SQUEUE_COLUMNS = (
+    "job",
+    "partition",
+    "name",
+    "state",
+    "time",
+    "limit",
+    "nodes",
+    "nodelist (reason)",
+)
+SQUEUE_FORMAT = "%i|%P|%j|%T|%M|%l|%D|%R"
 
 #: Above this many models, the queue is counted every QUEUE_EVERY seconds
 #: rather than every redraw (listing big directories is slow on Lustre)
@@ -109,6 +124,9 @@ class Watcher:
         self._names = {state: [] for state in STATES}  # the queue's models
         self._grid_points = None
         self._log_offset = None  # how much of run.log has been read
+        #: Whether to ask squeue for all your jobs (the Slurm queue view)
+        self.show_squeue = False
+        self._squeue, self._squeue_at = None, 0.0
 
     def read(self):
         """Everything the view shows, as a dict."""
@@ -120,6 +138,7 @@ class Watcher:
             "log": self._log_tail(),
             "log_new": self._log_new(),
             "slurm": self._slurm(state),
+            "squeue": self._all_jobs() if self.show_squeue else None,
             "ended": self._ended,
             "attempts": self._attempts(),
             "finished": self._finished,
@@ -273,6 +292,29 @@ class Watcher:
             ]
             self._models_mtime = mtime
         return self._models
+
+    def _all_jobs(self):
+        """All your jobs in squeue (SQUEUE_COLUMNS), or None without it."""
+        if shutil.which("squeue") is None:
+            return None
+        if time.monotonic() - self._squeue_at < SQUEUE_EVERY:
+            return self._squeue
+        try:
+            result = subprocess.run(
+                ["squeue", "-u", getpass.getuser(), "-h", "-o", SQUEUE_FORMAT],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return self._squeue
+        self._squeue_at = time.monotonic()
+        width = len(SQUEUE_COLUMNS)
+        self._squeue = [
+            (line.split("|", width - 1) + [""] * width)[:width]
+            for line in result.stdout.splitlines()
+        ]
+        return self._squeue
 
     def _slurm(self, state):
         """The run's queued and running jobs, by job ID (every 30 s).
@@ -725,98 +767,6 @@ def _iteration_text(cloudy_dir, model):
     return f"{now}/{most}" if most else str(now)
 
 
-#: The map's shades, by the fraction of a cell's models done
-SHADES = " ░▒▓█"
-
-
-def _map_text(snapshot, width, height):
-    """A map of the grid's first two incident axes, coloured by state.
-
-    Each cell holds every model at that point (all the other axes): its
-    shade is the fraction done, red if any failed, cyan if any running.
-    """
-    points = snapshot["points"]
-    if points is None:
-        return Text(
-            "No grid_points.json: the run was set up before the setup wrote "
-            "it",
-            style="dim",
-        )
-    incident = points["incident"]
-    axes, indices = incident["axes"], incident["indices"]
-    nx = max(index[0] for index in indices) + 1
-    ny = max(index[1] for index in indices) + 1 if len(axes) > 1 else 1
-
-    # Values along each axis, for the labels
-    along = [{}, {}]
-    for index, values in zip(indices, incident["values"]):
-        for k in range(min(2, len(axes))):
-            along[k][index[k]] = values[k]
-    labels = [AXIS_LABELS.get(axis, (axis, False)) for axis in axes[:2]]
-
-    label_width = 8
-    columns = max(width - label_width - 2, 1)
-    bx = max(1, math.ceil(nx / columns))  # grid points per cell, across
-    by = max(1, math.ceil(ny / max(height - 6, 1)))  # and down
-    # As wide as fits (a small grid gets big cells)
-    cell = max(1, min(columns // math.ceil(nx / bx), 6))
-
-    cells = {}
-    for state, names in snapshot["names"].items():
-        for model in names:
-            try:
-                i = int(model.split("_")[0])
-                index = indices[i]
-            except (ValueError, IndexError):
-                continue
-            key = (index[0] // bx, (index[1] if ny > 1 else 0) // by)
-            tally = cells.setdefault(key, dict.fromkeys(STATES, 0))
-            tally[state] += 1
-
-    lines = Text()
-    for row in range(math.ceil(ny / by)):
-        value = along[1].get(row * by) if ny > 1 else None
-        label = (
-            _format(value, labels[1][1]) if value is not None else ""
-        ).rjust(label_width)
-        lines.append(label + " ", style="dim")
-        for col in range(math.ceil(nx / bx)):
-            tally = cells.get((col, row))
-            if not tally or not sum(tally.values()):
-                lines.append(" " * cell)
-                continue
-            total = sum(tally.values())
-            shade = SHADES[round(4 * tally["done"] / total)]
-            if shade == " ":
-                shade = "·"
-            style = (
-                "red"
-                if tally["failed"]
-                else "cyan"
-                if tally["claimed"]
-                else "green"
-                if tally["done"] == total
-                else "white"
-            )
-            lines.append(shade * cell, style=style)
-        lines.append("\n")
-    first, last = along[0].get(0), along[0].get(nx - 1)
-    axis_line = (
-        f"{_format(first, labels[0][1])} … {_format(last, labels[0][1])}"
-        if first is not None
-        else ""
-    )
-    lines.append(" " * (label_width + 1) + axis_line + "\n", style="dim")
-    lines.append(
-        f"across: {labels[0][0]}"
-        + (f" · down: {labels[1][0]}" if ny > 1 else "")
-        + f" · {bx * by} point(s) a cell · shade: fraction done"
-        " · green all done · cyan running · red failed\n",
-        style="dim",
-    )
-    return lines
-
-
 #: The columns of the rounds table
 ROUND_COLUMNS = (
     "round",
@@ -986,46 +936,29 @@ def _running_rows(snapshot):
     return headers, rows, title
 
 
-#: The most rows the slowest view lists
-SLOWEST_ROWS = 2000
-
-
-def _slowest_rows(snapshot):
-    """The slowest Cloudy runs so far, with their grid points.
+def _squeue_rows(snapshot):
+    """The Slurm queue view's rows: this run's jobs bold, states coloured.
 
     Returns:
-        (headers, rows, title)
+        (rows, title)
     """
-    finished = snapshot["finished"] + [
-        r for r in snapshot["records"] if r["result"] in ("done", "failed")
-    ]
-    finished.sort(key=lambda r: -r.get("seconds", 0))
-    headers, columns, show_u = _model_columns(
-        snapshot, ["iterations", "result", "worker", "time"]
-    )
+    jobs = snapshot["squeue"]
+    if jobs is None:
+        return [], "Slurm queue (no squeue here)"
+    run = f"-{snapshot['state'].get('name')}-"
+    colours = {"RUNNING": "cyan", "PENDING": "yellow", "COMPLETING": "green"}
     rows = []
-    for n, record in enumerate(finished[:SLOWEST_ROWS]):
-        u = record.get("ionisation_parameter")
-        iterations = record.get("iterations")
-        rows.append(
-            (
-                str(n),
-                [
-                    record["model"],
-                    *_point(snapshot["points"], record["model"], columns),
-                    *([_format(u, True) if u else "?"] if show_u else []),
-                    "?" if iterations is None else str(iterations),
-                    Text(
-                        record["result"],
-                        style="green" if record["result"] == "done" else "red",
-                    ),
-                    Text(record.get("owner", ""), style="dim"),
-                    _duration(record.get("seconds", 0)),
-                ],
-            )
-        )
-    title = f"Slowest Cloudy runs ({len(finished)} finished)"
-    return headers, rows, title
+    for n, job in enumerate(jobs):
+        bold = " bold" if run in job[2] else ""
+        cells = [Text(value, style=bold.strip()) for value in job]
+        cells[3] = Text(job[3], style=colours.get(job[3], "red") + bold)
+        rows.append((str(n), cells))
+    running = sum(job[3] == "RUNNING" for job in jobs)
+    title = (
+        f"Slurm queue: {len(jobs)} jobs, {running} running "
+        "(this run's in bold)"
+    )
+    return rows, title
 
 
 #: The colour of each stage's tag in run.log
@@ -1135,44 +1068,37 @@ def _table(id):
     )
 
 
-class _FullScreen(Screen):
-    """A full-screen view (the map or the slowest runs); Esc goes back."""
+class _SlurmQueue(Screen):
+    """Your Slurm queue, full screen; s or Esc goes back."""
 
     BINDINGS = [
         ("escape", "app.pop_screen", "Back"),
+        ("s", "app.pop_screen", "Back"),
         ("q", "app.quit", "Quit"),
     ]
 
-    def __init__(self, key):
-        super().__init__()
-        self.key = key
-
     def compose(self) -> ComposeResult:
         yield Static(id="header")
-        if self.key == "map":
-            with VerticalScroll(id="view"):
-                yield Static(id="map")
-        else:
-            yield _table("view")
+        yield _table("view")
         yield Footer()
 
     def on_mount(self):
+        # Asked for only while shown, and now rather than at the next redraw
+        self.app.watcher.show_squeue = True
+        self.app.read()
         if self.app.snapshot is not None:
             self.show(self.app.snapshot)
+
+    def on_unmount(self):
+        self.app.watcher.show_squeue = False
 
     def show(self, snapshot):
         header = self.query_one("#header", Static)
         header.update(_header(snapshot, header.content_size.width or 118))
-        view = self.query_one("#view")
-        if self.key == "map":
-            view.border_title = "Grid map"
-            self.query_one("#map", Static).update(
-                _map_text(snapshot, self.size.width - 4, self.size.height - 8)
-            )
-        else:
-            headers, rows, title = _slowest_rows(snapshot)
-            view.border_title = title
-            _fill(view, headers, rows, right=range(1, len(headers) - 3))
+        view = self.query_one("#view", DataTable)
+        rows, title = _squeue_rows(snapshot)
+        view.border_title = title
+        _fill(view, list(SQUEUE_COLUMNS), rows, right=[4, 5, 6])
 
 
 class WatchApp(App):
@@ -1208,11 +1134,11 @@ class WatchApp(App):
         padding: 0 1;
     }
     #jobs, #rounds, #failed, #running, #view { padding: 0; }
-    DataTable:focus, RichLog:focus, VerticalScroll:focus {
+    DataTable:focus, RichLog:focus {
         border: round $accent;
     }
     /* Thin, quiet scrollbars, brighter when used */
-    DataTable, RichLog, VerticalScroll {
+    DataTable, RichLog {
         scrollbar-size-vertical: 1;
         scrollbar-size-horizontal: 1;
         scrollbar-background: $surface;
@@ -1233,8 +1159,9 @@ class WatchApp(App):
         color: $text;
         text-style: bold;
     }
-    /* Key bindings: each key a bright chip, its action plain text */
-    Footer { background: $primary 25%; }
+    /* Key bindings: each key a bright chip, its action plain text, on
+       the screen's own background */
+    Footer { background: $background; }
     FooterKey { background: transparent; }
     FooterKey .footer-key--key {
         background: $accent;
@@ -1250,10 +1177,9 @@ class WatchApp(App):
     """
     BINDINGS = [
         ("q", "quit", "Quit"),
-        ("f", "toggle_max('failed')", "Failed"),
         ("l", "toggle_max('log')", "Log"),
-        ("m", "view('map')", "Map"),
-        ("s", "view('slowest')", "Slowest"),
+        ("r", "toggle_max('running')", "Running"),
+        ("s", "squeue", "Slurm queue"),
     ]
 
     def __init__(self, work_dir, interval=2.0):
@@ -1341,7 +1267,7 @@ class WatchApp(App):
         for line in snapshot["log_new"]:
             log.write(_log_text(line), scroll_end=following)
 
-        if isinstance(self.screen, _FullScreen):
+        if isinstance(self.screen, _SlurmQueue):
             self.screen.show(snapshot)
 
     def on_descendant_focus(self, event):
@@ -1354,27 +1280,23 @@ class WatchApp(App):
             event.widget.show_cursor = False
 
     def check_action(self, action, parameters):
-        """Hide the main view's keys while the map or slowest view is open."""
-        if action == "toggle_max" and isinstance(self.screen, _FullScreen):
-            return False
-        return True
+        """Hide the main view's keys while the Slurm queue is open."""
+        return not (
+            action == "toggle_max" and isinstance(self.screen, _SlurmQueue)
+        )
 
     def action_toggle_max(self, id):
         """Show a panel full screen (or go back if it is)."""
-        if isinstance(self.screen, _FullScreen):
+        if isinstance(self.screen, _SlurmQueue):
             return
         if self.screen.maximized is not None:
             self.screen.minimize()
         else:
             self.screen.maximize(self.query_one(f"#{id}"))
 
-    def action_view(self, key):
-        """Open the map or slowest view (or go back if it is open)."""
-        current = getattr(self.screen, "key", None)
-        if current is not None:
-            self.pop_screen()
-        if current != key:
-            self.push_screen(_FullScreen(key))
+    def action_squeue(self):
+        """Open the Slurm queue."""
+        self.push_screen(_SlurmQueue())
 
 
 def summary(snapshot, log_lines=15):
