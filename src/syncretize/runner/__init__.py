@@ -1,6 +1,6 @@
 """Run a grid from one config: incident grid, then Cloudy, then assembly.
 
-    python -m syncretize.runner run run.yaml --local
+    python -m syncretize.runner run run.yaml [--local]
 
 See ``parameter_files/runs/run_template.yaml`` for the run config.
 """
@@ -14,6 +14,7 @@ from syncretize.cloudy.create_cloudy_input_grid import create_cloudy_inputs
 from syncretize.cloudy.create_synthesizer_grid import create_synthesizer_grid
 from syncretize.grid_io import write_run_config
 from syncretize.incident.builder import build_grid
+from syncretize.runner import slurm
 from syncretize.runner.cloudy import work
 from syncretize.runner.config import (
     incident_module,
@@ -22,6 +23,9 @@ from syncretize.runner.config import (
     slurm_time,
 )
 from syncretize.runner.queue import Queue
+
+#: Time limit of the finish jobs, which only tidy the queue and submit jobs
+FINISH_WALLTIME = "01:00:00"
 
 
 class Runner:
@@ -195,6 +199,87 @@ class Runner:
         self._save_state(grid=grid)
         return grid
 
+    def start(self):
+        """Make the incident grid and the Cloudy inputs, then submit a round.
+
+        This is the start job. The incident grid isn't made when
+        ``Incident.grid`` is given, and nothing more is done without Cloudy.
+
+        Returns:
+            str
+                The path of the incident grid.
+        """
+        incident_grid = self.config.incident["grid"] or self.incident()
+        if self.config.cloudy is not None:
+            self.cloudy_setup(incident_grid)
+            self.submit_round()
+        return incident_grid
+
+    def submit_round(self):
+        """Submit a round of workers and the finish job that follows them.
+
+        The round has ``Run.cloudy.workers`` workers (fewer when fewer models
+        are left), each with the round's time limit.
+
+        Returns:
+            str
+                The finish job's ID.
+        """
+        settings = self.config.run["cloudy"]
+        state = self._load_state()
+        round_ = state.get("round", 1)
+        walltime = slurm_time(seconds(state.get("walltime", settings["walltime"])))
+        todo = Queue(os.path.join(self.config.run["work_dir"], "queue")).counts()[
+            "todo"
+        ]
+        workers = min(
+            settings["workers"], -(-todo // settings["cores_per_worker"])
+        )
+        array = self._submit(
+            "work",
+            f"work-{round_}",
+            walltime,
+            cores=settings["cores_per_worker"],
+            # An empty queue still gets one, so its finish job runs
+            array=max(workers, 1),
+            args=["--walltime", walltime],
+        )
+        return self._submit(
+            "finish", f"finish-{round_}", FINISH_WALLTIME, after=array
+        )
+
+    def continue_run(self):
+        """Finish a round and submit what comes next.
+
+        This is the finish job: another round when models are left, else
+        the assembly job.
+
+        Returns:
+            str
+                The ID of the next finish job or of the assembly job.
+        """
+        if self.finish(slurm.is_running()) == "work":
+            return self.submit_round()
+        assemble = self.config.run["assemble"]
+        return self._submit(
+            "assemble",
+            "assemble",
+            assemble["walltime"],
+            cores=assemble["cores"],
+            memory=assemble["memory"],
+        )
+
+    def _submit(self, stage, script_name, walltime, **job):
+        """Submit a job running a stage of this run (see slurm.submit)."""
+        return slurm.submit(
+            self.config.run,
+            self.config.path,
+            stage,
+            script_name,
+            slurm_time(seconds(walltime)),
+            **job,
+        )
+
     def _write_run_config(self, grid):
         """Store the run config in the grid's RunConfig group."""
         config = self.config
@@ -220,7 +305,11 @@ class Runner:
             yaml.safe_dump(state, file)
 
     def run(self, local=False):
-        """Run every stage.
+        """Run every stage, here or as a chain of Slurm jobs.
+
+        With Slurm, a start job makes the incident grid and the Cloudy
+        inputs and submits the first round of workers. Each round ends with
+        a finish job, which submits the next round or the assembly job.
 
         Args:
             local (bool)
@@ -228,11 +317,17 @@ class Runner:
 
         Returns:
             str
-                The path of the final grid (with --local).
+                The path of the final grid (with local) or the start job's
+                ID.
         """
         if not local:
-            raise NotImplementedError(
-                "Slurm submission isn't written yet; use --local"
+            incident = self.config.run["incident"]
+            return self._submit(
+                "start",
+                "start",
+                incident["walltime"],
+                cores=incident["cores"],
+                memory=incident["memory"],
             )
         incident_grid = self.config.incident["grid"] or self.incident()
         if self.config.cloudy is None:

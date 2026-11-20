@@ -105,6 +105,17 @@ def test_defaults_and_relative_paths(tmp_path):
             },
             "margin",
         ),
+        (
+            {
+                "Run": {
+                    "name": "x",
+                    "work_dir": "w",
+                    "grid_dir": "g",
+                    "cloudy": {"walltime": "00:10:00"},
+                }
+            },
+            "no time",
+        ),
         ({"Extra": {}}, "unknown"),
     ],
 )

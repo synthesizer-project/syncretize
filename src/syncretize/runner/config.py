@@ -134,6 +134,10 @@ def load_run(run_file):
         raise ValueError(
             f"{run_file}: Run.cloudy.walltime is longer than max_walltime"
         )
+    if seconds(run["cloudy"]["margin"]) >= seconds(run["cloudy"]["walltime"]):
+        raise ValueError(
+            f"{run_file}: Run.cloudy.margin leaves the workers no time"
+        )
     growth = run["cloudy"]["walltime_growth"]
     if not isinstance(growth, (int, float)) or growth < 1:
         raise ValueError(
