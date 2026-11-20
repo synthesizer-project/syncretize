@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from syncretize.cloudy.create_synthesizer_grid import check_if_failed
+from syncretize.runner.log import duration, log
 from syncretize.runner.queue import Queue
 
 
@@ -71,10 +72,15 @@ def work(
             None.
         can_grow (bool)
             Whether the next round's time limit is longer than this one's.
+
+    Returns:
+        list of dict
+            The records of the models this worker ran.
     """
     queue = Queue(queue_dir)
     os.makedirs(os.path.dirname(record_file), exist_ok=True)
     lock = threading.Lock()
+    records = []
 
     def loop(slot):
         owner = f"{job}.{slot}"
@@ -112,12 +118,15 @@ def work(
                 with lock:
                     with open(record_file, "a") as file:
                         file.write(json.dumps(record) + "\n")
-                    print(_describe(record), flush=True)
+                    records.append(record)
+                    # The job log only: run.log gets the round's summary
+                    log.debug(_describe(record))
 
     with ThreadPoolExecutor(slots) as pool:
         # result() raises any loop's error here
         for future in [pool.submit(loop, slot) for slot in range(slots)]:
             future.result()
+    return records
 
 
 def run_model(cloudy_dir, model, executable, extensions, stop_at=None):
@@ -162,4 +171,4 @@ def _describe(record):
         text += f": {record['reason']}"
     if record["requeued"]:
         text += ", requeued"
-    return f"{text} in {record['seconds']:.0f} s"
+    return f"{text} in {duration(record['seconds'])}"

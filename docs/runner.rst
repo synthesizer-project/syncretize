@@ -132,6 +132,7 @@ The work directory
 .. code-block:: text
 
    <work_dir>/
+     run.log             the run's story (see below)
      state.yaml          the run's state: the next stage and its job, the
                          incident grid, Cloudy directory and final grid,
                          every job (submitted, started, ended, outcome),
@@ -147,12 +148,35 @@ The work directory
                          gathers them into models.json
      cloudy/<grid name>/<i>/<j>.in, .out, ...
      jobs/<stage>[-<round>].sh
-     logs/<run name>-<stage>-<job ID>.out
+     logs/<run name>-<stage>-<job ID>.out      each job's own log
+     logs/<run name>-<step>-<job ID>.details   what the incident model and
+                         Cloudy scripts printed
 
 ``<i>`` and ``<j>`` are a model's incident and photoionisation indices.
 ``state.yaml`` and ``models.json`` are written only by the start, finish and
 assembly jobs, which never run at once, and each is replaced whole; the
 workers, which do run at once, each write their own file in ``state/``.
+
+Logs
+----
+
+``<work_dir>/run.log`` tells the whole run's story, one dated line at a time,
+each saying which stage and job wrote it. It starts with a banner, the
+syncretize and synthesizer versions, the run config with every default, the
+incident model's parameters and the Cloudy parameters (fixed, and varied with
+the number of photoionisation models). Each stage then adds what it did: the
+incident grid and Cloudy inputs made, each round's workers and time limit, a
+table of the rounds so far after each round (done, failed, retried, stopped,
+lost, given up, left), Cloudy run times, the models given up on with why, and
+finally the grid and the run's totals. A job that fails says so, with the
+``resume`` command to carry on.
+
+Only the start, finish and assembly jobs (and ``run`` and ``resume``) write to
+``run.log``; they never run at once. Each job also has its own log in
+``logs/``, with each line prefixed by the time since the job started: the
+workers' logs have a line per model, with why it failed. What the incident
+model and Cloudy scripts print goes to a ``.details`` file beside it instead,
+and any warnings in it are repeated in the logs.
 
 To see how a round is doing while its workers run:
 
@@ -161,9 +185,6 @@ To see how a round is doing while its workers run:
    for state in todo claimed done failed; do
        echo $state $(ls <work_dir>/queue/$state | wc -l)
    done
-
-Each worker's log has a line per model (with why it failed), and each finish
-job's log a summary of its round.
 
 Picking up a stopped run
 ------------------------

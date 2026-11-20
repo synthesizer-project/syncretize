@@ -19,12 +19,21 @@ finish and assembly jobs follow each other); the workers, which run
 together, each write their own file in state/.
 """
 
+import getpass
 import json
 import os
+import platform
+import socket
+import statistics
 import time
 from datetime import datetime, timezone
 
+import h5py
+import numpy as np
 import yaml
+from synthesizer._version import __version__ as synthesizer_version
+
+from syncretize._version import __version__ as syncretize_version
 
 from syncretize.cloudy.create_cloudy_input_grid import create_cloudy_inputs
 from syncretize.cloudy.create_synthesizer_grid import (
@@ -43,7 +52,21 @@ from syncretize.runner.config import (
     seconds,
     slurm_time,
 )
+from syncretize.runner.log import (
+    BANNER,
+    duration,
+    log,
+    logging_to,
+    quiet,
+    set_stage,
+    setup,
+    table,
+    took,
+)
 from syncretize.runner.queue import STATES, Queue
+
+#: The most given-up models run.log lists after a round or the assembly
+LIST_FAILURES = 20
 
 #: Time limit of the finish jobs, which only tidy the queue and submit jobs
 FINISH_WALLTIME = "01:00:00"
@@ -82,18 +105,25 @@ class Runner:
                 The path of the final grid (with local) or the start job's
                 ID.
         """
+        self._setup_log("run")
         if self._load_state().get("next") is not None:
             raise ValueError(
                 f"{self.config.run['work_dir']} already holds a run; use "
                 "resume to carry it on"
             )
         self._save_state(
-            name=self.config.run["name"], run_file=self.config.path
+            name=self.config.run["name"],
+            run_file=self.config.path,
+            started=_now(),
         )
+        log.info(BANNER)
+        log.info(self.describe())
         if local:
             self._save_state(next="start")
             return self._run_here()
-        return self._submit_next("start")
+        job = self._submit_next("start")
+        log.info(f"Submitted the start job {job}")
+        return job
 
     def resume(self, local=False):
         """Carry on a run from wherever it stopped.
@@ -111,18 +141,21 @@ class Runner:
                 The final grid (with local) or the submitted job's ID, or
                 None when there is nothing to do.
         """
+        self._setup_log("resume")
         state = self._load_state()
         stage = state.get("next")
         if stage is None:
             return self.run(local=local)
         if stage == "done":
-            print(f"The run is done: {state.get('grid')}", flush=True)
+            log.info(f"The run is already done: {state.get('grid')}")
             return None
         if local:
+            log.info(f"Resuming the run here, from its {stage} stage")
             return self._run_here()
         job = state.get("next_job")
         if job is not None and slurm.job_running(job):
-            print(f"The {stage} job {job} is still queued or running")
+            log.info(f"Nothing to resume: the {stage} job {job} is still "
+                     "queued or running")
             return None
         # A round whose workers are still going is finished after them
         after = None
@@ -130,7 +163,14 @@ class Runner:
             array = state["rounds"][-1].get("array_job")
             if array is not None and slurm.job_running(array):
                 after = array
-        return self._submit_next(stage, after=after)
+        new = self._submit_next(stage, after=after)
+        log.info(
+            f"Resuming the run from its {stage} stage"
+            + (f" (job {job} had stopped)" if job is not None else "")
+            + f": submitted the {stage} job {new}"
+            + (f" to run after the workers ({after})" if after else "")
+        )
+        return new
 
     def incident(self):
         """Make the incident grid, in this process.
@@ -142,14 +182,20 @@ class Runner:
         run, incident = self.config.run, self.config.incident
         module = incident_module(incident["model"])
         os.makedirs(run["grid_dir"], exist_ok=True)
-        grid = build_grid(
-            module.setup(incident["config"], run["input_dir"]),
-            module.generate_point,
-            run["grid_dir"],
-            param_file=incident["config"],
-            cores=run["incident"]["cores"],
-        )
+        start = time.monotonic()
+        log.info(f"Making the incident grid with {incident['model']}")
+        with quiet(self._details("incident")):
+            grid = build_grid(
+                module.setup(incident["config"], run["input_dir"]),
+                module.generate_point,
+                run["grid_dir"],
+                param_file=incident["config"],
+                cores=run["incident"]["cores"],
+                verbose=False,
+            )
         self._write_run_config(grid)
+        log.info(f"Made the incident grid {grid} ({_shape(grid)}) in "
+                 f"{took(start)}")
         return grid
 
     def start(self, submit=True):
@@ -171,8 +217,12 @@ class Runner:
         if incident_grid is None or not os.path.exists(incident_grid):
             incident_grid = self.config.incident["grid"] or self.incident()
             self._save_state(incident_grid=incident_grid)
+        if self.config.incident["grid"] is not None:
+            log.info(f"Using the incident grid {incident_grid} "
+                     f"({_shape(incident_grid)})")
         if self.config.cloudy is None:
             self._save_state(grid=incident_grid, next="done")
+            log.info(f"Done: the incident grid is {incident_grid}")
             return incident_grid
         self.cloudy_setup(incident_grid)
         self._save_state(next="finish")
@@ -196,13 +246,15 @@ class Runner:
                 The directory holding the Cloudy inputs.
         """
         cloudy = self.config.cloudy
-        name, n_incident, n_photoionisation = create_cloudy_inputs(
-            os.path.splitext(os.path.basename(incident_grid))[0],
-            os.path.dirname(incident_grid),
-            self._path("cloudy"),
-            cloudy["config"],
-            cloudy["extra_config"],
-        )
+        start = time.monotonic()
+        with quiet(self._details("cloudy-inputs")):
+            name, n_incident, n_photoionisation = create_cloudy_inputs(
+                os.path.splitext(os.path.basename(incident_grid))[0],
+                os.path.dirname(incident_grid),
+                self._path("cloudy"),
+                cloudy["config"],
+                cloudy["extra_config"],
+            )
         models = [
             f"{i}_{j}"
             for i in range(n_incident)
@@ -214,11 +266,22 @@ class Runner:
             records.setdefault(model, {"state": "todo", "attempts": []})
         self._save_models(records)
         cloudy_dir = self._path("cloudy", name)
+        counts = self.queue.counts()
         self._save_state(
             cloudy_dir=cloudy_dir,
             round=self._load_state().get("round", 1),
-            models=self.queue.counts(),
+            models=counts,
         )
+        log.info(
+            f"Wrote {len(models)} Cloudy inputs ({n_incident} incident "
+            f"points x {n_photoionisation} photoionisation models) to "
+            f"{cloudy_dir} in {took(start)}"
+        )
+        if counts["todo"] < len(models):
+            log.info(f"Kept the earlier state of {len(models) - counts['todo']}"
+                     " models (" + ", ".join(
+                         f"{n} {state}" for state, n in counts.items()
+                         if n and state != "todo") + ")")
         return cloudy_dir
 
     def work(self, job, walltime=None):
@@ -235,11 +298,23 @@ class Runner:
         """
         cloudy, settings = self.config.cloudy, self.config.run["cloudy"]
         deadline = stop_at = None
+        start = time.monotonic()
+        log.info(
+            f"Worker {job} on {socket.gethostname()}: "
+            f"{_count(settings['cores_per_worker'], 'Cloudy run')} at once, "
+            f"{_count(settings['claim'], 'model')} per claim, up to "
+            f"{_count(settings['max_retries'], 'retry', 'retries')}"
+        )
         if walltime is not None:
-            end = time.monotonic() + seconds(walltime)
+            end = start + seconds(walltime)
             deadline = end - seconds(settings["margin"])
             stop_at = end - seconds(STOP_BEFORE)
-        work(
+            log.info(
+                f"Time limit {walltime}: claiming models until "
+                f"{_clock(deadline)} and stopping Cloudy runs at "
+                f"{_clock(stop_at)} (UTC)"
+            )
+        records = work(
             self.queue.root,
             self._load_state()["cloudy_dir"],
             cloudy["executable"],
@@ -252,6 +327,17 @@ class Runner:
             deadline=deadline,
             stop_at=stop_at,
             can_grow=self._longer_walltime() is not None,
+        )
+        results = [r["result"] for r in records]
+        busy = sum(r["seconds"] for r in records)
+        log.info(
+            f"Worker {job} ran {len(records)} models in {took(start)} ("
+            + ", ".join(
+                f"{results.count(x)} {x}"
+                for x in ("done", "failed", "stopped")
+                if results.count(x)
+            )
+            + f"); Cloudy ran for {duration(busy)} in all"
         )
 
     def finish(self, is_running):
@@ -297,26 +383,30 @@ class Runner:
         }
         for result in ("done", "failed", "stopped", "lost"):
             summary[result] = sum(r["result"] == result for r in records)
-        summary["queue"] = counts
+        summary["retried"] = sum(
+            r["result"] == "failed" and r["requeued"] for r in records
+        )
         rounds = state.get("rounds", [])
+        previous = [r for r in rounds if r["round"] < round_ and "queue" in r]
+        before = previous[-1]["queue"]["failed"] if previous else 0
+        summary["given_up"] = counts["failed"] - before
+        summary["queue"] = counts
         if rounds and rounds[-1]["round"] == round_:
             rounds[-1].update(summary)
         else:
             rounds.append(summary)
-        print(
-            f"Round {round_}: {summary['done']} models done, "
-            f"{summary['failed']} failed, {summary['stopped']} stopped at "
-            f"the time limit, {summary['lost']} lost with their job; "
-            f"{counts['done']} done in all, {counts['failed']} given up, "
-            f"{counts['todo']} left to run",
-            flush=True,
-        )
+        self._log_round(rounds, records)
         if not counts["todo"]:
             self._save_state(rounds=rounds, models=counts, next="assemble")
             return "assemble"
         walltime = self._walltime()
         if summary["stopped"] + summary["lost"] and longer is not None:
             walltime = longer
+            log.info(
+                f"{summary['stopped'] + summary['lost']} models ran out of "
+                f"time, so the next round's time limit grows to "
+                f"{slurm_time(walltime)}"
+            )
         self._save_state(
             rounds=rounds,
             models=counts,
@@ -338,7 +428,23 @@ class Runner:
         state, cloudy = self._load_state(), self.config.cloudy
         incident_grid = state["incident_grid"]
         os.makedirs(self.config.run["grid_dir"], exist_ok=True)
-        grid = create_synthesizer_grid(
+        start = time.monotonic()
+        log.info("Assembling the final grid from the Cloudy outputs")
+        with quiet(self._details("assemble")):
+            grid = self._assemble(state, cloudy, incident_grid)
+        self._write_run_config(grid)
+        self._save_state(grid=grid, next="done")
+        log.info(
+            f"Wrote {grid} ({_shape(grid)}, "
+            f"{os.path.getsize(grid) / 1e6:.0f} MB) in {took(start)}"
+        )
+        self._log_failures(self._load_state().get("failures", {}))
+        self._log_done()
+        return grid
+
+    def _assemble(self, state, cloudy, incident_grid):
+        """Run create_synthesizer_grid for this run."""
+        return create_synthesizer_grid(
             grid_dir=self.config.run["grid_dir"],
             cloudy_dir=os.path.dirname(state["cloudy_dir"]),
             incident_grid_name=os.path.basename(incident_grid),
@@ -348,9 +454,6 @@ class Runner:
             include_intrinsic_lines=cloudy["include_intrinsic_lines"],
             incident_grid_dir=os.path.dirname(incident_grid),
         )
-        self._write_run_config(grid)
-        self._save_state(grid=grid, next="done")
-        return grid
 
     def submit_round(self):
         """Submit a round of workers and the finish job that follows them.
@@ -389,7 +492,14 @@ class Runner:
             }
         )
         self._save_state(rounds=rounds)
-        return self._submit_next("finish", after=array)
+        finish = self._submit_next("finish", after=array)
+        log.info(
+            f"Round {round_}: submitted {workers} workers ("
+            f"{settings['cores_per_worker']} cores each, time limit "
+            f"{walltime}) as job {array}, then finish job {finish}; "
+            f"{todo} models to run"
+        )
+        return finish
 
     def continue_run(self):
         """Finish a round and submit what comes next.
@@ -403,7 +513,9 @@ class Runner:
         """
         if self.finish(slurm.is_running()) == "work":
             return self.submit_round()
-        return self._submit_next("assemble")
+        job = self._submit_next("assemble")
+        log.info(f"Every model has run: submitted the assembly job {job}")
+        return job
 
     def job_started(self, stage):
         """Record in the state file that this Slurm job has started."""
@@ -430,13 +542,16 @@ class Runner:
         """Run the remaining stages in this process."""
         while True:
             stage = self._load_state()["next"]
+            set_stage(stage if stage != "done" else "run")
             if stage == "start":
                 self.start(submit=False)
                 if self._load_state()["next"] == "finish":
+                    set_stage("work")
                     self.work("local")
             elif stage == "finish":
                 # Every local worker has stopped once work returns
                 if self.finish(lambda owner: False) == "work":
+                    set_stage("work")
                     self.work("local")
             elif stage == "assemble":
                 self.assemble()
@@ -574,17 +689,192 @@ class Runner:
         )
         return longer if longer > walltime else None
 
+    def _setup_log(self, stage):
+        """Log to run.log too, unless the command line already set it up."""
+        if not logging_to(self.config.run["work_dir"]):
+            setup(self.config.run["work_dir"], stage)
+
+    def _cloudy_params(self):
+        """The Cloudy parameters: (fixed, varied), extra_config's winning."""
+        fixed, varied = {}, {}
+        for key in ("config", "extra_config"):
+            if self.config.cloudy[key] is not None:
+                fixed_, varied_ = get_cloudy_params(
+                    resolve_param_file(self.config.cloudy[key])
+                )
+                fixed |= fixed_
+                varied |= varied_
+        return fixed, varied
+
     def _required_extensions(self):
         """The Cloudy output files a model must write to succeed."""
         cloudy = self.config.cloudy
-        params = {}
-        for key in ("config", "extra_config"):
-            if cloudy[key] is not None:
-                params |= get_cloudy_params(resolve_param_file(cloudy[key]))[0]
         return required_extensions(
             cloudy["include_spectra"],
             cloudy["include_intrinsic_lines"],
-            params.get("geometry"),
+            self._cloudy_params()[0].get("geometry"),
+        )
+
+    def describe(self):
+        """What this run is: versions, where it runs, and its whole config.
+
+        Returns:
+            str
+                The lines run.log starts with.
+        """
+        config = self.config
+        lines = [
+            f"syncretize {syncretize_version}, synthesizer "
+            f"{synthesizer_version}, Python {platform.python_version()}",
+            f"On {socket.gethostname()} as {getpass.getuser()} at {_now()}",
+            "",
+            f"Run config {config.path} (with every default):",
+            _dump(
+                {
+                    "Run": config.run,
+                    "Incident": config.incident,
+                    "Cloudy": config.cloudy,
+                }
+            ),
+        ]
+        if config.incident["config"] is not None:
+            with open(config.incident["config"]) as file:
+                params = yaml.safe_load(file)
+            lines += [
+                f"Incident model parameters ({config.incident['config']}):",
+                _dump(params),
+            ]
+        if config.cloudy is not None:
+            fixed, varied = self._cloudy_params()
+            n_models = int(np.prod([len(v) for v in varied.values()]))
+            files = [config.cloudy["config"], config.cloudy["extra_config"]]
+            lines += [
+                "Cloudy parameters ("
+                + " + ".join(str(f) for f in files if f is not None)
+                + "):",
+                "  fixed:",
+                _dump(fixed, 4),
+                f"  varied ({n_models} photoionisation models per incident "
+                "point):",
+                _dump(varied, 4) if varied else "    (none)",
+                "  A model succeeds when Cloudy exited OK and wrote "
+                + ", ".join(f".{e}" for e in self._required_extensions())
+                + " (at least 100 bytes each)",
+            ]
+        return "\n".join(lines)
+
+    def _log_round(self, rounds, records):
+        """Log a round's table, run times and given-up models to run.log."""
+        headers = [
+            "round",
+            "time limit",
+            "workers",
+            "done",
+            "failed",
+            "retried",
+            "stopped",
+            "lost",
+            "given up",
+            "left",
+        ]
+        rows = [
+            [
+                r["round"],
+                r["walltime"],
+                r.get("workers", "here"),
+                r["done"],
+                r["failed"],
+                r["retried"],
+                r["stopped"],
+                r["lost"],
+                r["given_up"],
+                r["queue"]["todo"],
+            ]
+            for r in rounds
+            if "queue" in r
+        ]
+        log.info(
+            f"Round {rounds[-1]['round']} has finished. The rounds so far:\n"
+            + table(headers, rows)
+        )
+        runs = [
+            r for r in records if r["result"] in ("done", "failed")
+        ]
+        if runs:
+            times = sorted(r["seconds"] for r in runs)
+            longest = max(runs, key=lambda r: r["seconds"])
+            log.info(
+                f"Cloudy run times this round: median "
+                f"{duration(statistics.median(times))}, 95% under "
+                f"{duration(times[int(0.95 * (len(times) - 1))])}, longest "
+                f"{duration(longest['seconds'])} ({longest['model']})"
+            )
+        failures = self._load_state().get("failures", {})
+        models = {r["model"] for r in records}
+        self._log_failures(
+            {m: why for m, why in failures.items() if m in models},
+            "this round",
+        )
+        counts = rounds[-1]["queue"]
+        log.info(
+            f"{counts['done']} of {sum(counts.values())} models done, "
+            f"{counts['failed']} given up, {counts['todo']} left to run; "
+            f"{self._cpu_hours():.1f} CPU-hours of Cloudy so far"
+        )
+
+    def _log_failures(self, failures, when=""):
+        """List (some of) the models given up on, with why."""
+        if not failures:
+            return
+        lines = [
+            f"  {model}: {why}"
+            for model, why in list(failures.items())[:LIST_FAILURES]
+        ]
+        if len(failures) > LIST_FAILURES:
+            lines.append(
+                f"  and {len(failures) - LIST_FAILURES} more (see "
+                "state.yaml)"
+            )
+        log.info(
+            f"Gave up on {len(failures)} models {when}".rstrip()
+            + " (last reason given):\n"
+            + "\n".join(lines)
+        )
+
+    def _log_done(self):
+        """Log the run's totals once the final grid is made."""
+        state = self._load_state()
+        counts = state.get("models", {})
+        rounds = len([r for r in state.get("rounds", []) if "queue" in r])
+        since = ""
+        if "started" in state:
+            began = datetime.fromisoformat(state["started"])
+            elapsed = (datetime.now(timezone.utc) - began).total_seconds()
+            since = f" over {duration(elapsed)}"
+        log.info(
+            f"Done: {counts.get('done', 0)} of {sum(counts.values())} Cloudy "
+            f"models in {_count(rounds, 'round')}{since}, "
+            f"{self._cpu_hours():.1f} CPU-hours of Cloudy; "
+            f"{counts.get('failed', 0)} given up. The grid is "
+            f"{state['grid']}"
+        )
+
+    def _cpu_hours(self):
+        """The Cloudy run time recorded in models.json, in hours."""
+        return (
+            sum(
+                attempt.get("seconds", 0)
+                for entry in self._load_models().values()
+                for attempt in entry["attempts"]
+            )
+            / 3600
+        )
+
+    def _details(self, name):
+        """The file a stage's scripts print to (see log.quiet)."""
+        job = os.environ.get("SLURM_JOB_ID", "local")
+        return self._path(
+            "logs", f"{self.config.run['name']}-{name}-{job}.details"
         )
 
     def _write_run_config(self, grid):
@@ -626,6 +916,51 @@ class Runner:
     def _path(self, *names):
         """A path in the run's work directory."""
         return os.path.join(self.config.run["work_dir"], *names)
+
+
+def _shape(grid):
+    """A grid's axes and their sizes, e.g. "221 ages x 7 metallicities"."""
+    with h5py.File(grid, "r") as hdf:
+        return " x ".join(
+            f"{len(hdf['axes'][axis])} {axis}" for axis in hdf.attrs["axes"]
+        )
+
+
+def _clock(when):
+    """A ``time.monotonic()`` as the time of day (UTC)."""
+    wall = time.time() + when - time.monotonic()
+    return time.strftime("%H:%M:%S", time.gmtime(wall))
+
+
+def _dump(values, indent=2):
+    """Values as indented YAML (numpy arrays as lists)."""
+
+    def plain(value):
+        if isinstance(value, dict):
+            return {str(k): plain(v) for k, v in value.items()}
+        if hasattr(value, "tolist"):
+            return value.tolist()
+        return value
+
+    text = yaml.dump(plain(values), Dumper=_Dumper, sort_keys=False, width=1000)
+    return "\n".join(" " * indent + line for line in text.splitlines())
+
+
+class _Dumper(yaml.SafeDumper):
+    """YAML with mappings one key a line and lists on one line."""
+
+
+_Dumper.add_representer(
+    list,
+    lambda dumper, value: dumper.represent_sequence(
+        "tag:yaml.org,2002:seq", value, flow_style=True
+    ),
+)
+
+
+def _count(n, thing, things=None):
+    """E.g. "1 round" or "3 rounds"."""
+    return f"{n} {thing if n == 1 else things or thing + 's'}"
 
 
 def _now():

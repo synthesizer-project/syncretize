@@ -4,6 +4,7 @@ import argparse
 import os
 
 from syncretize.runner import Runner
+from syncretize.runner.log import log, setup
 
 
 def main():
@@ -46,10 +47,16 @@ def main():
     args = parser.parse_args()
 
     runner = Runner(args.run_file)
+    job = os.environ.get("SLURM_JOB_ID")
+    setup(
+        runner.config.run["work_dir"],
+        args.stage,
+        job,
+        # The workers, which run together, keep out of run.log
+        run_log=args.stage not in ("work", "incident"),
+    )
     if args.stage in ("run", "resume"):
-        result = getattr(runner, args.stage)(local=args.local)
-        if result is not None:
-            print(result if args.local else f"Submitted job {result}")
+        getattr(runner, args.stage)(local=args.local)
     elif args.stage == "work":
         # An array task is "<array job>_<task>" to sacct
         task = os.environ.get("SLURM_ARRAY_TASK_ID")
@@ -74,6 +81,12 @@ def main():
             method()
         except BaseException as error:
             runner.job_ended(args.stage, f"failed: {error!r}")
+            log.error(
+                f"The {args.stage} job failed: {error!r}. Once it is fixed, "
+                "carry on with: python -m syncretize.runner resume "
+                f"{runner.config.path}"
+            )
+            log.debug("", exc_info=True)
             raise
         runner.job_ended(args.stage, "completed")
 

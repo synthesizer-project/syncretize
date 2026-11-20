@@ -385,6 +385,20 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
     assert models["1_3"]["state"] == "failed"
     assert not os.listdir(tmp_path / "work" / "state")
 
+    # run.log tells the run's story; each model's line is only in the job log
+    run_log = (tmp_path / "work" / "run.log").read_text()
+    for text in (
+        "grid runner",
+        "max_retries: 2",
+        "48 photoionisation models per incident point",
+        "Wrote 192 Cloudy inputs",
+        "| round | time limit |",
+        "1_3: [Stop in cdMain, something went wrong]",
+        "Done: 189 of 192 Cloudy models in 1 round",
+    ):
+        assert text in run_log
+    assert "0_9 done" not in run_log
+
     # A finished run is resumed by doing nothing, and isn't run again
     assert runner.resume(local=True) is None
     with pytest.raises(ValueError, match="use resume"):

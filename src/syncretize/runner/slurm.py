@@ -9,6 +9,8 @@ import shlex
 import subprocess
 import sys
 
+from syncretize.runner.log import log
+
 #: Job states (sacct) in which a job may still be running
 RUNNING_STATES = {
     "PENDING",
@@ -64,10 +66,10 @@ def submit(
     work_dir = run["work_dir"]
     for directory in ("jobs", "logs"):
         os.makedirs(os.path.join(work_dir, directory), exist_ok=True)
-    log = "%x-%A_%a.out" if array else "%x-%j.out"
+    log_name = "%x-%A_%a.out" if array else "%x-%j.out"
     options = {
         "job-name": f"{run['name']}-{stage}",
-        "output": os.path.join(work_dir, "logs", log),
+        "output": os.path.join(work_dir, "logs", log_name),
         "chdir": work_dir,
         "time": walltime,
         "cpus-per-task": cores,
@@ -97,7 +99,7 @@ def submit(
     )
     # --parsable prints "<id>" or "<id>;<cluster>"
     job = result.stdout.strip().split(";")[0]
-    print(f"Submitted {script} as job {job}", flush=True)
+    log.debug(f"Submitted {script} as job {job}")
     return job
 
 
