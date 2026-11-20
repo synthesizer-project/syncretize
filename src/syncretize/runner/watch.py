@@ -23,6 +23,7 @@ import getpass
 import json
 import math
 import os
+import re
 import shutil
 import statistics
 import subprocess
@@ -31,6 +32,7 @@ from datetime import datetime, timezone
 
 import yaml
 from rich import box
+from rich.cells import cell_len
 from rich.columns import Columns
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -398,41 +400,71 @@ def _grid_points(snapshot):
     return points, interpolated, perturbed
 
 
-def _header(snapshot):
+#: The stage badge in the header: its label and style
+STAGE_BADGES = {
+    "start": ("STARTING", "bold black on bright_blue"),
+    "finish": ("ROUND {round} RUNNING", "bold black on bright_cyan"),
+    "assemble": ("ASSEMBLING", "bold black on yellow"),
+    "done": ("DONE", "bold black on green"),
+}
+
+
+def _header(snapshot, width=118):
+    """The header: the run and its stage, then its progress across the grid.
+
+    Built as two lines of the given width (Textual lays nested rich tables
+    out unreliably).
+    """
     state, counts = snapshot["state"], snapshot["counts"]
     points, interpolated, _ = _grid_points(snapshot)
     total = sum(points.values()) + interpolated
     done, failed = points["done"], points["failed"]
     stage = state.get("next", "?")
-    title = Text.assemble(
-        (" syncretize ", "bold white on blue"),
-        f" {state.get('name', '?')} · ",
-        f"round {state.get('round', '-')} (limit {_limit(state)}) · ",
-        ("next: ", "dim"),
-        (f"{stage}", "bold green" if stage == "done" else "bold yellow"),
-        f" {state.get('next_job', '')} · ",
-        snapshot["now"].strftime("%H:%M:%S UTC"),
+    label, style = STAGE_BADGES.get(stage, (stage.upper(), "bold reverse"))
+    label = label.format(round=state.get("round", "?"))
+
+    left = Text.assemble(
+        ("◆ syncretize ", "bold magenta"),
+        (state.get("name", "?"), "bold"),
+        "   ",
+        (f" {label} ", style),
     )
+    right = Text.assemble(
+        ("round ", "dim"),
+        str(state.get("round", "-")),
+        ("   limit ", "dim"),
+        str(_limit(state)),
+        ("   next job ", "dim"),
+        str(state.get("next_job", "-")),
+        "   ",
+        (snapshot["now"].strftime("%H:%M:%S UTC"), "dim"),
+    )
+    top = left + " " * max(width - left.cell_len - right.cell_len, 1) + right
+
+    summary = Text.assemble(
+        " ",
+        (f"{done:,}", "bold green"),
+        f"/{total:,} grid points ",
+        (f"({100 * done / max(total, 1):.1f}%)", "dim"),
+        ("  ·  ", "dim"),
+        (f"{failed:,} failed", "bold red" if failed else "dim"),
+    )
+    if interpolated:
+        summary.append("  ·  ", style="dim")
+        summary.append(f"{interpolated:,} interpolated", style="bold yellow")
     rate = _rate(snapshot["records"])
-    left = counts["todo"] + counts["claimed"]
-    eta = (
-        f" · {rate:.1f} done/min · ETA ~{_duration(left / rate * 60)}"
-        if rate and left
-        else ""
+    left_to_run = counts["todo"] + counts["claimed"]
+    if rate and left_to_run:
+        summary.append("  ·  ", style="dim")
+        summary.append(
+            f"{rate:.1f}/min, ETA ~{_duration(left_to_run / rate * 60)}"
+        )
+    bar_width = max(width - summary.cell_len, 10)
+    filled = round(bar_width * (done + failed + interpolated) / max(total, 1))
+    bar = Text("━" * filled, style="green") + Text(
+        "━" * (bar_width - filled), style="grey30"
     )
-    progress = Table.grid(expand=True)
-    progress.add_column(ratio=1)
-    progress.add_column(no_wrap=True)
-    progress.add_row(
-        ProgressBar(
-            total=max(total, 1), completed=done + failed + interpolated
-        ),
-        f" {done}/{total} done ({100 * done / max(total, 1):.1f}%) · "
-        f"{failed} failed"
-        + (f" · {interpolated} interpolated" if interpolated else "")
-        + eta,
-    )
-    return Panel(Group(title, progress), box=box.HEAVY, padding=(0, 1))
+    return Text("\n").join([top, bar + summary])
 
 
 def _limit(state):
@@ -464,29 +496,58 @@ def _rate(records, window=600):
 
 
 def _queue_table(snapshot):
-    """The grid points in each state (and the perturbed runs, if any)."""
+    """The grid points in each state, with their share of the grid."""
     points, interpolated, perturbed = _grid_points(snapshot)
-    table = Table.grid(padding=(0, 2))
-    table.add_column()
-    table.add_column(justify="right")
-    styles = {"todo": "", "claimed": "cyan", "done": "green", "failed": "red"}
-    for state in STATES:
-        table.add_row(Text(state, style=styles[state]), f"{points[state]:,}")
+    total = max(sum(points.values()) + interpolated, 1)
+    table = Table.grid(padding=(0, 1), expand=True)
+    table.add_column(no_wrap=True)
+    table.add_column(justify="right", no_wrap=True)
+    table.add_column(justify="right", no_wrap=True, style="dim")
+    table.add_column(ratio=1)
+    rows = [
+        ("todo", points["todo"], "bright_white"),
+        ("running", points["claimed"], "cyan"),
+        ("done", points["done"], "green"),
+        ("failed", points["failed"], "red"),
+    ]
     if interpolated:
+        rows.append(("interpolated", interpolated, "yellow"))
+    for label, n, colour in rows:
         table.add_row(
-            Text("interpolated", style="yellow"), f"{interpolated:,}"
+            Text(label, style=colour),
+            Text(f"{n:,}", style=f"bold {colour}" if n else "dim"),
+            f"{100 * n / total:.1f}%",
+            ProgressBar(
+                total=total,
+                completed=n,
+                complete_style=colour,
+                finished_style=colour,
+            ),
         )
     if perturbed:
-        table.add_row(Text("perturbed runs", style="dim"), f"{perturbed:,}")
+        table.add_row(
+            Text("perturbed runs", style="dim"),
+            Text(f"{perturbed:,}", style="dim"),
+            "",
+            "",
+        )
     return table
 
 
 def _round_table(snapshot):
+    """The round under way: its workers and the models they've run."""
     records = snapshot["records"]
     results = [r["result"] for r in records]
     table = Table.grid(padding=(0, 2))
-    table.add_column(style="dim")
-    table.add_column()
+    table.add_column(style="dim", no_wrap=True)
+    table.add_column(no_wrap=True)
+    if snapshot["state"].get("next") != "finish" and not records:
+        # Between rounds (or done): the run's Cloudy time so far
+        cpu = sum(r.get("seconds", 0) for r in snapshot["finished"]) / 3600
+        table.add_row("", Text("no round running", style="dim italic"))
+        table.add_row("Cloudy runs", f"{len(snapshot['finished']):,}")
+        table.add_row("CPU time", f"{cpu:,.1f} h")
+        return table
     workers = [
         job
         for job in snapshot["slurm"].values()
@@ -495,24 +556,52 @@ def _round_table(snapshot):
     if workers:
         running = sum(job["running"] for job in workers)
         pending = sum(job["pending"] for job in workers)
-        table.add_row("workers", f"{running} running · {pending} queued")
+        table.add_row(
+            "workers",
+            Text.assemble(
+                (f"{running} running", "bold cyan"),
+                (f"  {pending} queued", "dim"),
+            ),
+        )
     table.add_row(
         "finished",
-        f"{len(records)} ({_rate(records):.1f}/min)" if records else "0",
+        Text.assemble(
+            (f"{len(records):,}", "bold green" if records else "dim"),
+            (f"  {_rate(records):.1f}/min" if records else "", "dim"),
+        ),
     )
     retried = sum(
         r["result"] == "failed" and r.get("requeued") for r in records
     )
-    table.add_row("errors", f"{results.count('failed')} ({retried} retried)")
-    table.add_row("stopped", str(results.count("stopped")))
+    errors = results.count("failed")
+    table.add_row(
+        "errors",
+        Text.assemble(
+            (f"{errors}", "bold red" if errors else "dim"),
+            (f"  {retried} retried" if errors else "", "dim"),
+        ),
+    )
+    stopped = results.count("stopped")
+    table.add_row(
+        "stopped",
+        Text(f"{stopped}", style="bold yellow" if stopped else "dim"),
+    )
     times = [
         r["seconds"] for r in records if r["result"] in ("done", "failed")
     ]
     if times:
         table.add_row(
             "run times",
-            f"median {_duration(statistics.median(times))} · "
-            f"max {_duration(max(times))}",
+            Text.assemble(
+                ("median ", "dim"),
+                _duration(statistics.median(times)),
+                ("  max ", "dim"),
+                _duration(max(times)),
+            ),
+        )
+        table.add_row(
+            "CPU time",
+            f"{sum(r.get('seconds', 0) for r in records) / 3600:.1f} h",
         )
     return table
 
@@ -930,29 +1019,99 @@ def _slowest_rows(snapshot):
     return headers, rows, title
 
 
+#: The colour of each stage's tag in run.log
+STAGE_COLOURS = {
+    "run": "magenta",
+    "resume": "magenta",
+    "start": "bright_blue",
+    "work": "cyan",
+    "finish": "green",
+    "assemble": "yellow",
+}
+
+
 def _log_text(line):
-    """A run.log line for the log panel: time only, warnings coloured."""
+    """A run.log line for the log panel: time dim, stage tag coloured."""
     # The date is today's; the time is enough
     if len(line) > 20 and line[4] == "-" and line[10] == " ":
         line = line[11:]
-    style = (
-        "red" if "ERROR" in line else ("yellow" if "WARNING" in line else "")
+    match = re.match(r"(\d\d:\d\d:\d\d) \[([^\]]*)\] ?(.*)", line)
+    if match is None:
+        return Text(line)
+    when, tag, message = match.groups()
+    colour = STAGE_COLOURS.get(tag.split(" ")[0], "white")
+    if "ERROR" in message:
+        message_style = "bold red"
+    elif "WARNING" in message:
+        message_style = "yellow"
+    else:
+        message_style = ""
+    text = Text.assemble(
+        (when, "dim"), " ", (f"[{tag}]", colour), " ", (message, message_style)
     )
-    text = Text(line, style=style)
     # Tables (the rounds in run.log) are cropped rather than wrapped
-    if line.partition("] ")[2].lstrip()[:1] in ("+", "|"):
+    if message.lstrip()[:1] in ("+", "|"):
         text.no_wrap, text.overflow = True, "crop"
     return text
 
 
-def _fill(table, headers, rows):
-    """Refill a DataTable, keeping where it is scrolled to and its cursor."""
-    if [str(column.label) for column in table.columns.values()] != headers:
+def _plain(cell):
+    return cell.plain if isinstance(cell, Text) else str(cell)
+
+
+def _fill(table, headers, rows, right=(), stretch="even"):
+    """Refill a DataTable across its width, keeping its scroll and cursor.
+
+    Columns are as wide as their contents, and the room left over goes to
+    the stretch columns (their indices, or "even" for every column), so the
+    table fills its panel.
+
+    Args:
+        headers (list of str)
+            The column titles.
+        rows (list of (key, cells))
+            The rows.
+        right (iterable of int)
+            The columns to right align (numbers).
+        stretch (list of int or "even")
+            The columns given the room left over.
+    """
+    right = set(right)
+    padding = table.cell_padding
+    widths = [
+        max([cell_len(str(h))] + [cell_len(_plain(c[i])) for _, c in rows])
+        for i, h in enumerate(headers)
+    ]
+    # The room inside the border, less the scrollbar
+    room = table.content_size.width - 1
+    spare = room - sum(width + 2 * padding for width in widths)
+    if table.content_size.width and spare > 0:
+        targets = list(range(len(widths)) if stretch == "even" else stretch)
+        for n, i in enumerate(targets):
+            widths[i] += spare // len(targets) + (n < spare % len(targets))
+    columns = list(table.columns.values())
+    if [str(c.label) for c in columns] != list(headers) or [
+        c.width for c in columns
+    ] != widths:
         table.clear(columns=True)
-        table.add_columns(*headers)
+        for i, (header, width) in enumerate(zip(headers, widths)):
+            table.add_column(
+                Text(header, justify="right" if i in right else "left"),
+                width=width,
+            )
     cursor, scroll = table.cursor_row, table.scroll_y
     table.clear()
     for key, cells in rows:
+        cells = [
+            Text(
+                _plain(c),
+                style=c.style if isinstance(c, Text) else "",
+                justify="right",
+            )
+            if i in right
+            else c
+            for i, c in enumerate(cells)
+        ]
         table.add_row(*cells, key=key)
     if rows:
         table.move_cursor(row=min(cursor, len(rows) - 1), scroll=False)
@@ -992,7 +1151,8 @@ class _FullScreen(Screen):
             self.show(self.app.snapshot)
 
     def show(self, snapshot):
-        self.query_one("#header", Static).update(_header(snapshot))
+        header = self.query_one("#header", Static)
+        header.update(_header(snapshot, header.content_size.width or 118))
         view = self.query_one("#view")
         if self.key == "map":
             view.border_title = "Grid map"
@@ -1002,19 +1162,25 @@ class _FullScreen(Screen):
         else:
             headers, rows, title = _slowest_rows(snapshot)
             view.border_title = title
-            _fill(view, headers, rows)
+            _fill(view, headers, rows, right=range(1, len(headers) - 3))
 
 
 class WatchApp(App):
     """The live view of a run."""
 
     TITLE = "syncretize watch"
+    # No panel is focused (and so shows a cursor row) until Tab or a click
+    AUTO_FOCUS = None
     CSS = """
-    #header { height: 4; }
+    #header {
+        height: 4;
+        border: heavy $accent;
+        padding: 0 1;
+    }
     #top { height: 9; }
     /* Every panel in a row fills it, so their borders line up */
     #top > *, #bottom > * { height: 100%; }
-    #queue { width: 2fr; }
+    #queue { width: 3fr; }
     #round { width: 3fr; }
     #jobs { width: 4fr; }
     #rounds { height: auto; max-height: 12; }
@@ -1025,9 +1191,13 @@ class WatchApp(App):
     #running { height: 1fr; }
     #view { height: 1fr; }
     #queue, #round, #jobs, #rounds, #log, #failed, #running, #view {
-        border: round $secondary;
+        border: round $primary 60%;
         border-title-align: left;
+        border-title-color: $accent;
+        border-title-style: bold;
+        padding: 0 1;
     }
+    #jobs, #rounds, #failed, #running, #view { padding: 0; }
     DataTable:focus, RichLog:focus, VerticalScroll:focus {
         border: round $accent;
     }
@@ -1045,13 +1215,12 @@ class WatchApp(App):
     }
     /* run.log wraps, so never needs to scroll sideways */
     RichLog { overflow-x: hidden; }
-    /* Column titles in bold on the panel's background, unchanged when the
-       mouse is over them, so they stay readable in any theme */
+    /* Column titles: bold on a soft band, the same under the mouse */
     DataTable > .datatable--header,
     DataTable > .datatable--header-hover,
     DataTable > .datatable--header-cursor {
-        background: $surface;
-        color: $accent;
+        background: $primary 25%;
+        color: $text;
         text-style: bold;
     }
     """
@@ -1109,28 +1278,38 @@ class WatchApp(App):
         """Draw a snapshot of the run on every panel."""
         self.snapshot = snapshot
         counts = snapshot["counts"]
-        self.query_one("#header", Static).update(_header(snapshot))
+        header = self.query_one("#header", Static)
+        header.update(_header(snapshot, header.content_size.width or 118))
         self.query_one("#queue", Static).update(_queue_table(snapshot))
         self.query_one("#round", Static).update(_round_table(snapshot))
         _fill(
             self.query_one("#jobs", DataTable),
             ["job", "id", "status"],
             _job_rows(snapshot),
+            right=[1],
+            stretch=[0, 2],
         )
         rounds = _rounds(snapshot["state"], snapshot["records"], counts)
         _fill(
             self.query_one("#rounds", DataTable),
             list(ROUND_COLUMNS),
             _round_rows(rounds),
+            right=range(len(ROUND_COLUMNS)),
         )
         failed = self.query_one("#failed", DataTable)
         rows = _failure_rows(snapshot)
         failed.border_title = f"Failed models ({len(rows)})"
-        _fill(failed, ["model", "attempts", "last reason"], rows)
+        _fill(
+            failed,
+            ["model", "attempts", "last reason"],
+            rows,
+            right=[1],
+            stretch=[2],
+        )
         running = self.query_one("#running", DataTable)
         headers, rows, title = _running_rows(snapshot)
         running.border_title = title
-        _fill(running, headers, rows)
+        _fill(running, headers, rows, right=range(1, len(headers) - 2))
 
         # The log follows new lines, unless scrolled up to read
         log = self.query_one("#log", RichLog)
@@ -1199,7 +1378,7 @@ def summary(snapshot, log_lines=15):
         _log_text(line) for line in snapshot["log"][-log_lines:]
     )
     return Group(
-        _header(snapshot),
+        Panel(_header(snapshot), box=box.HEAVY),
         Columns(
             [
                 Panel(_queue_table(snapshot), title="Grid points"),

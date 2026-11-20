@@ -597,7 +597,7 @@ def check_watch(work_dir):
     console.print(summary(snapshot))
     text = console.export_text()
     for expected in (
-        "189/192 done",
+        "189/192 grid points",
         "Failed models (3)",
         "1_3",
         "grid_limited",
