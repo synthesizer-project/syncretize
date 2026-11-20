@@ -888,14 +888,15 @@ class Runner:
         rows = [
             [
                 r["round"],
-                r["walltime"],
+                r.get("walltime", "-"),
                 r.get("workers", "here"),
-                r["done"],
-                r["failed"],
-                r["retried"],
-                r["stopped"],
-                r["lost"],
-                r["given_up"],
+                # Rounds summarised by an earlier version may lack some
+                r.get("done", 0),
+                r.get("failed", 0),
+                r.get("retried", 0),
+                r.get("stopped", 0),
+                r.get("lost", 0),
+                r.get("given_up", 0),
                 r["queue"]["todo"],
             ]
             for r in rounds
