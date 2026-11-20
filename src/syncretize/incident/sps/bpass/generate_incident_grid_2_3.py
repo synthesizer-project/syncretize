@@ -6,24 +6,20 @@ v2.3 has 5 different values of the alpha enhancement. The processing at the
 moment create grid files for both individual alpha enhancements and then a 3D
 grid where alpha_enhancement is an axis.
 
-Note: there is no automatic download available so models need to be downloaded
-manually from:
-https://warwick.ac.uk/fac/sci/physics/research/astro/research/catalogues/bpass/
-
-The current is currently stored in 5 separate archives - one for each different
-alpha-enhancement. However, this is not convenient so it makes more sense to
-create a single directory and move all the files into there. That is,
-
-<after extracting the files>
-mkdir bpass_v2.3_imf135_300
-mv bpass_v2.3.a*/* bpass_v2.3_imf135_300/
-rm -rf bpass_v2.3.a*
+--download fetches the tables of the alpha enhancements the config needs from
+the BPASS v2.3 release
+(https://warwick.ac.uk/fac/sci/physics/research/astro/research/catalogues/bpass/)
+into <input-dir>/bpass/bpass_v2.3_imf135_300. The release stores them in 5
+separate archives, one for each alpha enhancement, whose tables all go in that
+one directory.
 
 Example:
     python generate_incident_grid_2_3.py \
     --input-dir path/to/input/dir \
     --grid-dir path/to/grid/dir \
 """
+
+import os
 
 import numpy as np
 from unyt import Hz, angstrom, dimensionless, erg, s, yr
@@ -34,7 +30,11 @@ from syncretize.incident.builder import (
     build_grid,
     table_point,
 )
-from syncretize.incident.sps.utils import get_model_filename
+from syncretize.incident.sps.utils import (
+    download_sharepoint_file,
+    extract_gzipped_tables,
+    get_model_filename,
+)
 from syncretize.parser import Parser, get_choice, load_params
 
 
@@ -308,6 +308,58 @@ def read_full_grid(original_model_name, input_dir, bs="bin"):
     )
 
 
+#: The BPASS v2.3 release's (public) SharePoint folder
+RELEASE_URL = (
+    "https://livewarwickac.sharepoint.com/:f:/s/"
+    "Physics-BinaryPopulationandSpectralSynthesisBPASS/"
+    "EvWhfKfIfFJCs-yyo7YztrUBFHtE4QzQk3WDLSf9ytLuEw"
+)
+
+#: The BPASS file codes for each alpha enhancement
+ALPHA_CODES = {-0.2: "-02", 0.0: "+00", 0.2: "+02", 0.4: "+04", 0.6: "+06"}
+
+#: The only v2.3 model (binary stars, broken power law IMF up to 300 Msun)
+MODEL = "bpass_v2.3_imf135_300"
+
+
+def choices(config_file):
+    """The alpha enhancement codes a config needs, and if it is an axis."""
+    config = load_params(
+        config_file,
+        constant_keys=["alpha_enhancement"],
+        axis_names=["alpha_enhancement"],
+    )
+    if "alpha_enhancement" in config.axes:
+        if list(config.axes["alpha_enhancement"]) != list(ALPHA_CODES):
+            raise ValueError(
+                f"The alpha_enhancement axis must be {list(ALPHA_CODES)}"
+            )
+        return list(ALPHA_CODES.values()), True
+    alpha = get_choice(config.constants, "alpha_enhancement", ALPHA_CODES)
+    return [ALPHA_CODES[alpha]], False
+
+
+def download_data(codes, input_dir):
+    """Download the BPASS v2.3 spectra and ionising photon tables.
+
+    Args:
+        codes (list of str)
+            The alpha enhancement codes, e.g. ["+00"].
+        input_dir (str)
+            The directory to put them in, as <input_dir>/<MODEL>/.
+    """
+    os.makedirs(input_dir, exist_ok=True)
+    for code in codes:
+        archive = f"{input_dir}/bpass_v2.3.a{code}.tar.gz"
+        download_sharepoint_file(
+            RELEASE_URL, f"bpass_v2.3.a{code}.tar.gz", archive
+        )
+        extract_gzipped_tables(
+            archive, f"{input_dir}/{MODEL}", ("spectra-", "ionizing-")
+        )
+        os.remove(archive)
+
+
 def setup(config_file, input_dir):
     """Read the config and the BPASS tables (see syncretize.incident.builder).
 
@@ -321,34 +373,18 @@ def setup(config_file, input_dir):
         GridSpec
             The whole grid, as a single point.
     """
-    # open the config file and extract parameters
-    config = load_params(
-        config_file,
-        constant_keys=["alpha_enhancement"],
-        axis_names=["alpha_enhancement"],
-    )
-
-    # The BPASS file codes for each alpha enhancement
-    alpha_codes = {-0.2: "-02", 0.0: "+00", 0.2: "+02", 0.4: "+04", 0.6: "+06"}
-
     # (the only model available; no single star models)
-    model, bs = "bpass_v2.3_imf135_300", "bin"
+    bs = "bin"
     input_dir = f"{input_dir}/bpass"
 
     # make a full 3D grid if alpha enhancement is an axis
-    if "alpha_enhancement" in config.axes:
-        if list(config.axes["alpha_enhancement"]) != list(alpha_codes):
-            raise ValueError(
-                f"The alpha_enhancement axis must be {list(alpha_codes)}"
-            )
-        return read_full_grid(model, input_dir, bs=bs)
+    codes, full = choices(config_file)
+    if full:
+        return read_full_grid(MODEL, input_dir, bs=bs)
 
     # otherwise a grid with a single alpha enahancement value
-    alpha = get_choice(config.constants, "alpha_enhancement", alpha_codes)
-    print(alpha_codes[alpha])
-    return read_single_alpha_grid(
-        model, input_dir, ae=alpha_codes[alpha], bs=bs
-    )
+    print(codes[0])
+    return read_single_alpha_grid(MODEL, input_dir, ae=codes[0], bs=bs)
 
 
 #: The whole table is read in setup, so the grid is a single point
@@ -364,6 +400,9 @@ if __name__ == "__main__":
 
     # Unpack the arguments
     args = parser.parse_args()
+
+    if args.download:
+        download_data(choices(args.config_file)[0], f"{args.input_dir}/bpass")
 
     build_grid(
         setup(args.config_file, args.input_dir),

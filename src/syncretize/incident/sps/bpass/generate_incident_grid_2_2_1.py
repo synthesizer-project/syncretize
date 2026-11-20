@@ -7,9 +7,9 @@ various IMFs.
 Individual models can be specified with --model, or all models can be
 processed by setting --model=all.
 
-Note: there is no automatic download available so models need to be downloaded
-manually from:
-https://warwick.ac.uk/fac/sci/physics/research/astro/research/catalogues/bpass/v2p2
+--download fetches the chosen model's tables from the BPASS v2.2.1 release
+(https://warwick.ac.uk/fac/sci/physics/research/astro/research/catalogues/bpass/v2p2)
+into <input-dir>/bpass/<bpass_model>.
 
 Example:
     python generate_incident_grid_2_2_1.py \
@@ -19,7 +19,6 @@ Example:
 """
 
 import os
-import tarfile
 
 import numpy as np
 from unyt import Hz, angstrom, dimensionless, erg, s, yr
@@ -30,7 +29,11 @@ from syncretize.incident.builder import (
     build_grid,
     table_point,
 )
-from syncretize.incident.sps.utils import get_model_filename
+from syncretize.incident.sps.utils import (
+    download_sharepoint_file,
+    extract_gzipped_tables,
+    get_model_filename,
+)
 from syncretize.parser import Parser, get_choice, load_params
 
 
@@ -88,12 +91,34 @@ def parse_spectra_file(filename):
     return wavelength, spectra
 
 
-def untar_data(model, filename, input_dir):
-    model_dir = f"{input_dir}/{model}"
-    with tarfile.open(filename) as tar:
-        tar.extractall(path=model_dir)
+#: The BPASS v2.2 release's (public) SharePoint folder
+RELEASE_URL = (
+    "https://livewarwickac.sharepoint.com/:f:/s/"
+    "Physics-BinaryPopulationandSpectralSynthesisBPASS/"
+    "IgCEO7yhkykTSqSn-THge4yUAThs_a8zmpIuMkmQQTZ-LXY"
+)
 
-    os.remove(filename)
+
+def download_data(model, input_dir):
+    """Download a BPASS v2.2.1 model's spectra and stellar mass tables.
+
+    Args:
+        model (str)
+            The model, e.g. "bpass_v2.2.1_imf_chab300".
+        input_dir (str)
+            The directory to put them in, as <input_dir>/<model>/.
+    """
+    os.makedirs(input_dir, exist_ok=True)
+    archive = f"{input_dir}/{model}.tar.gz"
+    download_sharepoint_file(
+        RELEASE_URL, f"BPASS v2.2.1 full release/{model}.tar.gz", archive
+    )
+    # The archive holds gzipped tables of everything BPASS predicts; only
+    # the spectra and stellar masses (binary and single) are read here
+    extract_gzipped_tables(
+        archive, f"{input_dir}/{model}", ("spectra-", "starmass-")
+    )
+    os.remove(archive)
 
 
 def read_grid(original_model_name, bin, input_dir):
@@ -210,23 +235,9 @@ def read_grid(original_model_name, bin, input_dir):
     )
 
 
-def setup(config_file, input_dir):
-    """Read the config and the BPASS tables (see syncretize.incident.builder).
-
-    Args:
-        config_file (str)
-            The parameter file.
-        input_dir (str)
-            The directory holding the source data, in bpass/<bpass_model>.
-
-    Returns:
-        GridSpec
-            The whole grid, as a single point.
-    """
-    # open the config file and extract parameters
+def choices(config_file):
+    """The BPASS model and variant ("bin" or "sin") a config chooses."""
     config = load_params(config_file, model_keys=["bpass_model", "variant"])
-
-    # get the model chosen in the config file
     model = get_choice(
         config.model,
         "bpass_model",
@@ -242,6 +253,23 @@ def setup(config_file, input_dir):
         ],
     )
     bin = get_choice(config.model, "variant", ["bin", "sin"])
+    return model, bin
+
+
+def setup(config_file, input_dir):
+    """Read the config and the BPASS tables (see syncretize.incident.builder).
+
+    Args:
+        config_file (str)
+            The parameter file.
+        input_dir (str)
+            The directory holding the source data, in bpass/<bpass_model>.
+
+    Returns:
+        GridSpec
+            The whole grid, as a single point.
+    """
+    model, bin = choices(config_file)
     print(model, bin)
     return read_grid(model, bin, f"{input_dir}/bpass")
 
@@ -259,6 +287,9 @@ if __name__ == "__main__":
 
     # Unpack the arguments
     args = parser.parse_args()
+
+    if args.download:
+        download_data(choices(args.config_file)[0], f"{args.input_dir}/bpass")
 
     build_grid(
         setup(args.config_file, args.input_dir),
