@@ -142,6 +142,8 @@ def test_local_incident_run(tmp_path):
         assert list(hdf.attrs["axes"]) == ["blackbody_temperature"]
         assert hdf["spectra/incident"].shape[0] == 5
         assert "blackbody" in hdf["ParameterFile/contents"][()].decode()
+        assert hdf["RunConfig/Run"].attrs["name"] == "test"
+        assert hdf["RunConfig"].attrs["Cloudy"] == "None"
 
 
 def fake_incident_grid(grid_dir):
@@ -240,9 +242,24 @@ with open(j + ".out", "w") as file:
         file.write(" [Stop in cdMain, something went wrong]\\n")
         sys.exit(1)
     file.write(" [Stop in cdMain, Cloudy exited OK]\\n")
+# Continua (.cont: wavelength and 8 nu L_nu columns, blue last) and the
+# albedo (.refl, column 4)
+import numpy as np
+lam = np.geomspace(1e6, 10, 500)
+incident = 1e40 * (lam / 1e3) ** -1 * np.exp(-300 / lam)
+columns = [lam, incident, 0.5 * incident, 0.1 * incident, 0.6 * incident,
+           0.01 * incident, 0.61 * incident, 0, 0.01 * incident]
+np.savetxt(j + ".cont", np.column_stack(np.broadcast_arrays(*columns)),
+           delimiter="\\t")
+np.savetxt(j + ".refl", np.column_stack([lam, lam, lam, lam, 0 * lam + 0.01]),
+           delimiter="\\t")
 if behaviour != "no_lines":
+    # Every line of the model's line list, as "<id>\\t<luminosity>"
+    with open("linelist.dat") as file:
+        ids = file.read().split("\\n")
     with open(j + ".emergent_elin", "w") as file:
-        file.write("H  1 6562.80A 1.0\\n" * 10)
+        for n, id in enumerate(filter(None, ids)):
+            file.write(f"{{id}}\\t{{1e38 * (n + 1)}}\\n")
 """
 
 
@@ -279,8 +296,7 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
         monkeypatch,
         {"1_3": "fail", "2_5": "no_lines", "0_9": "fail_once"},
     )
-    with pytest.raises(NotImplementedError, match="Assembly"):
-        runner.run(local=True)
+    grid = runner.run(local=True)
 
     # 0_9 worked when retried; the others failed all 1 + 2 tries
 
@@ -297,6 +313,26 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
     cloudy_dir = runner._load_state()["cloudy_dir"]
     with open(os.path.join(cloudy_dir, "0", "7.out")) as file:
         assert file.readline() == f"{tmp_path}/cloudy/data/:./\n"
+
+    # The final grid loads in synthesizer, with the failures marked
+    assert grid == str(
+        tmp_path / "grids" / "fake-sps_cloudy-c23.01-sps-grid_limited.hdf5"
+    )
+    from synthesizer.grid import Grid
+
+    loaded = Grid(os.path.basename(grid), grid_dir=str(tmp_path / "grids"))
+    assert loaded.shape[:2] == (2, 2)
+    assert np.prod(loaded.shape[:-1]) == 4 * 48  # the last is wavelength
+    assert len(loaded.line_ids) > 0
+    assert loaded.spectra["nebular"].max() > 0
+    with h5py.File(grid, "r") as hdf:
+        failures = hdf["failures"][()]
+        assert failures.sum() == 2
+        # One each at incident points 1 and 2 (the photoionisation index
+        # isn't in C order, so isn't checked)
+        assert list(failures.reshape(4, 48).sum(axis=1)) == [0, 1, 1, 0]
+        assert hdf["RunConfig/Cloudy"].attrs["include_spectra"]
+        assert "fake-sps" in hdf["RunConfig/contents"][()].decode()
 
 
 def test_workers_stop_at_their_deadline(tmp_path, monkeypatch):

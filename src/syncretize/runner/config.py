@@ -54,6 +54,8 @@ CLOUDY_DEFAULTS = {
     "config": REQUIRED,
     "extra_config": None,
     "executable": REQUIRED,
+    "include_spectra": True,
+    "include_intrinsic_lines": False,
 }
 
 #: Keys that must be whole numbers of at least one

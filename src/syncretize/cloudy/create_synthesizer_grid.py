@@ -13,7 +13,6 @@ import re
 
 import h5py
 import numpy as np
-import submission_scripts
 from synthesizer.emissions import Sed
 from synthesizer.grid import Grid
 from synthesizer.units import has_units
@@ -30,13 +29,18 @@ from unyt import (
     unyt_array,
     yr,
 )
-from utils import (
+
+from syncretize.cloudy import (
+    cloudy17,
+    cloudy23,
+    cloudy25,
+    submission_scripts,
+)
+from syncretize.cloudy.utils import (
     get_cloudy_params,
     get_grid_props_cloudy,
     resolve_param_file,
 )
-
-from syncretize.cloudy import cloudy17, cloudy23, cloudy25
 from syncretize.grid_io import GridFile
 from syncretize.parser import Parser
 
@@ -105,6 +109,7 @@ def create_empty_grid(
     new_axes,
     new_axes_values,
     photoionisation_parameters,
+    incident_grid_dir=None,
 ):
     """
     Create an empty Synthesizer grid file based on an existing incident grid.
@@ -122,6 +127,8 @@ def create_empty_grid(
             Dictionary of the new axes values (including incident).
         photoionisation_parameters (dict):
             Dictionary of photoionisation modelling parameters.
+        incident_grid_dir (str, optional):
+            Directory holding the incident grid, if not grid_dir.
 
     Returns:
         out_grid (GridFile):
@@ -134,7 +141,7 @@ def create_empty_grid(
     # Open the parent incident grid
     incident_grid = Grid(
         incident_grid_name,
-        grid_dir=grid_dir,
+        grid_dir=incident_grid_dir or grid_dir,
         ignore_lines=True,
     )
 
@@ -450,8 +457,8 @@ def check_cloudy_runs(
     if number_of_failed_models > 0:
         print("number of failed cloudy runs:", number_of_failed_models)
 
-        # Save list of failed runs
-        failed_filename = f"{new_grid_name}.failures"
+        # Save list of failed runs, beside the cloudy outputs
+        failed_filename = f"{cloudy_dir}/{new_grid_name}.failures"
         np.savetxt(failed_filename, np.array(failed_list).T, fmt="%d")
 
         # If a specific machine is specified run the function in
@@ -1046,69 +1053,58 @@ def add_lines(
         )
 
 
-if __name__ == "__main__":
-    # Set up the command line arguments
-    parser = Parser(
-        description="Create Synthesizer HDF5 grid files from cloudy outputs.",
-        cloudy_args=True,
-    )
+def create_synthesizer_grid(
+    grid_dir,
+    cloudy_dir,
+    incident_grid_name,
+    cloudy_param_file,
+    extra_cloudy_param_file=None,
+    include_spectra=False,
+    include_intrinsic_lines=False,
+    machine=None,
+    cloudy_executable_path=None,
+    incident_grid_dir=None,
+    verbose=False,
+):
+    """
+    Make a synthesizer grid from the cloudy outputs of an incident grid.
 
-    # Add additional parameters which are specific to this script
+    Failed models are recorded in the grid's failures dataset, with zeros in
+    their spectra and lines.
 
-    # Machine (for submission script generation for failed models)
-    parser.add_argument("--machine", type=str, required=False, default=None)
+    Args:
+        grid_dir (str):
+            The directory the new grid is written to (and holding the
+            incident grid, unless incident_grid_dir is given).
+        cloudy_dir (str):
+            The directory holding the cloudy outputs, in
+            <new_grid_name>/<incident index>/<photoionisation index>.
+        incident_grid_name (str):
+            The incident grid's name (with or without .hdf5).
+        cloudy_param_file (str):
+            The cloudy parameter file (see resolve_param_file).
+        extra_cloudy_param_file (str, optional):
+            A parameter file whose parameters supersede cloudy_param_file's.
+        include_spectra (bool):
+            Store the spectra as well as the lines.
+        include_intrinsic_lines (bool):
+            Also store the intrinsic line luminosities.
+        machine (str, optional):
+            Write a submission script for this machine rerunning failures.
+        cloudy_executable_path (str, optional):
+            The cloudy directory, for the submission script.
+        incident_grid_dir (str, optional):
+            The directory holding the incident grid, if not grid_dir.
+        verbose (bool):
+            Print more.
 
-    # Path to cloudy directory (not the executable; this is assumed to
-    # {cloudy}/{cloudy_version}/source/cloudy.exe)
-    parser.add_argument(
-        "--cloudy-executable-path", type=str, required=False, default=None
-    )
-
-    # Should we include the spectra in the grid?
-    parser.add_argument(
-        "--include-spectra",
-        action="store_true",
-        help="Should the spectra be included in the grid?",
-        default=False,
-        required=False,
-    )
-
-    # Should we include the intrinsic line luminosities in the grid?
-    parser.add_argument(
-        "--include-intrinsic-lines",
-        action="store_true",
-        help="Also store intrinsic line luminosities (from the cloudy "
-        "'intrinsic_elin' output) as lines/luminosity_intrinsic.",
-        default=False,
-        required=False,
-    )
-
-    # Should we normalise by the specific ionising luminosity?
-    parser.add_argument(
-        "--norm-by-Q",
-        "-Q",
-        default=True,
-        required=False,
-        help="Should the grid be normalised by the specific "
-        "ionising luminosity? (default is True)",
-    )
-
-    # Parse arguments
-    args = parser.parse_args()
-
-    # Unpack arguments
-    grid_dir = args.grid_dir
-    cloudy_dir = args.cloudy_output_dir
-    incident_grid_name = args.incident_grid
-    cloudy_param_file = resolve_param_file(args.cloudy_paramfile)
-    extra_cloudy_param_file = args.cloudy_paramfile_extra
+    Returns:
+        str:
+            The new grid's path.
+    """
+    cloudy_param_file = resolve_param_file(cloudy_param_file)
     if extra_cloudy_param_file is not None:
         extra_cloudy_param_file = resolve_param_file(extra_cloudy_param_file)
-    include_spectra = args.include_spectra
-    include_intrinsic_lines = args.include_intrinsic_lines
-    machine = args.machine
-    cloudy_executable_path = args.cloudy_executable_path
-    verbose = args.verbose
 
     print(" " * 80)
     print("-" * 80)
@@ -1116,11 +1112,8 @@ if __name__ == "__main__":
     print("cloudy_param_file:", cloudy_param_file)
     print("extra_cloudy_param_file:", extra_cloudy_param_file)
 
-    if incident_grid_name.split(".")[-1] != "hdf5":
-        incident_grid_file = incident_grid_name + ".hdf5"
-    else:
-        incident_grid_file = incident_grid_name
-        incident_grid_name = "".join(incident_grid_name.split(".")[:-1])
+    # Names can hold dots (e.g. "...-0.1,100"), so only drop the extension
+    incident_grid_name = incident_grid_name.removesuffix(".hdf5")
 
     # Get name of new grid (concatenation of incident_grid and cloudy
     # parameter file)
@@ -1135,7 +1128,7 @@ if __name__ == "__main__":
     # Open the incident grid using synthesizer
     incident_grid = Grid(
         incident_grid_name,
-        grid_dir=grid_dir,
+        grid_dir=incident_grid_dir or grid_dir,
         ignore_lines=True,
     )
 
@@ -1198,7 +1191,6 @@ if __name__ == "__main__":
 
     # Else, we need to specify that the only photonionisation model is 0
     else:
-        photoionisation_n_models = 1
         photoionisation_index_list = [[]]
         photoionisation_shape = ()
 
@@ -1227,6 +1219,7 @@ if __name__ == "__main__":
         new_axes,
         new_axes_values,
         fixed_photoionisation_params,
+        incident_grid_dir=incident_grid_dir,
     )
 
     # Cloudy output files that must exist for a model to count as successful
@@ -1245,7 +1238,7 @@ if __name__ == "__main__":
 
     # Check cloudy runs and potentially replace them by the nearest grid point
     # if they fail.
-    number_of_failed_models = check_cloudy_runs(
+    check_cloudy_runs(
         new_grid_name,
         cloudy_dir,
         incident_index_list,
@@ -1295,3 +1288,69 @@ if __name__ == "__main__":
         extensions_to_check=extensions_to_check,
     )
     print("Added lines")
+
+    return new_grid.filepath
+
+
+if __name__ == "__main__":
+    # Set up the command line arguments
+    parser = Parser(
+        description="Create Synthesizer HDF5 grid files from cloudy outputs.",
+        cloudy_args=True,
+    )
+
+    # Add additional parameters which are specific to this script
+
+    # Machine (for submission script generation for failed models)
+    parser.add_argument("--machine", type=str, required=False, default=None)
+
+    # Path to cloudy directory (not the executable; this is assumed to
+    # {cloudy}/{cloudy_version}/source/cloudy.exe)
+    parser.add_argument(
+        "--cloudy-executable-path", type=str, required=False, default=None
+    )
+
+    # Should we include the spectra in the grid?
+    parser.add_argument(
+        "--include-spectra",
+        action="store_true",
+        help="Should the spectra be included in the grid?",
+        default=False,
+        required=False,
+    )
+
+    # Should we include the intrinsic line luminosities in the grid?
+    parser.add_argument(
+        "--include-intrinsic-lines",
+        action="store_true",
+        help="Also store intrinsic line luminosities (from the cloudy "
+        "'intrinsic_elin' output) as lines/luminosity_intrinsic.",
+        default=False,
+        required=False,
+    )
+
+    # Should we normalise by the specific ionising luminosity?
+    parser.add_argument(
+        "--norm-by-Q",
+        "-Q",
+        default=True,
+        required=False,
+        help="Should the grid be normalised by the specific "
+        "ionising luminosity? (default is True)",
+    )
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    create_synthesizer_grid(
+        grid_dir=args.grid_dir,
+        cloudy_dir=args.cloudy_output_dir,
+        incident_grid_name=args.incident_grid,
+        cloudy_param_file=args.cloudy_paramfile,
+        extra_cloudy_param_file=args.cloudy_paramfile_extra,
+        include_spectra=args.include_spectra,
+        include_intrinsic_lines=args.include_intrinsic_lines,
+        machine=args.machine,
+        cloudy_executable_path=args.cloudy_executable_path,
+        verbose=args.verbose,
+    )

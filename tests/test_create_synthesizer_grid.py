@@ -1,19 +1,11 @@
 """Tests for creating Synthesizer grids from cloudy outputs."""
 
-from pathlib import Path
-
 import h5py
 import numpy as np
 import pytest
 from unyt import Angstrom, Hz, dimensionless, erg, s, unyt_array
 
 from syncretize.grid_io import GridFile
-
-# create_synthesizer_grid.py imports its sibling modules (utils,
-# submission_scripts) so their directory must be importable.
-CLOUDY_DIR = (
-    Path(__file__).resolve().parents[1] / "src" / "syncretize" / "cloudy"
-)
 
 # The incident grid's log10 Q for each ion, one value per grid point
 INCIDENT_LOG10_Q = {
@@ -27,12 +19,8 @@ WEIGHTS = ("bolometric_luminosities", "initial_masses", "None")
 
 
 @pytest.fixture
-def create_empty_grid(monkeypatch):
-    """Import create_empty_grid with its sibling modules importable.
-
-    Args:
-        monkeypatch (pytest.MonkeyPatch):
-            Used to put the cloudy directory on sys.path for this test only.
+def create_empty_grid():
+    """Import create_empty_grid.
 
     Returns:
         function:
@@ -40,7 +28,6 @@ def create_empty_grid(monkeypatch):
     """
     # Skip gracefully if Synthesizer is not installed in the environment.
     pytest.importorskip("synthesizer.grid")
-    monkeypatch.syspath_prepend(str(CLOUDY_DIR))
     from syncretize.cloudy.create_synthesizer_grid import create_empty_grid
 
     return create_empty_grid

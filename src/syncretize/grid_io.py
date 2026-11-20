@@ -919,6 +919,34 @@ class GridFile:
         return n_axes, shape, n_models, mesh, model_list, index_list
 
 
+def write_run_config(grid_path, run_file, config):
+    """
+    Store the run config a Runner made a grid with in its RunConfig group.
+
+    The config (with every default filled in) is stored as attributes and the
+    verbatim run file in the ``contents`` dataset, as for ``ParameterFile``.
+
+    Args:
+        grid_path (str)
+            The grid to add the group to.
+        run_file (str)
+            The run config file.
+        config (dict)
+            The run config's sections, with their defaults.
+    """
+    with h5py.File(grid_path, "r+") as hdf:
+        if "RunConfig" in hdf:
+            del hdf["RunConfig"]
+        grp = hdf.create_group("RunConfig")
+        _write_attrs(grp, config)
+        dset = grp.create_dataset(
+            "contents",
+            data=Path(run_file).read_text(),
+            dtype=h5py.string_dtype(),
+        )
+        dset.attrs["path"] = str(Path(run_file).resolve())
+
+
 def _write_attrs(grp, params):
     """
     Write a dictionary of parameters as attributes of an HDF5 group.

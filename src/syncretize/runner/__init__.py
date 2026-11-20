@@ -11,6 +11,8 @@ import time
 import yaml
 
 from syncretize.cloudy.create_cloudy_input_grid import create_cloudy_inputs
+from syncretize.cloudy.create_synthesizer_grid import create_synthesizer_grid
+from syncretize.grid_io import write_run_config
 from syncretize.incident.builder import build_grid
 from syncretize.runner.cloudy import work
 from syncretize.runner.config import (
@@ -44,13 +46,15 @@ class Runner:
         run, incident = self.config.run, self.config.incident
         module = incident_module(incident["model"])
         os.makedirs(run["grid_dir"], exist_ok=True)
-        return build_grid(
+        grid = build_grid(
             module.setup(incident["config"], run["input_dir"]),
             module.generate_point,
             run["grid_dir"],
             param_file=incident["config"],
             cores=run["incident"]["cores"],
         )
+        self._write_run_config(grid)
+        return grid
 
     def cloudy_setup(self, incident_grid):
         """Write the Cloudy inputs and put every Cloudy model in the queue.
@@ -165,6 +169,41 @@ class Runner:
         self._save_state(round=round_ + 1, walltime=slurm_time(walltime))
         return "work"
 
+    def assemble(self):
+        """Make the final grid from the Cloudy outputs, in this process.
+
+        Models that failed every try are marked in its failures dataset.
+
+        Returns:
+            str
+                The path of the final grid.
+        """
+        state, cloudy = self._load_state(), self.config.cloudy
+        incident_grid = state["incident_grid"]
+        os.makedirs(self.config.run["grid_dir"], exist_ok=True)
+        grid = create_synthesizer_grid(
+            grid_dir=self.config.run["grid_dir"],
+            cloudy_dir=os.path.dirname(state["cloudy_dir"]),
+            incident_grid_name=os.path.basename(incident_grid),
+            cloudy_param_file=cloudy["config"],
+            extra_cloudy_param_file=cloudy["extra_config"],
+            include_spectra=cloudy["include_spectra"],
+            include_intrinsic_lines=cloudy["include_intrinsic_lines"],
+            incident_grid_dir=os.path.dirname(incident_grid),
+        )
+        self._write_run_config(grid)
+        self._save_state(grid=grid)
+        return grid
+
+    def _write_run_config(self, grid):
+        """Store the run config in the grid's RunConfig group."""
+        config = self.config
+        write_run_config(
+            grid,
+            config.path,
+            {"Run": config.run, "Incident": config.incident, "Cloudy": config.cloudy},
+        )
+
     def _load_state(self):
         """The run's state file, <work_dir>/state.yaml, as a dict."""
         path = os.path.join(self.config.run["work_dir"], "state.yaml")
@@ -186,6 +225,10 @@ class Runner:
         Args:
             local (bool)
                 Run in this process rather than submitting Slurm jobs.
+
+        Returns:
+            str
+                The path of the final grid (with --local).
         """
         if not local:
             raise NotImplementedError(
@@ -193,10 +236,10 @@ class Runner:
             )
         incident_grid = self.config.incident["grid"] or self.incident()
         if self.config.cloudy is None:
-            return
+            return incident_grid
         self.cloudy_setup(incident_grid)
         self.work("local")
         # Locally every worker has stopped once work returns
         while self.finish(lambda owner: False) == "work":
             self.work("local")
-        raise NotImplementedError("Assembly isn't written yet")
+        return self.assemble()
