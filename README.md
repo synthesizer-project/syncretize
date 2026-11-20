@@ -22,6 +22,7 @@ guide before running one.
 - [Making your own grid](docs/making_your_own_grid.rst)
 - [Incident model generators](docs/incident_models.rst)
 - [Cloudy reprocessing](docs/reprocessing.rst)
+- [Running a whole grid with the Runner](docs/runner.rst)
 - [Uploading to Syndex](docs/uploading_to_syndex.rst)
 - [GridFile reference](docs/grid_file.rst)
 

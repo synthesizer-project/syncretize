@@ -224,6 +224,24 @@ def test_cloudy_setup_fills_the_queue(tmp_path):
     }
 
 
+def test_cloudy_build_must_match_the_config(tmp_path):
+    with pytest.raises(ValueError, match="is Cloudy c25 but"):
+        load_run(
+            write_run(
+                tmp_path,
+                Cloudy={"config": "c23.01-sps", "executable": "/cloudy/c25"},
+            )
+        )
+    # A build named after its version, or not named like one, is fine
+    for executable in ("/cloudy/c23.01", "/cloudy/build"):
+        load_run(
+            write_run(
+                tmp_path,
+                Cloudy={"config": "c23.01-sps", "executable": executable},
+            )
+        )
+
+
 def test_unknown_cloudy_config(tmp_path):
     with pytest.raises(ValueError, match="shipped Cloudy config"):
         load_run(

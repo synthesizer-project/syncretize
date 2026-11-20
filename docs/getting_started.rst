@@ -106,3 +106,6 @@ If the application needs gas reprocessing, use the incident grid as input to
 the :doc:`reprocessing` workflow. Syncretize creates Cloudy inputs for every
 combination of incident and photoionisation parameters, runs those models, and
 collects their spectra and lines into a new grid.
+
+To make the incident grid and run Cloudy on it from one config, locally or on
+Slurm, use the :doc:`runner`.

@@ -11,6 +11,10 @@ workflow has three stages:
 Cloudy 23 is the recommended path. The regular collector is not currently
 complete for Cloudy 17 or 25.
 
+The :doc:`runner` runs these stages (and the incident grid) from one config,
+locally or as Slurm jobs that retry failed models. This page describes the
+scripts it uses.
+
 Prerequisites
 -------------
 

@@ -4,7 +4,10 @@
 # grid, from this one file. Every key is listed with what it does and its
 # default; copy this file and edit it to make a grid.
 #
-#   python -m syncretize.runner run path/to/run.yaml --local
+#   python -m syncretize.runner run path/to/run.yaml          # as Slurm jobs
+#   python -m syncretize.runner run path/to/run.yaml --local  # here
+#
+# See docs/runner.rst for how a run proceeds.
 #
 # Run and Incident are required; leave out Cloudy to make only the incident
 # grid. Unknown keys stop the run with an error. Relative paths are relative
@@ -54,7 +57,7 @@ Incident:
 # Cloudy (leave this section out to make only the incident grid)
 # Cloudy:
 #   config: c23.01-sps           # A shipped Cloudy config name (src/syncretize/cloudy/params) or a path to one. Its output_linelist sets the line list. Required.
-#   executable: /cosma/local/cloudy/c23.01  # The Cloudy directory, holding source/cloudy.exe and data/. Required.
+#   executable: /cosma/local/cloudy/c23.01  # The Cloudy build directory, holding source/cloudy.exe and data/; if named like a version, it must match the config's cloudy_version. Required.
 #   extra_config:                # A second Cloudy config whose parameters replace the first's. Default: none.
 #   include_spectra: true        # Store the spectra in the final grid, as well as the lines. Default: true.
 #   include_intrinsic_lines: false  # Also store the intrinsic line luminosities. Default: false.

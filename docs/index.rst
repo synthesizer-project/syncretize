@@ -24,6 +24,7 @@ metadata describing how Synthesizer should interpret them.
 
    incident_models
    reprocessing
+   runner
    uploading_to_syndex
 
 .. toctree::

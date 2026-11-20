@@ -8,7 +8,7 @@ There are three steps to the process:
 - Next, we use `run_cloudy.py` to run `cloudy`.
 - Finally, `create_synthesizer_grid.py` gathers the `cloudy` outputs and produces a new grid.
 
-The details of each of these steps are described below.
+The details of each of these steps are described below. To run all three (and make the incident grid) from one config, locally or as Slurm jobs, use the Runner (`python -m syncretize.runner`, see `docs/runner.rst`).
 
 ### Creating the cloudy input grid
 

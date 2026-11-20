@@ -184,6 +184,7 @@ def load_run(run_file):
                     f"{run_file}: Cloudy.{key} {cloudy[key]!r} is neither a "
                     "file nor a shipped Cloudy config"
                 )
+        _check_cloudy_version(run_file, cloudy)
 
     return SimpleNamespace(
         path=run_file, run=run, incident=incident, cloudy=cloudy
@@ -238,6 +239,29 @@ def slurm_time(seconds):
     hours, minutes = divmod(minutes, 60)
     days, hours = divmod(hours, 24)
     return f"{days}-{hours:02}:{minutes:02}:{secs:02}"
+
+
+def _check_cloudy_version(run_file, cloudy):
+    """Stop when the Cloudy build is a different version from the config's.
+
+    Only a build directory named like a version (e.g. c23.01 or c25) is
+    checked; its major version must match the config's cloudy_version.
+    """
+    build = re.match(r"c(\d+)", os.path.basename(cloudy["executable"]))
+    if build is None:
+        return
+    version = None
+    for key in ("config", "extra_config"):
+        if cloudy[key] is not None:
+            with open(resolve_param_file(cloudy[key])) as file:
+                params = yaml.load(file, Loader=YAMLLoader) or {}
+            version = params.get("cloudy_version", version)
+    wanted = re.match(r"c(\d+)", str(version))
+    if wanted is not None and wanted.group(1) != build.group(1):
+        raise ValueError(
+            f"{run_file}: Cloudy.executable {cloudy['executable']} is Cloudy "
+            f"{build.group(0)} but the Cloudy config is for {version}"
+        )
 
 
 def _fill(run_file, section, values, defaults, prefix=""):
