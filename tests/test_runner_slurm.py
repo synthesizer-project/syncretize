@@ -82,10 +82,10 @@ def test_run_submits_the_start_job(tmp_path, jobs):
 
 def submitted_round(tmp_path, monkeypatch, jobs, **cloudy):
     """Run the start job's work (Cloudy setup, first round) for a run."""
-    runner, queue = cloudy_run(tmp_path, monkeypatch, {}, **cloudy)
-    runner.config.run["slurm"] = SLURM
-    runner.start()
-    return runner, queue
+    section, queue = cloudy_run(tmp_path, monkeypatch, {}, **cloudy)
+    section.config.run["slurm"] = SLURM
+    section.runner.start()
+    return section, queue
 
 
 def test_start_submits_workers_then_finish(tmp_path, monkeypatch, jobs):
@@ -93,57 +93,61 @@ def test_start_submits_workers_then_finish(tmp_path, monkeypatch, jobs):
 
     # 4 x 48 models need only 48 workers of 4
     workers, finish = jobs(1), jobs(2)
-    assert "#SBATCH --job-name=R1-test-Cloudy" in workers
-    assert "#SBATCH --job-name=R1-test-Runner" in finish
+    assert "#SBATCH --job-name=R1-test-C1-Cloudy" in workers
+    assert "#SBATCH --job-name=R1-test-C1-Runner" in finish
     assert "#SBATCH --array=0-47" in workers
     assert "#SBATCH --cpus-per-task=4" in workers
     assert "#SBATCH --time=0-12:00:00" in workers
     assert workers[-1].endswith(
-        "work " + str(tmp_path / "run.yaml") + " --walltime 0-12:00:00"
+        "work "
+        + str(tmp_path / "run.yaml")
+        + " --section 1 --walltime 0-12:00:00"
     )
     assert "#SBATCH --dependency=afterany:1" in finish
     assert "#SBATCH --time=0-01:00:00" in finish
-    assert finish[-1].endswith("finish " + str(tmp_path / "run.yaml"))
+    assert finish[-1].endswith(
+        "finish " + str(tmp_path / "run.yaml") + " --section 1"
+    )
 
 
 def test_finish_requeues_and_submits_a_longer_round(
     tmp_path, monkeypatch, jobs
 ):
-    runner, queue = submitted_round(tmp_path, monkeypatch, jobs, workers=10)
+    section, queue = submitted_round(tmp_path, monkeypatch, jobs, workers=10)
     queue.claim("1_3.0", n=2)
     queue.claim("1_4.1")
 
     # A claim of a running worker stops the finish job
     monkeypatch.setenv("FAKE_SACCT", "1_3|TIMEOUT\n1_4|RUNNING")
     with pytest.raises(RuntimeError, match="still claimed"):
-        runner.continue_run()
+        section.continue_run()
 
     monkeypatch.setenv("FAKE_SACCT", "1_3|TIMEOUT\n1_4|CANCELLED by 12")
-    assert runner.continue_run() == "4"
+    assert section.continue_run() == "4"
     assert queue.counts()["todo"] == 4 * 48
     assert "#SBATCH --time=0-18:00:00" in jobs(3)
-    assert "#SBATCH --job-name=R2-test-Cloudy" in jobs(3)
+    assert "#SBATCH --job-name=R2-test-C1-Cloudy" in jobs(3)
     assert "#SBATCH --array=0-9" in jobs(3)
     assert "#SBATCH --dependency=afterany:3" in jobs(4)
 
 
 def test_finish_submits_assembly_when_done(tmp_path, monkeypatch, jobs):
-    runner, queue = submitted_round(tmp_path, monkeypatch, jobs)
-    runner.config.run["assemble"]["memory"] = "32G"
+    section, queue = submitted_round(tmp_path, monkeypatch, jobs)
+    section.config.run["assemble"]["memory"] = "32G"
     for model in queue.claim("1_0.0", n=4 * 48):
         queue.done(model, "1_0.0")
 
-    assert runner.continue_run() == "3"
-    assert "#SBATCH --job-name=R1-test-Assemble" in jobs(3)
+    assert section.continue_run() == "3"
+    assert "#SBATCH --job-name=R1-test-C1-Assemble" in jobs(3)
     assert "#SBATCH --mem=32G" in jobs(3)
 
 
 def test_worker_names_its_claims_after_its_array_task(tmp_path, monkeypatch):
-    runner, queue = cloudy_run(tmp_path, monkeypatch, {})
-    runner.cloudy_setup(runner.config.incident["grid"])
+    section, queue = cloudy_run(tmp_path, monkeypatch, {})
+    section.setup(section.config.incident["grid"])
     result = subprocess.run(
         [sys.executable, "-m", "syncretize.runner", "work"]
-        + [runner.config.path, "--walltime", "00:20:00"],
+        + [section.config.path, "--walltime", "00:20:00"],
         env={
             **os.environ,
             "PYTHONPATH": str(ROOT / "src"),
@@ -188,9 +192,42 @@ def test_resume_resubmits_a_stopped_job(tmp_path, monkeypatch, jobs):
 def test_resume_finishes_a_round_after_its_workers(
     tmp_path, monkeypatch, jobs
 ):
-    runner, queue = submitted_round(tmp_path, monkeypatch, jobs)
+    section, queue = submitted_round(tmp_path, monkeypatch, jobs)
     # The finish job (2) was cancelled while the workers (1) still run
     monkeypatch.setenv("FAKE_SACCT", "1_0|RUNNING\n2|CANCELLED by 5")
-    assert runner.resume() == "3"
+    assert section.runner.resume() == ["3"]
     assert "#SBATCH --dependency=afterany:1" in jobs(3)
-    assert jobs(3)[-1].endswith(f"finish {tmp_path / 'run.yaml'}")
+    assert jobs(3)[-1].endswith(f"finish {tmp_path / 'run.yaml'} --section 1")
+
+
+def test_start_submits_a_round_for_each_section(tmp_path, monkeypatch, jobs):
+    density = tmp_path / "density.yaml"
+    density.write_text("hydrogen_density: 100.0\n")
+    section, _ = cloudy_run(
+        tmp_path,
+        monkeypatch,
+        {},
+        more={
+            "Cloudy2": {
+                "config": "c23.01-sps-grid_limited",
+                "extra_config": str(density),
+            }
+        },
+    )
+    runner = section.runner
+    runner.config.run["slurm"] = SLURM
+    runner.start()
+
+    # Each section's workers and finish job, named and run for it
+    assert "#SBATCH --job-name=R1-test-C1-Cloudy" in jobs(1)
+    assert "#SBATCH --job-name=R1-test-C2-Cloudy" in jobs(3)
+    assert "#SBATCH --job-name=R1-test-C2-Runner" in jobs(4)
+    assert jobs(4)[-1].endswith("--section 2")
+    assert runner._load_state()["next"] == "cloudy"
+
+    # Resume carries on each section that has stopped
+    monkeypatch.setenv("FAKE_SACCT", "1_0|RUNNING\n2|PENDING\n4|FAILED")
+    assert runner.resume() == [None, "5"]
+    assert jobs(5)[-1].endswith(
+        "finish " + str(tmp_path / "run.yaml") + " --section 2"
+    )

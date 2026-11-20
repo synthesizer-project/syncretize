@@ -1,12 +1,15 @@
 """Load and check a run configuration (``run.yaml``).
 
-A run config has three sections:
+A run config has these sections:
 
     Run       where things go and how the jobs are sized (required)
     Incident  the incident model and its parameter file, or an existing
               incident grid (required)
-    Cloudy    the Cloudy config and executable (optional; leave it out to
-              make only the incident grid)
+    Cloudy    a Cloudy config and executable to run on the incident grid
+              (optional; leave it out to make only the incident grid)
+    Cloudy2, Cloudy3, ...
+              more Cloudy set-ups for the same incident grid, each making
+              its own grid (Cloudy is the same as Cloudy1)
 
 See ``parameter_files/runs/run_template.yaml`` for every key.
 """
@@ -87,6 +90,10 @@ RUN_PATHS = ("work_dir", "grid_dir", "input_dir")
 INCIDENT_PATHS = ("config", "grid")
 
 
+#: A Cloudy section's key: Cloudy (the first) or Cloudy<n>
+CLOUDY_KEY = re.compile(r"Cloudy(\d*)")
+
+
 def load_run(run_file):
     """Read and check a run config.
 
@@ -96,29 +103,43 @@ def load_run(run_file):
 
     Returns:
         SimpleNamespace
-            ``path`` (the absolute path of ``run_file``), ``run``,
-            ``incident`` and ``cloudy`` (dicts with every default filled in;
-            ``cloudy`` is None when there is no Cloudy section).
+            ``path`` (the absolute path of ``run_file``), ``run`` and
+            ``incident`` (dicts with every default filled in), and
+            ``sections`` (each Cloudy section, likewise filled in, by its
+            number: 1 for Cloudy or Cloudy1; empty without Cloudy).
     """
     run_file = os.path.abspath(run_file)
     with open(run_file) as file:
         raw = yaml.load(file, Loader=YAMLLoader) or {}
     if not isinstance(raw, dict):
         raise ValueError(f"{run_file} must be a mapping of sections")
-    unknown = set(raw) - {"Run", "Incident", "Cloudy"}
+    unknown = {
+        key
+        for key in set(raw) - {"Run", "Incident"}
+        if CLOUDY_KEY.fullmatch(key) is None
+        or CLOUDY_KEY.fullmatch(key).group(1).startswith("0")
+    }
     if unknown or "Run" not in raw or "Incident" not in raw:
         raise ValueError(
-            f"{run_file} needs Run and Incident sections and may have a "
-            f"Cloudy section (unknown {sorted(unknown)})"
+            f"{run_file} needs Run and Incident sections and may have "
+            f"Cloudy sections (Cloudy, Cloudy2, ...; unknown "
+            f"{sorted(unknown)})"
         )
 
     run = _fill(run_file, "Run", raw["Run"], RUN_DEFAULTS)
     incident = _fill(run_file, "Incident", raw["Incident"], INCIDENT_DEFAULTS)
-    cloudy = (
-        _fill(run_file, "Cloudy", raw["Cloudy"], CLOUDY_DEFAULTS)
-        if raw.get("Cloudy") is not None
-        else None
-    )
+    sections = {}
+    for key in sorted(set(raw) - {"Run", "Incident"}):
+        if raw[key] is None:
+            continue
+        index = int(CLOUDY_KEY.fullmatch(key).group(1) or 1)
+        if index in sections:
+            raise ValueError(
+                f"{run_file}: Cloudy and Cloudy1 are the same section; give "
+                "one of them"
+            )
+        sections[index] = _fill(run_file, key, raw[key], CLOUDY_DEFAULTS)
+    sections = dict(sorted(sections.items()))
 
     for group, keys in POSITIVE_INTEGERS.items():
         for key in keys:
@@ -167,7 +188,7 @@ def load_run(run_file):
                 f"{run_file}: give Incident.grid or Incident.model and "
                 "Incident.config, not both"
             )
-        if cloudy is None:
+        if not sections:
             raise ValueError(
                 f"{run_file}: Incident.grid needs a Cloudy section (there is "
                 "nothing else to do)"
@@ -185,7 +206,9 @@ def load_run(run_file):
         run[key] = _resolve(base, run[key])
     for key in INCIDENT_PATHS:
         incident[key] = _resolve(base, incident[key])
-    if cloudy is not None:
+    names = {}
+    for index, cloudy in sections.items():
+        where = f"Cloudy{index}"
         cloudy["executable"] = _resolve(base, cloudy["executable"])
         # Cloudy configs are a path or the name of a shipped config
         for key in ("config", "extra_config"):
@@ -196,40 +219,79 @@ def load_run(run_file):
                 cloudy[key] = relative
             elif not resolve_param_file(cloudy[key]).is_file():
                 raise ValueError(
-                    f"{run_file}: Cloudy.{key} {cloudy[key]!r} is neither a "
+                    f"{run_file}: {where}.{key} {cloudy[key]!r} is neither a "
                     "file nor a shipped Cloudy config"
                 )
-        _check_cloudy_version(run_file, cloudy)
+        _check_cloudy_version(run_file, where, cloudy)
         if cloudy["perturb"] is not None:
-            _check_perturb(run_file, cloudy)
+            _check_perturb(run_file, where, cloudy)
+        # Each section's grid (and directory) is named after its configs
+        name = section_name(cloudy)
+        if name in names:
+            raise ValueError(
+                f"{run_file}: Cloudy{names[name]} and {where} would both "
+                f"make the grid {name} (each needs different configs)"
+            )
+        names[name] = index
 
     return SimpleNamespace(
-        path=run_file, run=run, incident=incident, cloudy=cloudy
+        path=run_file, run=run, incident=incident, sections=sections
     )
 
 
-def _check_perturb(run_file, cloudy):
-    """Fill in Cloudy.perturb's defaults (``true`` takes them all) and check
-    it."""
+def section_name(cloudy):
+    """A Cloudy section's name, from its config files.
+
+    It is the Cloudy grid's name after "_cloudy-" (e.g. "c23.01-sps", or
+    "c23.01-sps-density-1000" with an extra config), so each section of a
+    run makes a differently named grid.
+
+    Args:
+        cloudy (dict)
+            The Cloudy section of the run config.
+
+    Returns:
+        str
+            The name.
+    """
+    return "-".join(
+        resolve_param_file(cloudy[key]).stem
+        for key in ("config", "extra_config")
+        if cloudy[key] is not None
+    )
+
+
+def _check_perturb(run_file, where, cloudy):
+    """Fill in a section's perturb defaults (``true`` takes them all) and
+    check it.
+
+    Args:
+        run_file (str)
+            The run config, for errors.
+        where (str)
+            The section's key, e.g. "Cloudy2", for errors.
+        cloudy (dict)
+            The section, whose perturb is filled in.
+    """
     given = cloudy["perturb"]
     if given is True:
         given = {}
-    perturb = _fill(run_file, "perturb", given, PERTURB_DEFAULTS, "Cloudy.")
+    perturb = _fill(run_file, "perturb", given, PERTURB_DEFAULTS, f"{where}.")
     cloudy["perturb"] = perturb
     for key in ("step", "log_step"):
         value = perturb[key]
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(
-                f"{run_file}: Cloudy.perturb.{key} must be a number"
+                f"{run_file}: {where}.perturb.{key} must be a number"
             )
         if value <= 0:
             raise ValueError(
-                f"{run_file}: Cloudy.perturb.{key} must be positive"
+                f"{run_file}: {where}.perturb.{key} must be positive"
             )
     steps = perturb["max_steps"]
     if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
         raise ValueError(
-            f"{run_file}: Cloudy.perturb.max_steps must be a whole number "
+            f"{run_file}: {where}.perturb.max_steps must be a whole number "
             "of at least 1"
         )
 
@@ -284,11 +346,19 @@ def slurm_time(seconds):
     return f"{days}-{hours:02}:{minutes:02}:{secs:02}"
 
 
-def _check_cloudy_version(run_file, cloudy):
+def _check_cloudy_version(run_file, where, cloudy):
     """Stop when the Cloudy build is a different version from the config's.
 
     Only a build directory named like a version (e.g. c23.01 or c25) is
     checked; its major version must match the config's cloudy_version.
+
+    Args:
+        run_file (str)
+            The run config, for errors.
+        where (str)
+            The section's key, e.g. "Cloudy2", for errors.
+        cloudy (dict)
+            The section.
     """
     build = re.match(r"c(\d+)", os.path.basename(cloudy["executable"]))
     if build is None:
@@ -302,7 +372,7 @@ def _check_cloudy_version(run_file, cloudy):
     wanted = re.match(r"c(\d+)", str(version))
     if wanted is not None and wanted.group(1) != build.group(1):
         raise ValueError(
-            f"{run_file}: Cloudy.executable {cloudy['executable']} is Cloudy "
+            f"{run_file}: {where}.executable {cloudy['executable']} is Cloudy "
             f"{build.group(0)} but the Cloudy config is for {version}"
         )
 

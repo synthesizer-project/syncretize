@@ -9,11 +9,12 @@ The start, finish and assembly jobs, and ``run`` and ``resume``, also add
 the run's story to ``<work_dir>/run.log``, each line prefixed with the date
 and the job:
 
-    2026-11-20 13:06:20 [start 12379695] Wrote 1547 Cloudy inputs in 18 s
+    2026-11-20 13:06:20 [C1 start 12379695] Wrote 1547 Cloudy inputs in 18 s
 
-These jobs never run at once, so run.log has one writer at a time; the
-workers, which do run at once, only log to their own job logs (the finish job
-sums them up in run.log).
+where a line about one Cloudy section starts with its label (C1, C2, ...).
+The workers, which run many at once, only log to their own job logs (the
+finish jobs sum them up in run.log); the other jobs of different sections
+may write to run.log at once, a line at a time.
 
 ``log.info`` goes to both logs, ``log.debug`` only to the job log.
 """
@@ -41,7 +42,7 @@ BANNER = r"""
 _context = {"tag": "", "work_dir": None}
 
 
-def setup(work_dir, stage, job=None, run_log=True):
+def setup(work_dir, stage, job=None, run_log=True, section=None):
     """Log this job to stdout and (unless run_log is False) to run.log.
 
     Args:
@@ -53,6 +54,9 @@ def setup(work_dir, stage, job=None, run_log=True):
             The job's ID, if it has one.
         run_log (bool)
             Also add to run.log (not for the workers).
+        section (str)
+            The label of the Cloudy section the job runs (e.g. "C2"), if
+            any.
     """
     for handler in log.handlers:
         handler.close()
@@ -60,7 +64,7 @@ def setup(work_dir, stage, job=None, run_log=True):
     _context["work_dir"] = work_dir
     log.setLevel(logging.DEBUG)
     log.propagate = False
-    set_stage(stage, job)
+    set_stage(stage, job, section)
 
     stdout = logging.StreamHandler(sys.stdout)
     stdout.setLevel(logging.DEBUG)
@@ -79,9 +83,19 @@ def logging_to(work_dir):
     return bool(log.handlers) and _context["work_dir"] == work_dir
 
 
-def set_stage(stage, job=None):
-    """Say which stage (and job) run.log lines come from."""
-    _context["tag"] = f"{stage} {job}" if job else stage
+def set_stage(stage, job=None, section=None):
+    """Say which stage, job and Cloudy section run.log lines come from.
+
+    Args:
+        stage (str)
+            The stage.
+        job (str)
+            The job's ID, if it has one.
+        section (str)
+            The Cloudy section's label (e.g. "C2"), if the lines are about
+            one.
+    """
+    _context["tag"] = " ".join(x for x in (section, stage, job) if x)
 
 
 def took(start):

@@ -26,11 +26,12 @@ def main():
             "watch",
         ],
         help="run: every stage (submits the start job, or runs here with "
-        "--local); resume: carry on a stopped run from its next stage; "
+        "--local); resume: carry on a stopped run from its next stages; "
         "incident: only the incident grid, here. The Slurm jobs run start "
-        "(incident grid, Cloudy inputs, first round), work (one Cloudy "
-        "worker), finish (tidy the queue, submit the next job) and assemble "
-        "(the final grid); watch: a live view of a run",
+        "(incident grid, every Cloudy section's inputs and first round), "
+        "and for one Cloudy section (--section) work (one Cloudy worker), "
+        "finish (tidy the queue, submit the next job) and assemble (the "
+        "section's final grid); watch: a live view of a run",
     )
     parser.add_argument(
         "run_file",
@@ -43,6 +44,13 @@ def main():
         action="store_true",
         help="run, resume: run the stages in this process instead of "
         "submitting jobs",
+    )
+    parser.add_argument(
+        "--section",
+        type=int,
+        default=1,
+        help="work, finish, assemble: the Cloudy section's number (1 for "
+        "Cloudy or Cloudy1; default 1)",
     )
     parser.add_argument(
         "--walltime",
@@ -75,13 +83,18 @@ def main():
     from syncretize.runner import Runner
 
     runner = Runner(args.run_file)
-    job = os.environ.get("SLURM_JOB_ID")
+    # The stages of one Cloudy section, and what they keep their state in
+    section = None
+    stages = runner
+    if args.stage in ("work", "finish", "assemble"):
+        section = stages = runner.section(args.section)
     setup(
         runner.config.run["work_dir"],
         args.stage,
-        job,
+        os.environ.get("SLURM_JOB_ID"),
         # The workers, which run together, keep out of run.log
         run_log=args.stage not in ("work", "incident"),
+        section=section.label if section is not None else None,
     )
     if args.stage in ("run", "resume"):
         getattr(runner, args.stage)(local=args.local)
@@ -93,22 +106,22 @@ def main():
             if task is not None
             else "local"
         )
-        runner.work(job, walltime=args.walltime)
+        section.work(job, walltime=args.walltime)
     elif args.stage == "incident":
         runner.incident()
     else:
         # The start, finish and assemble jobs record when they ran and how
-        # they ended in the state file
+        # they ended in their state file
         method = {
             "start": runner.start,
-            "finish": runner.continue_run,
-            "assemble": runner.assemble,
+            "finish": getattr(section, "continue_run", None),
+            "assemble": getattr(section, "assemble", None),
         }[args.stage]
-        runner.job_started(args.stage)
+        stages.job_started(args.stage)
         try:
             method()
         except BaseException as error:
-            runner.job_ended(args.stage, f"failed: {error!r}")
+            stages.job_ended(args.stage, f"failed: {error!r}")
             log.error(
                 f"The {args.stage} job failed: {error!r}. Once it is fixed, "
                 "carry on with: python -m syncretize.runner resume "
@@ -116,7 +129,7 @@ def main():
             )
             log.debug("", exc_info=True)
             raise
-        runner.job_ended(args.stage, "completed")
+        stages.job_ended(args.stage, "completed")
 
 
 # Guarded, since the incident builder's spawned processes import this module

@@ -4,17 +4,25 @@ A Textual app that redraws every few seconds (``-n``, default 2) from the
 files a run writes, without changing any of them, so it is safe to leave
 running anywhere the work directory is visible:
 
+    state.yaml       the run's stage, its start job and its Cloudy sections
+    run.log          as it grows
+    squeue, sacct    the run's jobs (every 30 s, when Slurm is there)
+
+and, for each Cloudy section (in <work_dir>/<section>):
+
     state.yaml       next stage and job, rounds, jobs, failed models
     queue/*          how many models are waiting, running, done and failed,
                      and how long each running model has been going
     state/*.jsonl    the current round's worker records (read as they grow)
     grid_points.json each model's grid point (from the setup)
-    run.log          as it grows
-    squeue, sacct    the run's jobs (every 30 s, when Slurm is there)
 
-Every panel scrolls (keys or mouse); Tab moves between them. run.log follows
-new lines unless scrolled up. Keys: l run.log and r the running models full
-screen (again to go back), s your Slurm queue (Esc to go back), q quits.
+The header covers the whole run; below it, each Cloudy section has its own
+tab (1-9 and 0 pick one, Tab and Shift+Tab cycle through them), whose log
+shows the run.log lines about that section and the run as a whole. A run
+with one section shows no tabs. Every panel scrolls with the mouse; run.log
+follows new lines unless scrolled up. Keys: l run.log and r the running
+models full screen (again to go back), s your Slurm queue (Esc to go back),
+q quits.
 """
 
 import functools
@@ -40,9 +48,17 @@ from rich.table import Table
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, RichLog, Static
+from textual.widgets import (
+    DataTable,
+    Footer,
+    RichLog,
+    Static,
+    TabbedContent,
+    TabPane,
+)
 
 from syncretize.runner.cloudy import iteration, model_path
 from syncretize.runner.perturb import is_perturbed
@@ -110,56 +126,269 @@ class Watcher:
     Attributes:
         work_dir (str)
             The run's work directory.
+        show_squeue (bool)
+            Whether to ask squeue for all your jobs (while the Slurm queue
+            view is open).
     """
 
     def __init__(self, work_dir):
+        """Watch a run.
+
+        Args:
+            work_dir (str)
+                The run's work directory.
+        """
         self.work_dir = work_dir
-        self._records = {}  # worker record file: (offset, records)
-        self._counts, self._counted = None, 0.0
+        self.show_squeue = False
+        self._sections = {}  # each Cloudy section's reader, by its label
         self._jobs, self._asked = {}, 0.0
         self._ended = {}  # job ID: how its tasks ended, from sacct
+        self._log_offset = None  # how much of run.log has been read
+        self._squeue, self._squeue_at = None, 0.0
+
+    def read(self):
+        """Everything the view shows.
+
+        Returns:
+            dict
+                "run" (the run's state), "sections" (a snapshot of each
+                Cloudy section, see ``_SectionReader.read``, or for a run
+                without Cloudy one of the run itself), "squeue" (your Slurm
+                queue, when asked for) and "now".
+        """
+        run = _read_yaml(os.path.join(self.work_dir, "state.yaml"))
+        for label, name in (run.get("sections") or {}).items():
+            if label not in self._sections:
+                self._sections[label] = _SectionReader(
+                    os.path.join(self.work_dir, name), label
+                )
+        readers = list(self._sections.values()) or [
+            _SectionReader(self.work_dir, None)
+        ]
+        states = {reader.label: reader.state() for reader in readers}
+
+        # The run's start job, then each section's own
+        jobs = list(run.get("jobs", []))
+        for label, state in states.items():
+            if label is not None:
+                jobs += state.get("jobs", [])
+        slurm = self._slurm(run, jobs)
+        squeue = self._all_jobs() if self.show_squeue else None
+        log, log_new = self._log_tail(), self._log_new()
+        now = datetime.now(timezone.utc)
+
+        sections = []
+        for reader in readers:
+            label, state = reader.label, states[reader.label]
+            own = state.get("jobs", []) if label is not None else []
+            shared = {
+                "run": run,
+                "jobs": [*run.get("jobs", []), *own],
+                "slurm": {
+                    job: entry
+                    for job, entry in slurm.items()
+                    if _about(entry["name"], label)
+                },
+                "ended": self._ended,
+                "squeue": squeue,
+                "log": [line for line in log if _about_line(line, label)],
+                "log_new": [
+                    line for line in log_new if _about_line(line, label)
+                ],
+                "now": now,
+            }
+            sections.append(reader.read(state, shared))
+        return {"run": run, "sections": sections, "squeue": squeue, "now": now}
+
+    def _path(self, *names):
+        """A path in the run's work directory."""
+        return os.path.join(self.work_dir, *names)
+
+    def _log_tail(self, size=65536):
+        """run.log's last lines (its last 64 KB)."""
+        try:
+            with open(self._path("run.log"), "rb") as file:
+                file.seek(0, os.SEEK_END)
+                file.seek(max(0, file.tell() - size))
+                return file.read().decode(errors="replace").splitlines()[1:]
+        except FileNotFoundError:
+            return []
+
+    def _log_new(self, first=65536):
+        """run.log's lines since the last read (at first, its last 64 KB)."""
+        partial = False
+        try:
+            with open(self._path("run.log"), "rb") as file:
+                file.seek(0, os.SEEK_END)
+                end = file.tell()
+                if self._log_offset is None or self._log_offset > end:
+                    self._log_offset = max(0, end - first)
+                    partial = self._log_offset > 0  # mid-line
+                file.seek(self._log_offset)
+                data = file.read()
+        except FileNotFoundError:
+            return []
+        # A partly written last line waits for the next read
+        done = data.rfind(b"\n") + 1
+        self._log_offset += done
+        lines = data[:done].decode(errors="replace").splitlines()
+        return lines[1:] if partial else lines
+
+    def _all_jobs(self):
+        """All your jobs in squeue (SQUEUE_COLUMNS), or None without it."""
+        if shutil.which("squeue") is None:
+            return None
+        if time.monotonic() - self._squeue_at < SQUEUE_EVERY:
+            return self._squeue
+        try:
+            result = subprocess.run(
+                ["squeue", "-u", getpass.getuser(), "-h", "-o", SQUEUE_FORMAT],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return self._squeue
+        self._squeue_at = time.monotonic()
+        width = len(SQUEUE_COLUMNS)
+        self._squeue = [
+            (line.split("|", width - 1) + [""] * width)[:width]
+            for line in result.stdout.splitlines()
+        ]
+        return self._squeue
+
+    def _slurm(self, run, jobs):
+        """The run's queued and running jobs, by job ID (every 30 s).
+
+        Also asks sacct how the run's other jobs ended, once each (a job that
+        has ended doesn't change), into ``self._ended``.
+
+        Args:
+            run (dict)
+                The run's state.
+            jobs (list of dict)
+                Every job the run and its sections have submitted.
+
+        Returns:
+            dict
+                Each queued or running job's name and how many of its tasks
+                are running and pending.
+        """
+        name = run.get("name")
+        if name is None or shutil.which("squeue") is None:
+            return {}
+        if time.monotonic() - self._asked < SLURM_EVERY:
+            return self._jobs
+        self._asked = time.monotonic()
+        try:
+            result = subprocess.run(
+                ["squeue", "-u", getpass.getuser(), "-h", "-o", "%i|%j|%T|%M"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return self._jobs
+        live = {}
+        for line in result.stdout.splitlines():
+            job, job_name, status, elapsed = (line.split("|") + [""] * 4)[:4]
+            if f"-{name}-" not in f"-{job_name}-":
+                continue
+            base = job.split("_")[0]
+            entry = live.setdefault(
+                base, {"name": job_name, "running": 0, "pending": 0}
+            )
+            tasks = _count_tasks(job)
+            if status == "RUNNING":
+                entry["running"] += tasks
+                entry["elapsed"] = elapsed
+            else:
+                entry["pending"] += tasks
+        self._jobs = live
+
+        ask = [
+            str(entry["job"])
+            for entry in jobs
+            if str(entry["job"]) not in live
+            and str(entry["job"]) not in self._ended
+        ]
+        if ask and shutil.which("sacct") is not None:
+            self._ended |= _sacct(ask)
+        return live
+
+
+class _SectionReader:
+    """Reads one Cloudy section's files (or a run without Cloudy's).
+
+    Attributes:
+        directory (str)
+            The section's directory (the work directory for a run without
+            Cloudy).
+        label (str)
+            The section's label, e.g. "C1" (None for a run without Cloudy).
+    """
+
+    def __init__(self, directory, label):
+        """Watch a section.
+
+        Args:
+            directory (str)
+                Its directory.
+            label (str)
+                Its label, or None.
+        """
+        self.directory = directory
+        self.label = label
+        self._records = {}  # worker record file: (offset, records)
+        self._counts, self._counted = None, 0.0
         self._running_cache, self._running_at = [], 0.0
         self._models, self._models_mtime = {}, None
         self._finished = []  # every finished attempt, from models.json
         self._names = {state: [] for state in STATES}  # the queue's models
         self._grid_points = None
-        self._log_offset = None  # how much of run.log has been read
-        #: Whether to ask squeue for all your jobs (the Slurm queue view)
-        self.show_squeue = False
-        self._squeue, self._squeue_at = None, 0.0
 
-    def read(self):
-        """Everything the view shows, as a dict."""
-        state = self._yaml("state.yaml")
+    def state(self):
+        """The section's state file."""
+        return _read_yaml(self._path("state.yaml"))
+
+    def read(self, state, shared):
+        """A snapshot of the section, for the view.
+
+        Args:
+            state (dict)
+                Its state file.
+            shared (dict)
+                What it shares with the run: "run" (the run's state),
+                "jobs" (the start job and the section's own), "slurm" (its
+                live jobs), "ended", "squeue", "log" and "log_new" (the
+                run.log lines about it or the whole run) and "now".
+
+        Returns:
+            dict
+                The shared values and the section's "label", "state",
+                "counts", "records", "attempts", "finished", "running",
+                "names", "points" and "cloudy_dir".
+        """
         return {
+            **shared,
+            "label": self.label,
             "state": state,
             "counts": self._queue_counts(),
             "records": self._round_records(),
-            "log": self._log_tail(),
-            "log_new": self._log_new(),
-            "slurm": self._slurm(state),
-            "squeue": self._all_jobs() if self.show_squeue else None,
-            "ended": self._ended,
             "attempts": self._attempts(),
             "finished": self._finished,
             "running": self._running(),
             "names": self._names,
             "points": self._points(state.get("cloudy_dir")),
             "cloudy_dir": state.get("cloudy_dir"),
-            "now": datetime.now(timezone.utc),
         }
 
     def _path(self, *names):
-        return os.path.join(self.work_dir, *names)
-
-    def _yaml(self, name):
-        try:
-            with open(self._path(name)) as file:
-                return yaml.safe_load(file) or {}
-        except (FileNotFoundError, yaml.YAMLError):
-            return {}
+        """A path in the section's directory."""
+        return os.path.join(self.directory, *names)
 
     def _queue_counts(self):
+        """How many models are in each queue state (and which models)."""
         total = sum(self._counts.values()) if self._counts else 0
         if (
             total > BIG_QUEUE
@@ -242,35 +471,6 @@ class Watcher:
             self._records[name] = (offset, records)
         return [r for _, records in self._records.values() for r in records]
 
-    def _log_tail(self, size=65536):
-        try:
-            with open(self._path("run.log"), "rb") as file:
-                file.seek(0, os.SEEK_END)
-                file.seek(max(0, file.tell() - size))
-                return file.read().decode(errors="replace").splitlines()[1:]
-        except FileNotFoundError:
-            return []
-
-    def _log_new(self, first=65536):
-        """run.log's lines since the last read (at first, its last 64 KB)."""
-        partial = False
-        try:
-            with open(self._path("run.log"), "rb") as file:
-                file.seek(0, os.SEEK_END)
-                end = file.tell()
-                if self._log_offset is None or self._log_offset > end:
-                    self._log_offset = max(0, end - first)
-                    partial = self._log_offset > 0  # mid-line
-                file.seek(self._log_offset)
-                data = file.read()
-        except FileNotFoundError:
-            return []
-        # A partly written last line waits for the next read
-        done = data.rfind(b"\n") + 1
-        self._log_offset += done
-        lines = data[:done].decode(errors="replace").splitlines()
-        return lines[1:] if partial else lines
-
     def _attempts(self):
         """How many times each model has run, from models.json."""
         try:
@@ -293,76 +493,56 @@ class Watcher:
             self._models_mtime = mtime
         return self._models
 
-    def _all_jobs(self):
-        """All your jobs in squeue (SQUEUE_COLUMNS), or None without it."""
-        if shutil.which("squeue") is None:
-            return None
-        if time.monotonic() - self._squeue_at < SQUEUE_EVERY:
-            return self._squeue
-        try:
-            result = subprocess.run(
-                ["squeue", "-u", getpass.getuser(), "-h", "-o", SQUEUE_FORMAT],
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return self._squeue
-        self._squeue_at = time.monotonic()
-        width = len(SQUEUE_COLUMNS)
-        self._squeue = [
-            (line.split("|", width - 1) + [""] * width)[:width]
-            for line in result.stdout.splitlines()
-        ]
-        return self._squeue
 
-    def _slurm(self, state):
-        """The run's queued and running jobs, by job ID (every 30 s).
+def _read_yaml(path):
+    """A YAML file's contents (empty if it is missing or half written)."""
+    try:
+        with open(path) as file:
+            return yaml.safe_load(file) or {}
+    except (FileNotFoundError, yaml.YAMLError):
+        return {}
 
-        Also asks sacct how the run's other jobs ended, once each (a job that
-        has ended doesn't change), into ``self._ended``.
-        """
-        name = state.get("name")
-        if name is None or shutil.which("squeue") is None:
-            return {}
-        if time.monotonic() - self._asked < SLURM_EVERY:
-            return self._jobs
-        self._asked = time.monotonic()
-        try:
-            result = subprocess.run(
-                ["squeue", "-u", getpass.getuser(), "-h", "-o", "%i|%j|%T|%M"],
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return self._jobs
-        jobs = {}
-        for line in result.stdout.splitlines():
-            job, job_name, status, elapsed = (line.split("|") + [""] * 4)[:4]
-            if f"-{name}-" not in f"-{job_name}-":
-                continue
-            base = job.split("_")[0]
-            entry = jobs.setdefault(
-                base, {"name": job_name, "running": 0, "pending": 0}
-            )
-            tasks = _count_tasks(job)
-            if status == "RUNNING":
-                entry["running"] += tasks
-                entry["elapsed"] = elapsed
-            else:
-                entry["pending"] += tasks
-        self._jobs = jobs
 
-        ask = [
-            str(entry["job"])
-            for entry in state.get("jobs", [])
-            if str(entry["job"]) not in jobs
-            and str(entry["job"]) not in self._ended
-        ]
-        if ask and shutil.which("sacct") is not None:
-            self._ended |= _sacct(ask)
-        return jobs
+#: A Cloudy section's label, e.g. C2
+SECTION_LABEL = re.compile(r"C\d+")
+
+
+def _about(job_name, label):
+    """Whether a job is the start job or one of a section's.
+
+    Args:
+        job_name (str)
+            The job's name, e.g. "R2-bc03-C1-Cloudy".
+        label (str)
+            The section's label (None for a run without Cloudy).
+
+    Returns:
+        bool
+    """
+    parts = job_name.split("-")
+    labels = [part for part in parts if SECTION_LABEL.fullmatch(part)]
+    return not labels or label in labels
+
+
+def _about_line(line, label):
+    """Whether a run.log line is about a section or the whole run.
+
+    Lines about a section start their tag with its label, e.g.
+    "2026-11-20 13:06:20 [C2 finish 123] ...".
+
+    Args:
+        line (str)
+            The line.
+        label (str)
+            The section's label (None for a run without Cloudy).
+
+    Returns:
+        bool
+    """
+    match = re.match(r"\S+ \S+ \[(\S+)", line)
+    if match is None or not SECTION_LABEL.fullmatch(match.group(1)):
+        return True
+    return match.group(1) == label
 
 
 def _sacct(jobs):
@@ -445,6 +625,7 @@ def _grid_points(snapshot):
 #: The stage badge in the header: its label and style
 STAGE_BADGES = {
     "start": ("STARTING", "bold black on bright_blue"),
+    "cloudy": ("CLOUDY RUNNING", "bold black on bright_cyan"),
     "finish": ("ROUND {round} RUNNING", "bold black on bright_cyan"),
     "assemble": ("ASSEMBLING", "bold black on yellow"),
     "done": ("DONE", "bold black on green"),
@@ -454,40 +635,73 @@ STAGE_BADGES = {
 PERTURB_BADGE = ("PERTURBING (ROUND {round})", "bold black on bright_magenta")
 
 
-def _header(snapshot, width=118):
-    """The header: the run and its stage, then its progress across the grid.
+def _header(view, width=118):
+    """The header: the run and its stage, then its progress across its grids.
 
-    Built as two lines of the given width (Textual lays nested rich tables
-    out unreliably).
+    For a run with one Cloudy section (or none), the stage is the section's
+    (e.g. its round); with several, how many of their grids are done. Built
+    as two lines of the given width (Textual lays nested rich tables out
+    unreliably).
+
+    Args:
+        view (dict)
+            What ``Watcher.read`` returns.
+        width (int)
+            The header's width.
+
+    Returns:
+        Text
+            The two lines.
     """
-    state, counts = snapshot["state"], snapshot["counts"]
-    points, interpolated, _ = _grid_points(snapshot)
-    total = sum(points.values()) + interpolated
-    done, failed = points["done"], points["failed"]
-    stage = state.get("next", "?")
-    label, style = STAGE_BADGES.get(stage, (stage.upper(), "bold reverse"))
-    if stage == "finish" and state.get("perturbing"):
-        label, style = PERTURB_BADGE
-    label = label.format(round=state.get("round", "?"))
+    run, sections = view["run"], view["sections"]
+    if len(sections) == 1:
+        state = sections[0]["state"]
+        stage = state.get("next", "?")
+        label, style = STAGE_BADGES.get(stage, (stage.upper(), "bold reverse"))
+        if stage == "finish" and state.get("perturbing"):
+            label, style = PERTURB_BADGE
+        label = label.format(round=state.get("round", "?"))
+        details = [
+            ("round", state.get("round", "-")),
+            ("limit", _limit(state)),
+            ("next job", state.get("next_job", "-")),
+        ]
+    else:
+        done = sum(s["state"].get("next") == "done" for s in sections)
+        stage = run.get("next", "?")
+        label, style = STAGE_BADGES.get(stage, (stage.upper(), "bold reverse"))
+        if stage == "cloudy":
+            label, style = (
+                f"{len(sections) - done} SECTIONS RUNNING",
+                "bold black on bright_cyan",
+            )
+        details = [("grids done", f"{done}/{len(sections)}")]
 
     left = Text.assemble(
         ("◆ syncretize ", "bold magenta"),
-        (state.get("name", "?"), "bold"),
+        (run.get("name", "?"), "bold"),
         "   ",
         (f" {label} ", style),
     )
-    right = Text.assemble(
-        ("round ", "dim"),
-        str(state.get("round", "-")),
-        ("   limit ", "dim"),
-        str(_limit(state)),
-        ("   next job ", "dim"),
-        str(state.get("next_job", "-")),
-        "   ",
-        (snapshot["now"].strftime("%H:%M:%S UTC"), "dim"),
-    )
+    right = Text()
+    for name, value in details:
+        right.append(f"{name} ", style="dim")
+        right.append(f"{value}   ")
+    right.append(view["now"].strftime("%H:%M:%S UTC"), style="dim")
     top = left + " " * max(width - left.cell_len - right.cell_len, 1) + right
 
+    # Progress across every section's grid points
+    done = failed = total = interpolated = left_to_run = 0
+    rate = 0.0
+    for snapshot in sections:
+        points, filled, _ = _grid_points(snapshot)
+        done += points["done"]
+        failed += points["failed"]
+        interpolated += filled
+        total += sum(points.values()) + filled
+        counts = snapshot["counts"]
+        left_to_run += counts["todo"] + counts["claimed"]
+        rate += _rate(snapshot["records"])
     summary = Text.assemble(
         " ",
         (f"{done:,}", "bold green"),
@@ -499,8 +713,6 @@ def _header(snapshot, width=118):
     if interpolated:
         summary.append("  ·  ", style="dim")
         summary.append(f"{interpolated:,} interpolated", style="bold yellow")
-    rate = _rate(snapshot["records"])
-    left_to_run = counts["todo"] + counts["claimed"]
     if rate and left_to_run:
         summary.append("  ·  ", style="dim")
         summary.append(
@@ -512,6 +724,32 @@ def _header(snapshot, width=118):
         "━" * (bar_width - filled), style="grey30"
     )
     return Text("\n").join([top, bar + summary])
+
+
+def _tab_title(snapshot):
+    """A section's tab title: its label and name, and where it is.
+
+    Args:
+        snapshot (dict)
+            The section's snapshot.
+
+    Returns:
+        str
+            e.g. "1 c23.01-sps ▸ R3".
+    """
+    state = snapshot["state"]
+    stage = state.get("next")
+    if stage == "done":
+        where = "✓"
+    elif stage == "finish":
+        where = f"▸ R{state.get('round', 1)}"
+        where += " perturb" if state.get("perturbing") else ""
+    elif stage == "assemble":
+        where = "▸ assembling"
+    else:
+        where = "…"
+    number = snapshot["label"].removeprefix("C")
+    return f"{number} {state.get('name') or snapshot['label']} {where}"
 
 
 def _limit(state):
@@ -851,7 +1089,7 @@ def _job_rows(snapshot):
                 _job_status(snapshot, entry),
             ],
         )
-        for entry in reversed(snapshot["state"].get("jobs", []))
+        for entry in reversed(snapshot["jobs"])
     ]
 
 
@@ -945,7 +1183,7 @@ def _squeue_rows(snapshot):
     jobs = snapshot["squeue"]
     if jobs is None:
         return [], "Slurm queue (no squeue here)"
-    run = f"-{snapshot['state'].get('name')}-"
+    run = f"-{snapshot['run'].get('name')}-"
     colours = {"RUNNING": "cyan", "PENDING": "yellow", "COMPLETING": "green"}
     rows = []
     for n, job in enumerate(jobs):
@@ -982,7 +1220,11 @@ def _log_text(line):
     if match is None:
         return Text(line)
     when, tag, message = match.groups()
-    colour = STAGE_COLOURS.get(tag.split(" ")[0], "white")
+    # The stage follows a section's label (e.g. "C2 finish 123")
+    words = tag.split(" ")
+    if SECTION_LABEL.fullmatch(words[0]) and len(words) > 1:
+        words = words[1:]
+    colour = STAGE_COLOURS.get(words[0], "white")
     if "ERROR" in message:
         message_style = "bold red"
     elif "WARNING" in message:
@@ -1061,10 +1303,13 @@ def _fill(table, headers, rows, right=(), stretch="even"):
     table.scroll_to(y=scroll, animate=False)
 
 
-def _table(id):
-    # The cursor shows only while the table is focused (see WatchApp)
+def _table(name):
+    """A table panel, by its name (its class, e.g. "jobs").
+
+    The cursor row shows only while the table is focused (see WatchApp).
+    """
     return DataTable(
-        id=id, zebra_stripes=True, cursor_type="row", show_cursor=False
+        classes=name, zebra_stripes=True, cursor_type="row", show_cursor=False
     )
 
 
@@ -1078,34 +1323,125 @@ class _SlurmQueue(Screen):
     ]
 
     def compose(self) -> ComposeResult:
+        """The run's header and the queue."""
         yield Static(id="header")
         yield _table("view")
         yield Footer()
 
     def on_mount(self):
-        # Asked for only while shown, and now rather than at the next redraw
+        """Ask for the queue while shown, and now rather than next redraw."""
         self.app.watcher.show_squeue = True
         self.app.read()
-        if self.app.snapshot is not None:
-            self.show(self.app.snapshot)
+        if self.app.view is not None:
+            self.show(self.app.view)
 
     def on_unmount(self):
+        """Stop asking for the queue."""
         self.app.watcher.show_squeue = False
 
-    def show(self, snapshot):
+    def show(self, view):
+        """Draw the header and the queue.
+
+        Args:
+            view (dict)
+                What ``Watcher.read`` returns.
+        """
         header = self.query_one("#header", Static)
-        header.update(_header(snapshot, header.content_size.width or 118))
-        view = self.query_one("#view", DataTable)
-        rows, title = _squeue_rows(snapshot)
-        view.border_title = title
-        _fill(view, list(SQUEUE_COLUMNS), rows, right=[4, 5, 6])
+        header.update(_header(view, header.content_size.width or 118))
+        table = self.query_one(".view", DataTable)
+        rows, title = _squeue_rows(view["sections"][0])
+        table.border_title = title
+        _fill(table, list(SQUEUE_COLUMNS), rows, right=[4, 5, 6])
+
+
+class _SectionView(Vertical):
+    """One Cloudy section's panels (the body of its tab)."""
+
+    #: Each panel's title
+    TITLES = {
+        "queue": "Grid points",
+        "round": "This round",
+        "jobs": "Jobs",
+        "rounds": "Rounds",
+        "log": "run.log",
+        "failed": "Failed models",
+        "running": "Running now",
+    }
+
+    def compose(self) -> ComposeResult:
+        """The panels: the section's queue, round and jobs, its rounds, then
+        its log, failed and running models."""
+        with Horizontal(classes="top"):
+            yield Static(classes="queue")
+            yield Static(classes="round")
+            yield _table("jobs")
+        yield _table("rounds")
+        with Horizontal(classes="bottom"):
+            yield RichLog(classes="log", wrap=True, max_lines=20000)
+            with Vertical(classes="right"):
+                yield _table("failed")
+                yield _table("running")
+
+    def on_mount(self):
+        """Title the panels."""
+        for name, title in self.TITLES.items():
+            self.panel(name).border_title = title
+
+    def panel(self, name):
+        """One of the section's panels, by its name (e.g. "log")."""
+        return self.query_one(f".{name}")
+
+    def show(self, snapshot):
+        """Draw a snapshot of the section on every panel.
+
+        Args:
+            snapshot (dict)
+                The section's snapshot (see ``_SectionReader.read``).
+        """
+        counts = snapshot["counts"]
+        self.panel("queue").update(_queue_table(snapshot))
+        self.panel("round").update(_round_table(snapshot))
+        _fill(
+            self.panel("jobs"),
+            ["job", "id", "status"],
+            _job_rows(snapshot),
+            right=[1],
+            stretch=[0, 2],
+        )
+        rounds = _rounds(snapshot["state"], snapshot["records"], counts)
+        _fill(
+            self.panel("rounds"),
+            list(ROUND_COLUMNS),
+            _round_rows(rounds),
+            right=range(len(ROUND_COLUMNS)),
+        )
+        failed = self.panel("failed")
+        rows = _failure_rows(snapshot)
+        failed.border_title = f"Failed models ({len(rows)})"
+        _fill(
+            failed,
+            ["model", "attempts", "last reason"],
+            rows,
+            right=[1],
+            stretch=[2],
+        )
+        running = self.panel("running")
+        headers, rows, title = _running_rows(snapshot)
+        running.border_title = title
+        _fill(running, headers, rows, right=range(1, len(headers) - 2))
+
+        # The log follows new lines, unless scrolled up to read
+        log = self.panel("log")
+        following = log.scroll_y >= log.max_scroll_y
+        for line in snapshot["log_new"]:
+            log.write(_log_text(line), scroll_end=following)
 
 
 class WatchApp(App):
     """The live view of a run."""
 
     TITLE = "syncretize watch"
-    # No panel is focused (and so shows a cursor row) until Tab or a click
+    # No panel is focused (and so shows a cursor row) until clicked
     AUTO_FOCUS = None
     CSS = """
     #header {
@@ -1113,27 +1449,31 @@ class WatchApp(App):
         border: heavy $accent;
         padding: 0 1;
     }
-    #top { height: 9; }
+    /* A run with one Cloudy section (or none) has no tabs to pick */
+    .single ContentTabs { display: none; }
+    TabbedContent, ContentSwitcher, TabPane, _SectionView { height: 1fr; }
+    TabPane { padding: 0; }
+    .top { height: 9; }
     /* Every panel in a row fills it, so their borders line up */
-    #top > *, #bottom > * { height: 100%; }
-    #queue { width: 3fr; }
-    #round { width: 3fr; }
-    #jobs { width: 4fr; }
-    #rounds { height: auto; max-height: 12; }
-    #bottom { height: 1fr; }
-    #log { width: 3fr; }
-    #right { width: 2fr; }
-    #failed { height: auto; max-height: 12; }
-    #running { height: 1fr; }
-    #view { height: 1fr; }
-    #queue, #round, #jobs, #rounds, #log, #failed, #running, #view {
+    .top > *, .bottom > * { height: 100%; }
+    .queue { width: 3fr; }
+    .round { width: 3fr; }
+    .jobs { width: 4fr; }
+    .rounds { height: auto; max-height: 12; }
+    .bottom { height: 1fr; }
+    .log { width: 3fr; }
+    .right { width: 2fr; }
+    .failed { height: auto; max-height: 12; }
+    .running { height: 1fr; }
+    .view { height: 1fr; }
+    .queue, .round, .jobs, .rounds, .log, .failed, .running, .view {
         border: round $primary 60%;
         border-title-align: left;
         border-title-color: $accent;
         border-title-style: bold;
         padding: 0 1;
     }
-    #jobs, #rounds, #failed, #running, #view { padding: 0; }
+    .jobs, .rounds, .failed, .running, .view { padding: 0; }
     DataTable:focus, RichLog:focus {
         border: round $accent;
     }
@@ -1180,95 +1520,98 @@ class WatchApp(App):
         ("l", "toggle_max('log')", "Log"),
         ("r", "toggle_max('running')", "Running"),
         ("s", "squeue", "Slurm queue"),
+        # Tab cycles through the sections rather than the panels
+        Binding("tab", "cycle(1)", "Next section", priority=True),
+        Binding("shift+tab", "cycle(-1)", "Previous section", priority=True),
+        *(
+            Binding(str(n % 10), f"pick({n})", show=False)
+            for n in range(1, 11)
+        ),
     ]
 
     def __init__(self, work_dir, interval=2.0):
+        """Watch a run.
+
+        Args:
+            work_dir (str)
+                The run's work directory.
+            interval (float)
+                Seconds between redraws.
+        """
         super().__init__()
         self.work_dir, self.interval = work_dir, interval
         self.watcher = Watcher(work_dir)
-        self.snapshot = None
+        self.view = None
         self.sub_title = work_dir
 
     def compose(self) -> ComposeResult:
+        """The run's header, a tab per section, and the keys."""
         yield Static(id="header")
-        with Horizontal(id="top"):
-            yield Static(id="queue")
-            yield Static(id="round")
-            yield _table("jobs")
-        yield _table("rounds")
-        with Horizontal(id="bottom"):
-            yield RichLog(id="log", wrap=True, max_lines=20000)
-            with Vertical(id="right"):
-                yield _table("failed")
-                yield _table("running")
+        yield TabbedContent(id="sections", classes="single")
         yield Footer()
 
     def on_mount(self):
-        titles = {
-            "queue": "Grid points",
-            "round": "This round",
-            "jobs": "Jobs",
-            "rounds": "Rounds",
-            "log": "run.log",
-            "failed": "Failed models",
-            "running": "Running now",
-        }
-        for id, title in titles.items():
-            self.query_one(f"#{id}").border_title = title
+        """Read the run now and every interval."""
         self.read()
         self.set_interval(self.interval, self.read)
 
     @work(thread=True, exclusive=True)
     def read(self):
         """Read the run's files (away from the screen, which stays live)."""
-        snapshot = self.watcher.read()
-        self.call_from_thread(self.show, snapshot)
+        view = self.watcher.read()
+        self.call_from_thread(self.show, view)
 
-    def show(self, snapshot):
-        """Draw a snapshot of the run on every panel."""
-        self.snapshot = snapshot
-        counts = snapshot["counts"]
+    def show(self, view):
+        """Draw what was read: the header, then each section's tab.
+
+        Args:
+            view (dict)
+                What ``Watcher.read`` returns.
+        """
+        self.view = view
         header = self.query_one("#header", Static)
-        header.update(_header(snapshot, header.content_size.width or 118))
-        self.query_one("#queue", Static).update(_queue_table(snapshot))
-        self.query_one("#round", Static).update(_round_table(snapshot))
-        _fill(
-            self.query_one("#jobs", DataTable),
-            ["job", "id", "status"],
-            _job_rows(snapshot),
-            right=[1],
-            stretch=[0, 2],
-        )
-        rounds = _rounds(snapshot["state"], snapshot["records"], counts)
-        _fill(
-            self.query_one("#rounds", DataTable),
-            list(ROUND_COLUMNS),
-            _round_rows(rounds),
-            right=range(len(ROUND_COLUMNS)),
-        )
-        failed = self.query_one("#failed", DataTable)
-        rows = _failure_rows(snapshot)
-        failed.border_title = f"Failed models ({len(rows)})"
-        _fill(
-            failed,
-            ["model", "attempts", "last reason"],
-            rows,
-            right=[1],
-            stretch=[2],
-        )
-        running = self.query_one("#running", DataTable)
-        headers, rows, title = _running_rows(snapshot)
-        running.border_title = title
-        _fill(running, headers, rows, right=range(1, len(headers) - 2))
-
-        # The log follows new lines, unless scrolled up to read
-        log = self.query_one("#log", RichLog)
-        following = log.scroll_y >= log.max_scroll_y
-        for line in snapshot["log_new"]:
-            log.write(_log_text(line), scroll_end=following)
-
+        header.update(_header(view, header.content_size.width or 118))
+        tabs = self.query_one("#sections", TabbedContent)
+        tabs.set_class(len(view["sections"]) == 1, "single")
+        for snapshot in view["sections"]:
+            pane_id = f"tab-{snapshot['label'] or 'run'}"
+            panes = tabs.query(f"#{pane_id}")
+            if not panes:
+                # A new section (the run's sections are known once it starts)
+                tabs.add_pane(
+                    TabPane(
+                        _tab_title(snapshot) if snapshot["label"] else "run",
+                        _SectionView(),
+                        id=pane_id,
+                    )
+                )
+                # Drawn once the pane is mounted
+                self.call_after_refresh(self._show_pane, pane_id, snapshot)
+                continue
+            self._show_pane(pane_id, snapshot)
         if isinstance(self.screen, _SlurmQueue):
-            self.screen.show(snapshot)
+            self.screen.show(view)
+        self.refresh_bindings()
+
+    def _show_pane(self, pane_id, snapshot):
+        """Draw a section's snapshot in its tab, and retitle the tab.
+
+        Args:
+            pane_id (str)
+                The tab's ID.
+            snapshot (dict)
+                The section's snapshot.
+        """
+        tabs = self.query_one("#sections", TabbedContent)
+        pane = tabs.get_pane(pane_id)
+        if snapshot["label"]:
+            tabs.get_tab(pane_id).label = _tab_title(snapshot)
+        pane.query_one(_SectionView).show(snapshot)
+
+    def _current(self):
+        """The section view of the tab shown, or None before the first read."""
+        pane = self.query_one("#sections", TabbedContent).active_pane
+        return None if pane is None else pane.query_one(_SectionView)
 
     def on_descendant_focus(self, event):
         """Show the cursor row only in the table being scrolled."""
@@ -1276,31 +1619,91 @@ class WatchApp(App):
             event.widget.show_cursor = True
 
     def on_descendant_blur(self, event):
+        """Hide the cursor row of a table no longer being scrolled."""
         if isinstance(event.widget, DataTable):
             event.widget.show_cursor = False
 
     def check_action(self, action, parameters):
-        """Hide the main view's keys while the Slurm queue is open."""
-        return not (
-            action == "toggle_max" and isinstance(self.screen, _SlurmQueue)
-        )
-
-    def action_toggle_max(self, id):
-        """Show a panel full screen (or go back if it is)."""
+        """Hide the main view's keys while the Slurm queue is open, and the
+        section keys for a run with one section (or none)."""
         if isinstance(self.screen, _SlurmQueue):
-            return
+            return action not in ("toggle_max", "cycle", "pick")
+        if action in ("cycle", "pick"):
+            return self.view is not None and len(self.view["sections"]) > 1
+        return True
+
+    def action_toggle_max(self, name):
+        """Show a panel of the tab shown full screen (or go back if it is).
+
+        Args:
+            name (str)
+                The panel's name, e.g. "log".
+        """
         if self.screen.maximized is not None:
             self.screen.minimize()
-        else:
-            self.screen.maximize(self.query_one(f"#{id}"))
+        elif self._current() is not None:
+            self.screen.maximize(self._current().panel(name), container=False)
+
+    def action_cycle(self, step):
+        """Show the next (or previous) section's tab.
+
+        Args:
+            step (int)
+                1 for the next, -1 for the previous.
+        """
+        tabs = self.query_one("#sections", TabbedContent)
+        ids = [pane.id for pane in tabs.query(TabPane)]
+        if ids and tabs.active in ids:
+            tabs.active = ids[(ids.index(tabs.active) + step) % len(ids)]
+
+    def action_pick(self, number):
+        """Show a section's tab by its place (1 to 10).
+
+        Args:
+            number (int)
+                The tab's place.
+        """
+        tabs = self.query_one("#sections", TabbedContent)
+        ids = [pane.id for pane in tabs.query(TabPane)]
+        if number <= len(ids):
+            tabs.active = ids[number - 1]
 
     def action_squeue(self):
         """Open the Slurm queue."""
         self.push_screen(_SlurmQueue())
 
 
-def summary(snapshot, log_lines=15):
-    """A one-off view of the run (``syncretize watch --once``)."""
+def summary(view, log_lines=15):
+    """A one-off view of the run (``syncretize watch --once``).
+
+    Args:
+        view (dict)
+            What ``Watcher.read`` returns.
+        log_lines (int)
+            How many of run.log's last lines to show.
+
+    Returns:
+        Group
+            The run's header, then each section's panels.
+    """
+    parts = [Panel(_header(view), box=box.HEAVY)]
+    for snapshot in view["sections"]:
+        parts += _section_summary(snapshot, log_lines)
+    return Group(*parts)
+
+
+def _section_summary(snapshot, log_lines):
+    """A one-off view of one section, as panels.
+
+    Args:
+        snapshot (dict)
+            The section's snapshot.
+        log_lines (int)
+            How many of its run.log lines to show.
+
+    Returns:
+        list of Panel
+    """
     counts = snapshot["counts"]
     rounds = Table(box=box.SIMPLE_HEAD)
     for header in ROUND_COLUMNS:
@@ -1323,11 +1726,11 @@ def summary(snapshot, log_lines=15):
     log = Text("\n").join(
         _log_text(line) for line in snapshot["log"][-log_lines:]
     )
-    return Group(
-        Panel(_header(snapshot), box=box.HEAVY),
+    name = _tab_title(snapshot) if snapshot["label"] else "run"
+    return [
         Columns(
             [
-                Panel(_queue_table(snapshot), title="Grid points"),
+                Panel(_queue_table(snapshot), title=f"{name}: grid points"),
                 Panel(_round_table(snapshot), title="This round"),
             ]
         ),
@@ -1335,7 +1738,7 @@ def summary(snapshot, log_lines=15):
         Panel(failed, title=f"Failed models ({len(_failures(snapshot))})"),
         Panel(running, title=title),
         Panel(log, title="run.log"),
-    )
+    ]
 
 
 def watch(path=None, interval=2.0, once=False):

@@ -10,7 +10,9 @@
 # See docs/runner.rst for how a run proceeds.
 #
 # Run and Incident are required; leave out Cloudy to make only the incident
-# grid. Unknown keys stop the run with an error. Relative paths are relative
+# grid. Cloudy2, Cloudy3, ... (each like Cloudy, which may also be written
+# Cloudy1) run Cloudy on the same incident grid with other set-ups, each
+# making its own grid. Unknown keys stop the run with an error. Relative paths are relative
 # to this file's directory.
 #
 # Downloads aren't part of a run (compute nodes may have no internet): run the
@@ -65,3 +67,10 @@ Incident:
 #     step: 0.1                  # How far either side, as a fraction of the gap to the neighbouring grid value of each Cloudy axis. Default: 0.1.
 #     log_step: 0.05             # How far either side (dex) for the ionisation parameter of a grid with no Cloudy axes. Default: 0.05.
 #     max_steps: 3               # A side that fails is tried again twice as far out, up to this many times in all. Default: 3.
+
+# More Cloudy set-ups for the same incident grid, each making its own grid
+# (named after its configs, so each needs different ones)
+# Cloudy2:
+#   config: c23.01-sps
+#   extra_config: /path/to/density-1000.yaml
+#   executable: /cosma/local/cloudy/c23.01
