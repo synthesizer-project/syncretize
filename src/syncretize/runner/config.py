@@ -126,6 +126,12 @@ def load_run(run_file):
                 seconds(run[group][key])
             except ValueError as error:
                 raise ValueError(f"{run_file}: Run.{group}.{key}: {error}")
+    if seconds(run["cloudy"]["walltime"]) > seconds(
+        run["cloudy"]["max_walltime"]
+    ):
+        raise ValueError(
+            f"{run_file}: Run.cloudy.walltime is longer than max_walltime"
+        )
     growth = run["cloudy"]["walltime_growth"]
     if not isinstance(growth, (int, float)) or growth < 1:
         raise ValueError(
@@ -218,6 +224,14 @@ def seconds(walltime):
         raise ValueError(f"{walltime!r} isn't a time like [D-]HH:MM:SS")
     days, hours, minutes, secs = (int(x or 0) for x in match.groups())
     return ((days * 24 + hours) * 60 + minutes) * 60 + secs
+
+
+def slurm_time(seconds):
+    """Seconds as a Slurm time limit, "D-HH:MM:SS"."""
+    minutes, secs = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    return f"{days}-{hours:02}:{minutes:02}:{secs:02}"
 
 
 def _fill(run_file, section, values, defaults, prefix=""):

@@ -20,7 +20,7 @@ from syncretize.incident.builder import (
     table_point,
 )
 from syncretize.runner import Runner
-from syncretize.runner.config import load_run, seconds
+from syncretize.runner.config import load_run, seconds, slurm_time
 from syncretize.runner.queue import Queue
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -117,6 +117,7 @@ def test_seconds():
     assert seconds("00:15:00") == 900
     assert seconds("3-00:00:00") == 3 * 86400
     assert seconds(43200) == 43200  # YAML's reading of 12:00:00
+    assert slurm_time(seconds("1-02:03:04")) == "1-02:03:04"
 
 
 def test_local_incident_run(tmp_path):
@@ -222,7 +223,8 @@ def test_unknown_cloudy_config(tmp_path):
 FAKE_CLOUDY = f"""#!{sys.executable}
 # A stand-in for cloudy.exe -r <j>, run in <cloudy_dir>/<i>. FAKE_CLOUDY maps
 # a model "<i>_<j>" (or "*", every model) to what it does: "fail" (exit with
-# an error), "no_lines" (exit OK without lines) or "sleep" (take 0.5 s).
+# an error), "fail_once" (fail the first run only), "no_lines" (exit OK
+# without lines) or "sleep" (take 0.5 s).
 import json, os, sys, time
 j = sys.argv[2]
 model = os.path.basename(os.getcwd()) + "_" + j
@@ -230,6 +232,8 @@ behaviours = json.loads(os.environ.get("FAKE_CLOUDY", "{{}}"))
 behaviour = behaviours.get(model, behaviours.get("*"))
 if behaviour == "sleep":
     time.sleep(0.5)
+if behaviour == "fail_once":
+    behaviour = "ok" if os.path.exists(j + ".out") else "fail"
 with open(j + ".out", "w") as file:
     file.write(os.environ["CLOUDY_DATA_PATH"] + "\\n")
     if behaviour == "fail":
@@ -271,10 +275,14 @@ def cloudy_run(tmp_path, monkeypatch, behaviours, **cloudy):
 
 def test_local_workers_run_every_model(tmp_path, monkeypatch):
     runner, queue = cloudy_run(
-        tmp_path, monkeypatch, {"1_3": "fail", "2_5": "no_lines"}
+        tmp_path,
+        monkeypatch,
+        {"1_3": "fail", "2_5": "no_lines", "0_9": "fail_once"},
     )
-    with pytest.raises(NotImplementedError, match="finish"):
+    with pytest.raises(NotImplementedError, match="Assembly"):
         runner.run(local=True)
+
+    # 0_9 worked when retried; the others failed all 1 + 2 tries
 
     assert queue.counts() == {
         "todo": 0,
@@ -282,10 +290,10 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
         "done": 4 * 48 - 2,
         "failed": 2,
     }
-    assert sorted(os.listdir(tmp_path / "work" / "queue" / "failed")) == [
-        "1_3",
-        "2_5",
-    ]
+    failed = tmp_path / "work" / "queue" / "failed"
+    assert sorted(os.listdir(failed)) == ["1_3", "2_5"]
+    assert (failed / "1_3").read_text() == "3"
+    assert runner._load_state()["round"] == 3
     cloudy_dir = runner._load_state()["cloudy_dir"]
     with open(os.path.join(cloudy_dir, "0", "7.out")) as file:
         assert file.readline() == f"{tmp_path}/cloudy/data/:./\n"
@@ -309,3 +317,43 @@ def test_workers_stop_at_their_deadline(tmp_path, monkeypatch):
     counts = queue.counts()
     assert 2 <= counts["done"] <= 12
     assert counts["claimed"] == 0 and counts["failed"] == 0
+
+
+def test_finish_requeues_stopped_workers_models_with_a_longer_limit(
+    tmp_path, monkeypatch
+):
+    runner, queue = cloudy_run(tmp_path, monkeypatch, {}, max_retries=0)
+    runner.cloudy_setup(runner.config.incident["grid"])
+    queue.claim("7_1.0", n=2)
+    queue.claim("7_2.0", n=1)
+
+    assert runner.finish(lambda owner: False) == "work"
+    assert queue.counts()["todo"] == 4 * 48
+    state = runner._load_state()
+    assert (state["round"], state["walltime"]) == (2, "0-18:00:00")
+
+    # Up to max_walltime, and then a stopped model counts as failed
+    queue.claim("8_1.0")
+    runner.finish(lambda owner: False)
+    assert runner._load_state()["walltime"] == "1-03:00:00"
+    runner._save_state(walltime="3-00:00:00")
+    (model,) = queue.claim("9_1.0")
+    runner.finish(lambda owner: False)
+    assert os.listdir(tmp_path / "work" / "queue" / "failed") == [model]
+    assert runner._load_state()["walltime"] == "3-00:00:00"
+
+
+def test_finish_moves_on_when_the_queue_is_empty(tmp_path, monkeypatch):
+    runner, queue = cloudy_run(tmp_path, monkeypatch, {})
+    runner.cloudy_setup(runner.config.incident["grid"])
+    for model in queue.claim("1.0", n=4 * 48):
+        queue.done(model, "1.0")
+    assert runner.finish(lambda owner: False) == "assemble"
+
+
+def test_finish_refuses_while_workers_run(tmp_path, monkeypatch):
+    runner, queue = cloudy_run(tmp_path, monkeypatch, {})
+    runner.cloudy_setup(runner.config.incident["grid"])
+    queue.claim("1.0")
+    with pytest.raises(RuntimeError, match="still claimed"):
+        runner.finish(lambda owner: owner == "1.0")

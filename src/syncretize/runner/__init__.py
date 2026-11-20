@@ -13,7 +13,12 @@ import yaml
 from syncretize.cloudy.create_cloudy_input_grid import create_cloudy_inputs
 from syncretize.incident.builder import build_grid
 from syncretize.runner.cloudy import work
-from syncretize.runner.config import incident_module, load_run, seconds
+from syncretize.runner.config import (
+    incident_module,
+    load_run,
+    seconds,
+    slurm_time,
+)
 from syncretize.runner.queue import Queue
 
 
@@ -108,6 +113,58 @@ class Runner:
             deadline=deadline,
         )
 
+    def finish(self, is_running):
+        """Tidy the queue after a round of workers and say what comes next.
+
+        Failed models are put back to run again, up to
+        ``Run.cloudy.max_retries`` times. Models whose worker stopped (at its
+        time limit, say) are put back without counting an attempt, and the
+        next round's time limit grows by ``walltime_growth``, up to
+        ``max_walltime``; when it can't grow, they count as failed.
+
+        Args:
+            is_running (callable)
+                Takes a claim's owner ("<job>.<slot>") and returns whether
+                its worker is still running.
+
+        Returns:
+            str
+                "work" when models are left for another round, whose time
+                limit is ``walltime`` in the state file, or "assemble".
+        """
+        settings = self.config.run["cloudy"]
+        state = self._load_state()
+        queue = Queue(os.path.join(self.config.run["work_dir"], "queue"))
+        walltime = seconds(state.get("walltime", settings["walltime"]))
+        longer = min(
+            round(walltime * settings["walltime_growth"]),
+            seconds(settings["max_walltime"]),
+        )
+
+        stopped = queue.requeue_claims(is_running, fail=longer <= walltime)
+        stopped = sorted(model for models in stopped.values() for model in models)
+        requeued, final = queue.requeue_failed(settings["max_retries"])
+        counts = queue.counts()
+        if counts["claimed"]:
+            raise RuntimeError(
+                f"{counts['claimed']} models are still claimed by running "
+                "workers; finish runs once every worker has stopped"
+            )
+        if stopped and longer > walltime:
+            walltime = longer
+        round_ = state.get("round", 1)
+        print(
+            f"Round {round_}: {counts['done']} models done, "
+            f"{len(stopped)} stopped by the time limit, {len(requeued)} "
+            f"failures to retry, {len(final)} given up, {counts['todo']} "
+            "left to run",
+            flush=True,
+        )
+        if not counts["todo"]:
+            return "assemble"
+        self._save_state(round=round_ + 1, walltime=slurm_time(walltime))
+        return "work"
+
     def _load_state(self):
         """The run's state file, <work_dir>/state.yaml, as a dict."""
         path = os.path.join(self.config.run["work_dir"], "state.yaml")
@@ -139,4 +196,7 @@ class Runner:
             return
         self.cloudy_setup(incident_grid)
         self.work("local")
-        raise NotImplementedError("The finish stage isn't written yet")
+        # Locally every worker has stopped once work returns
+        while self.finish(lambda owner: False) == "work":
+            self.work("local")
+        raise NotImplementedError("Assembly isn't written yet")

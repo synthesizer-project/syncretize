@@ -140,7 +140,7 @@ class Queue:
                 final.append(model)
         return requeued, final
 
-    def requeue_claims(self, is_running):
+    def requeue_claims(self, is_running, fail=False):
         """Put models claimed by owners that have stopped back in todo.
 
         A model whose worker stopped (killed at its time limit, say) didn't
@@ -149,18 +149,23 @@ class Queue:
         Args:
             is_running (callable)
                 Takes an owner and returns whether it is still running.
+            fail (bool)
+                Record the models as failed instead, an attempt each.
 
         Returns:
             dict
-                Each stopped owner's requeued models.
+                Each stopped owner's requeued (or failed) models.
         """
         requeued = {}
         for name in self._names("claimed"):
             model, _, owner = name.rpartition("@")
             if not is_running(owner):
-                os.rename(
-                    self._path("claimed", name), self._path("todo", model)
-                )
+                if fail:
+                    self.fail(model, owner)
+                else:
+                    os.rename(
+                        self._path("claimed", name), self._path("todo", model)
+                    )
                 requeued.setdefault(owner, []).append(model)
         return requeued
 
