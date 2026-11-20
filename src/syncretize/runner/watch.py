@@ -372,18 +372,37 @@ def _duration(seconds):
     return f"{seconds / 3600:.1f}h"
 
 
+def _grid_points(snapshot):
+    """How many grid points are in each queue state, and interpolated.
+
+    Runs perturbed around failed models aren't points of the grid, and the
+    failed models interpolated from them are filled, not failed.
+
+    Returns:
+        (dict, int, int)
+            The grid points in each state ("failed" without those
+            interpolated), how many were interpolated, and how many perturbed
+            runs there are.
+    """
+    points = {
+        state: sum(not is_perturbed(model) for model in names)
+        for state, names in snapshot["names"].items()
+    }
+    perturbed = sum(
+        is_perturbed(model)
+        for names in snapshot["names"].values()
+        for model in names
+    )
+    interpolated = len(snapshot["state"].get("interpolated") or [])
+    points["failed"] -= interpolated
+    return points, interpolated, perturbed
+
+
 def _header(snapshot):
     state, counts = snapshot["state"], snapshot["counts"]
-    # Grid points, not runs: runs perturbed around failed models aren't
-    # points of the grid, and the failed models interpolated from them are
-    # filled, not failed
-    points = {
-        queue_state: sum(not is_perturbed(model) for model in names)
-        for queue_state, names in snapshot["names"].items()
-    }
-    total = sum(points.values())
-    interpolated = len(state.get("interpolated") or [])
-    done, failed = points["done"], points["failed"] - interpolated
+    points, interpolated, _ = _grid_points(snapshot)
+    total = sum(points.values()) + interpolated
+    done, failed = points["done"], points["failed"]
     stage = state.get("next", "?")
     title = Text.assemble(
         (" syncretize ", "bold white on blue"),
@@ -444,15 +463,21 @@ def _rate(records, window=600):
     return recent / max(span / 60, 1)
 
 
-def _queue_table(counts):
+def _queue_table(snapshot):
+    """The grid points in each state (and the perturbed runs, if any)."""
+    points, interpolated, perturbed = _grid_points(snapshot)
     table = Table.grid(padding=(0, 2))
     table.add_column()
     table.add_column(justify="right")
     styles = {"todo": "", "claimed": "cyan", "done": "green", "failed": "red"}
     for state in STATES:
+        table.add_row(Text(state, style=styles[state]), f"{points[state]:,}")
+    if interpolated:
         table.add_row(
-            Text(state, style=styles[state]), f"{counts.get(state, 0):,}"
+            Text("interpolated", style="yellow"), f"{interpolated:,}"
         )
+    if perturbed:
+        table.add_row(Text("perturbed runs", style="dim"), f"{perturbed:,}")
     return table
 
 
@@ -986,7 +1011,7 @@ class WatchApp(App):
     TITLE = "syncretize watch"
     CSS = """
     #header { height: 4; }
-    #top { height: 8; }
+    #top { height: 9; }
     /* Every panel in a row fills it, so their borders line up */
     #top > *, #bottom > * { height: 100%; }
     #queue { width: 2fr; }
@@ -1020,6 +1045,15 @@ class WatchApp(App):
     }
     /* run.log wraps, so never needs to scroll sideways */
     RichLog { overflow-x: hidden; }
+    /* Column titles in bold on the panel's background, unchanged when the
+       mouse is over them, so they stay readable in any theme */
+    DataTable > .datatable--header,
+    DataTable > .datatable--header-hover,
+    DataTable > .datatable--header-cursor {
+        background: $surface;
+        color: $accent;
+        text-style: bold;
+    }
     """
     BINDINGS = [
         ("q", "quit", "Quit"),
@@ -1052,7 +1086,7 @@ class WatchApp(App):
 
     def on_mount(self):
         titles = {
-            "queue": "Queue",
+            "queue": "Grid points",
             "round": "This round",
             "jobs": "Jobs",
             "rounds": "Rounds",
@@ -1076,7 +1110,7 @@ class WatchApp(App):
         self.snapshot = snapshot
         counts = snapshot["counts"]
         self.query_one("#header", Static).update(_header(snapshot))
-        self.query_one("#queue", Static).update(_queue_table(counts))
+        self.query_one("#queue", Static).update(_queue_table(snapshot))
         self.query_one("#round", Static).update(_round_table(snapshot))
         _fill(
             self.query_one("#jobs", DataTable),
@@ -1168,7 +1202,7 @@ def summary(snapshot, log_lines=15):
         _header(snapshot),
         Columns(
             [
-                Panel(_queue_table(counts), title="Queue"),
+                Panel(_queue_table(snapshot), title="Grid points"),
                 Panel(_round_table(snapshot), title="This round"),
             ]
         ),
