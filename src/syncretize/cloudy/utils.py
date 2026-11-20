@@ -42,6 +42,26 @@ def resolve_param_file(param_file, param_dir=None):
     return candidates[1] if param_dir is not None else candidates[-1]
 
 
+def resolve_linelist(linelist):
+    """
+    Find a line list: the path as given, else the one of that name shipped
+    with syncretize (e.g. linelist-standard.dat).
+
+    Arguments:
+        linelist (str or Path)
+            path or name of the line list
+
+    Returns:
+        path (Path)
+            path to the line list (the path as given if neither exists, so
+            the error names it)
+    """
+    if Path(linelist).is_file():
+        return Path(linelist)
+    shipped = Path(__file__).parent / linelist
+    return shipped if shipped.is_file() else Path(linelist)
+
+
 def get_cloudy_params(param_file="c23.01-test", param_dir=None):
     """
     Read parameters from a yaml parameter file

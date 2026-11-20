@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import yaml
 
+from syncretize.cloudy.utils import resolve_param_file
 from syncretize.parser import YAMLLoader
 
 #: Marks a key that must be given
@@ -50,8 +51,8 @@ INCIDENT_DEFAULTS = {"model": None, "config": None, "grid": None}
 #: Every key of the Cloudy section, with its default
 CLOUDY_DEFAULTS = {
     "config": REQUIRED,
+    "extra_config": None,
     "executable": REQUIRED,
-    "linelist": None,
 }
 
 #: Keys that must be whole numbers of at least one
@@ -143,6 +144,20 @@ def load_run(run_file):
         run[key] = _resolve(base, run[key])
     for key in INCIDENT_PATHS:
         incident[key] = _resolve(base, incident[key])
+    if cloudy is not None:
+        cloudy["executable"] = _resolve(base, cloudy["executable"])
+        # Cloudy configs are a path or the name of a shipped config
+        for key in ("config", "extra_config"):
+            if cloudy[key] is None:
+                continue
+            relative = _resolve(base, cloudy[key])
+            if os.path.isfile(relative):
+                cloudy[key] = relative
+            elif not resolve_param_file(cloudy[key]).is_file():
+                raise ValueError(
+                    f"{run_file}: Cloudy.{key} {cloudy[key]!r} is neither a "
+                    "file nor a shipped Cloudy config"
+                )
 
     return SimpleNamespace(
         path=run_file, run=run, incident=incident, cloudy=cloudy

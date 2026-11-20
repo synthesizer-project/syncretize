@@ -13,6 +13,7 @@ from synthesizer.photoionisation import calculate_Q_from_U
 from synthesizer.synth_warnings import warn
 from unyt import angstrom, c, cm, h, s, unyt_array
 
+from syncretize.cloudy.utils import resolve_linelist
 from syncretize.photoionisation import edge_is_resolved
 
 
@@ -439,7 +440,8 @@ def create_cloudy_input(
 
         # make copy of linelist
         shutil.copyfile(
-            params["output_linelist"], f"{output_dir}/linelist.dat"
+            resolve_linelist(params["output_linelist"]),
+            f"{output_dir}/linelist.dat",
         )
 
     # --- save input file

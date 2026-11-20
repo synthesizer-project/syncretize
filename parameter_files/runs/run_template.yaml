@@ -53,6 +53,6 @@ Incident:
 
 # Cloudy (leave this section out to make only the incident grid)
 # Cloudy:
-#   config: c23.01-sps           # A shipped Cloudy config name or a path to one. Required.
+#   config: c23.01-sps           # A shipped Cloudy config name (src/syncretize/cloudy/params) or a path to one. Its output_linelist sets the line list. Required.
 #   executable: /cosma/local/cloudy/c23.01  # The Cloudy directory, holding source/cloudy.exe and data/. Required.
-#   linelist: linelist.dat       # The line list to read lines from. Default: the Cloudy config's.
+#   extra_config:                # A second Cloudy config whose parameters replace the first's. Default: none.

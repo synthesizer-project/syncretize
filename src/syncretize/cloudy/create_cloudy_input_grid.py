@@ -20,6 +20,7 @@ from syncretize.cloudy import cloudy17, cloudy23, cloudy25
 from syncretize.cloudy.utils import (
     get_cloudy_params,
     get_grid_props_cloudy,
+    resolve_linelist,
     resolve_param_file,
 )
 from syncretize.parser import Parser
@@ -267,40 +268,39 @@ def create_cloudy_input(
     )
 
 
-if __name__ == "__main__":
-    parser = Parser(
-        description="Run a grid of incident cloudy models",
-        cloudy_args=True,
-    )
+def create_cloudy_inputs(
+    incident_grid_name,
+    incident_grid_dir,
+    cloudy_output_dir,
+    cloudy_paramfile,
+    extra_cloudy_paramfile=None,
+):
+    """
+    Write the cloudy inputs for every model of an incident grid and a cloudy
+    parameter file.
 
-    # Add additional parameters which are specific to this script
+    Every incident grid point gets a directory holding its SED, line list
+    and one input file per photoionisation model.
 
-    # Machine (for submission script generation)
-    parser.add_argument("--machine", type=str, required=False, default=None)
+    Args:
+        incident_grid_name (str):
+            The incident grid's name (without .hdf5).
+        incident_grid_dir (str):
+            The directory holding the incident grid.
+        cloudy_output_dir (str):
+            The directory the cloudy inputs are written beneath, in
+            <new_grid_name>/<incident index>/<photoionisation index>.in.
+        cloudy_paramfile (str):
+            The cloudy parameter file (see resolve_param_file).
+        extra_cloudy_paramfile (str, optional):
+            A parameter file whose parameters supersede cloudy_paramfile's.
 
-    # Path to cloudy directory (not the executable; this is assumed to
-    # {cloudy}/{cloudy_version}/source/cloudy.exe)
-    parser.add_argument(
-        "--cloudy-executable-path", type=str, required=False, default=None
-    )
-
-    # By default the job script creates a job for each incident grid points.
-    # Including this flag makes a job for each photoionisation grid point,
-    # i.e. the number of cloudy runs per job is the number of incident grid
-    # points. In most cases this is not the best approach, but for very large
-    # photoionisation grids it may be,
-    parser.add_argument(
-        "--by-photoionisation-grid-point", action="store_true", default=False
-    )
-
-    # Parse arguments
-    args = parser.parse_args()
-
-    incident_grid_name = args.incident_grid
-    incident_grid_dir = args.grid_dir
-    cloudy_output_dir = args.cloudy_output_dir
-    cloudy_paramfile = resolve_param_file(args.cloudy_paramfile)
-    extra_cloudy_paramfile = args.cloudy_paramfile_extra
+    Returns:
+        (str, int, int):
+            The new grid's name, and the numbers of incident and
+            photoionisation models.
+    """
+    cloudy_paramfile = resolve_param_file(cloudy_paramfile)
     if extra_cloudy_paramfile is not None:
         extra_cloudy_paramfile = resolve_param_file(extra_cloudy_paramfile)
         # Both files are copied into the output directory
@@ -309,10 +309,6 @@ if __name__ == "__main__":
                 "The cloudy parameter file and the extra parameter file "
                 f"must have different names ({cloudy_paramfile.name})."
             )
-    machine = args.machine
-    cloudy_executable_path = args.cloudy_executable_path
-    by_photoionisation_grid_point = args.by_photoionisation_grid_point
-
     print(incident_grid_name)
     print(incident_grid_dir)
     print(cloudy_output_dir)
@@ -511,7 +507,8 @@ if __name__ == "__main__":
 
         # Copy linelist to this folder
         shutil.copyfile(
-            "linelist.dat", f"{output_directory}/{incident_index}/linelist.dat"
+            resolve_linelist("linelist.dat"),
+            f"{output_directory}/{incident_index}/linelist.dat",
         )
 
         # If the reference ionionisation parameter model is used we want
@@ -582,15 +579,57 @@ if __name__ == "__main__":
                 shape_commands=shape_commands,
             )
 
+    return new_grid_name, incident_n_models, photoionisation_n_models
+
+
+if __name__ == "__main__":
+    parser = Parser(
+        description="Run a grid of incident cloudy models",
+        cloudy_args=True,
+    )
+
+    # Add additional parameters which are specific to this script
+
+    # Machine (for submission script generation)
+    parser.add_argument("--machine", type=str, required=False, default=None)
+
+    # Path to cloudy directory (not the executable; this is assumed to
+    # {cloudy}/{cloudy_version}/source/cloudy.exe)
+    parser.add_argument(
+        "--cloudy-executable-path", type=str, required=False, default=None
+    )
+
+    # By default the job script creates a job for each incident grid points.
+    # Including this flag makes a job for each photoionisation grid point,
+    # i.e. the number of cloudy runs per job is the number of incident grid
+    # points. In most cases this is not the best approach, but for very large
+    # photoionisation grids it may be,
+    parser.add_argument(
+        "--by-photoionisation-grid-point", action="store_true", default=False
+    )
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    new_grid_name, incident_n_models, photoionisation_n_models = (
+        create_cloudy_inputs(
+            args.incident_grid,
+            args.grid_dir,
+            args.cloudy_output_dir,
+            args.cloudy_paramfile,
+            args.cloudy_paramfile_extra,
+        )
+    )
+
     # If a specific machine is specified run the function in
     # submission_scripts to generate a submission script.
-    if machine:
-        getattr(submission_scripts, machine)(
+    if args.machine:
+        getattr(submission_scripts, args.machine)(
             new_grid_name,
             number_of_incident_grid_points=incident_n_models,
             number_of_photoionisation_models=photoionisation_n_models,
-            cloudy_output_dir=cloudy_output_dir,
-            cloudy_executable_path=cloudy_executable_path,
+            cloudy_output_dir=args.cloudy_output_dir,
+            cloudy_executable_path=args.cloudy_executable_path,
             memory="4G",
-            by_photoionisation_grid_point=by_photoionisation_grid_point,
+            by_photoionisation_grid_point=args.by_photoionisation_grid_point,
         )
