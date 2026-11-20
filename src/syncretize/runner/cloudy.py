@@ -21,6 +21,10 @@ from syncretize.cloudy.create_synthesizer_grid import check_if_failed
 from syncretize.runner.log import duration, log
 from syncretize.runner.queue import Queue
 
+#: A worker claims a model only if, before it stops its runs, it has this
+#: many times its longest run so far
+CLAIM_TIME_FACTOR = 1.5
+
 
 def work(
     queue_dir,
@@ -38,11 +42,13 @@ def work(
 ):
     """Run models from the queue until it is empty or the deadline passes.
 
-    No model is claimed after the deadline. A model still running at
-    ``stop_at`` is stopped: put back in the queue without counting an attempt
-    when the next round's time limit can grow, else recorded as failed. A
-    failed model goes straight back in the queue while it has retries left,
-    so it can run again in this round.
+    No model is claimed after the deadline, nor when the time left before
+    ``stop_at`` is under ``CLAIM_TIME_FACTOR`` times the longest run this
+    worker has had, so models that likely won't finish aren't started. A
+    model still running at ``stop_at`` is stopped: put back in the queue
+    without counting an attempt when the next round's time limit can grow,
+    else recorded as failed. A failed model goes straight back in the queue
+    while it has retries left, so it can run again in this round.
 
     Args:
         queue_dir (str)
@@ -82,9 +88,22 @@ def work(
     lock = threading.Lock()
     records = []
 
+    def time_to_claim():
+        now = time.monotonic()
+        if deadline is not None and now >= deadline:
+            return False
+        longest = max((r["seconds"] for r in records), default=0)
+        if stop_at is not None and stop_at - now < CLAIM_TIME_FACTOR * longest:
+            log.debug(
+                f"Not claiming: {duration(stop_at - now)} left, under "
+                f"{CLAIM_TIME_FACTOR} x the longest run ({duration(longest)})"
+            )
+            return False
+        return True
+
     def loop(slot):
         owner = f"{job}.{slot}"
-        while deadline is None or time.monotonic() < deadline:
+        while time_to_claim():
             models = queue.claim(owner, claim)
             if not models:
                 return

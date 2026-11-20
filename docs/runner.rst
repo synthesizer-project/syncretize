@@ -112,7 +112,9 @@ round, until it has failed ``1 + Run.cloudy.max_retries`` times; then it is
 given up.
 
 A worker stops claiming models ``Run.cloudy.margin`` before its time limit,
-and stops the Cloudy runs still going 2 minutes before it. A model stopped
+or earlier once the time left is under 1.5 times its longest Cloudy run so
+far (so it doesn't start models that likely won't finish), and stops the
+Cloudy runs still going 2 minutes before its time limit. A model stopped
 like this hasn't failed: it goes back in the queue without counting an
 attempt, and the next round's time limit is ``Run.cloudy.walltime_growth``
 times longer, up to ``Run.cloudy.max_walltime``. Once the limit can't grow, a

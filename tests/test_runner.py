@@ -463,6 +463,17 @@ def test_workers_stop_claiming_at_their_deadline(tmp_path, monkeypatch):
     assert counts["claimed"] == 0 and counts["failed"] == 0
 
 
+def test_workers_claim_only_models_with_time_to_finish(tmp_path, monkeypatch):
+    runner, queue = cloudy_run(tmp_path, monkeypatch, {"*": "sleep"})
+    runner.cloudy_setup(runner.config.incident["grid"])
+    run_worker(runner, deadline=10, stop_at=0.9)
+
+    # After one run of ~0.5 s, under 1.5 x that is left before the stop, so
+    # each loop claims nothing more and nothing is stopped
+    assert queue.counts()["done"] == 2
+    assert queue.counts()["todo"] == 4 * 48 - 2
+
+
 def test_workers_stop_their_cloudy_runs_at_the_time_limit(
     tmp_path, monkeypatch
 ):
