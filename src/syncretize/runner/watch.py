@@ -1233,6 +1233,20 @@ class WatchApp(App):
         color: $text;
         text-style: bold;
     }
+    /* Key bindings: each key a bright chip, its action plain text */
+    Footer { background: $primary 25%; }
+    FooterKey { background: transparent; }
+    FooterKey .footer-key--key {
+        background: $accent;
+        color: $background;
+        text-style: bold;
+        padding: 0 1;
+    }
+    FooterKey .footer-key--description {
+        background: transparent;
+        color: $text;
+        padding: 0 1;
+    }
     """
     BINDINGS = [
         ("q", "quit", "Quit"),
