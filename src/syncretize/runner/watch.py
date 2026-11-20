@@ -375,6 +375,9 @@ def _header(snapshot):
     state, counts = snapshot["state"], snapshot["counts"]
     total = sum(counts.values())
     done, failed = counts["done"], counts["failed"]
+    # Failed models interpolated from perturbed runs are filled, not failed
+    interpolated = len(state.get("interpolated") or [])
+    failed -= interpolated
     stage = state.get("next", "?")
     title = Text.assemble(
         (" syncretize ", "bold white on blue"),
@@ -398,7 +401,9 @@ def _header(snapshot):
     progress.add_row(
         ProgressBar(total=max(total, 1), completed=done + failed),
         f" {done}/{total} done ({100 * done / max(total, 1):.1f}%) · "
-        f"{failed} failed{eta}",
+        f"{failed} failed"
+        + (f" · {interpolated} interpolated" if interpolated else "")
+        + eta,
     )
     return Panel(Group(title, progress), box=box.HEAVY, padding=(0, 1))
 
@@ -974,6 +979,8 @@ class WatchApp(App):
     CSS = """
     #header { height: 4; }
     #top { height: 8; }
+    /* Every panel in a row fills it, so their borders line up */
+    #top > *, #bottom > * { height: 100%; }
     #queue { width: 2fr; }
     #round { width: 3fr; }
     #jobs { width: 4fr; }
