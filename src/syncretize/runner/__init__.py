@@ -65,6 +65,14 @@ from syncretize.runner.log import (
 )
 from syncretize.runner.queue import STATES, Queue
 
+#: The kind of job running each stage, naming the jobs R<round>-<run>-<kind>
+JOB_KINDS = {
+    "start": "Incident",
+    "work": "Cloudy",
+    "finish": "Runner",
+    "assemble": "Assemble",
+}
+
 #: The most given-up models run.log lists after a round or the assembly
 LIST_FAILURES = 20
 
@@ -184,7 +192,7 @@ class Runner:
         os.makedirs(run["grid_dir"], exist_ok=True)
         start = time.monotonic()
         log.info(f"Making the incident grid with {incident['model']}")
-        with quiet(self._details("incident")):
+        with quiet(self._details("start")):
             grid = build_grid(
                 module.setup(incident["config"], run["input_dir"]),
                 module.generate_point,
@@ -247,7 +255,7 @@ class Runner:
         """
         cloudy = self.config.cloudy
         start = time.monotonic()
-        with quiet(self._details("cloudy-inputs")):
+        with quiet(self._details("start")):
             name, n_incident, n_photoionisation = create_cloudy_inputs(
                 os.path.splitext(os.path.basename(incident_grid))[0],
                 os.path.dirname(incident_grid),
@@ -476,7 +484,6 @@ class Runner:
         )
         array = self._submit(
             "work",
-            f"work-{round_}",
             walltime,
             cores=settings["cores_per_worker"],
             array=workers,
@@ -561,15 +568,13 @@ class Runner:
     def _submit_next(self, stage, after=None):
         """Submit the job running stage, as the run's next job."""
         if stage == "start":
-            resources, name = self.config.run["incident"], "start"
+            resources = self.config.run["incident"]
         elif stage == "assemble":
-            resources, name = self.config.run["assemble"], "assemble"
+            resources = self.config.run["assemble"]
         else:
             resources = {"walltime": FINISH_WALLTIME, "cores": 1}
-            name = f"finish-{self._load_state().get('round', 1)}"
         job = self._submit(
             stage,
-            name,
             resources["walltime"],
             cores=resources["cores"],
             memory=resources.get("memory"),
@@ -578,13 +583,14 @@ class Runner:
         self._save_state(next=stage, next_job=job)
         return job
 
-    def _submit(self, stage, script_name, walltime, **job):
+    def _submit(self, stage, walltime, **job):
         """Submit a job running a stage of this run (see slurm.submit)."""
+        name = self._job_name(stage)
         job_id = slurm.submit(
             self.config.run,
             self.config.path,
             stage,
-            script_name,
+            name,
             slurm_time(seconds(walltime)),
             **job,
         )
@@ -593,7 +599,8 @@ class Runner:
             {
                 "stage": stage,
                 "job": job_id,
-                "script": f"jobs/{script_name}.sh",
+                "name": name,
+                "script": f"jobs/{name}.sh",
                 "submitted": _now(),
             }
         )
@@ -870,12 +877,15 @@ class Runner:
             / 3600
         )
 
-    def _details(self, name):
+    def _job_name(self, stage):
+        """A stage's job name, e.g. "R2-bc03-Cloudy" (start is round 0)."""
+        round_ = 0 if stage == "start" else self._load_state().get("round", 1)
+        return f"R{round_}-{self.config.run['name']}-{JOB_KINDS[stage]}"
+
+    def _details(self, stage):
         """The file a stage's scripts print to (see log.quiet)."""
         job = os.environ.get("SLURM_JOB_ID", "local")
-        return self._path(
-            "logs", f"{self.config.run['name']}-{name}-{job}.details"
-        )
+        return self._path("logs", f"{self._job_name(stage)}-{job}.details")
 
     def _write_run_config(self, grid):
         """Store the run config in the grid's RunConfig group."""

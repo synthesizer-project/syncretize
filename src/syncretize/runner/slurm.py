@@ -27,7 +27,7 @@ def submit(
     run,
     run_file,
     stage,
-    script_name,
+    name,
     walltime,
     cores=1,
     memory=None,
@@ -44,8 +44,9 @@ def submit(
             The run config.
         stage (str)
             The stage the job runs.
-        script_name (str)
-            The script's name in <work_dir>/jobs, without ".sh".
+        name (str)
+            The job's name, also naming its script (<work_dir>/jobs/<name>.sh)
+            and log.
         walltime (str)
             The job's time limit.
         cores (int)
@@ -68,7 +69,7 @@ def submit(
         os.makedirs(os.path.join(work_dir, directory), exist_ok=True)
     log_name = "%x-%A_%a.out" if array else "%x-%j.out"
     options = {
-        "job-name": f"{run['name']}-{stage}",
+        "job-name": name,
         "output": os.path.join(work_dir, "logs", log_name),
         "chdir": work_dir,
         "time": walltime,
@@ -87,7 +88,7 @@ def submit(
         if value is not None
     ]
     lines += [run["environment"], shlex.join([*command, *args])]
-    script = os.path.join(work_dir, "jobs", f"{script_name}.sh")
+    script = os.path.join(work_dir, "jobs", f"{name}.sh")
     with open(script, "w") as file:
         file.write("\n".join(lines) + "\n")
 

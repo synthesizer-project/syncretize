@@ -65,7 +65,7 @@ def test_run_submits_the_start_job(tmp_path, jobs):
     script = jobs(1)
     assert script[0] == "#!/bin/bash -l"
     for option in (
-        "--job-name=test-start",
+        "--job-name=R0-test-Incident",
         f"--chdir={tmp_path / 'work'}",
         "--time=0-12:00:00",
         "--cpus-per-task=2",
@@ -93,6 +93,8 @@ def test_start_submits_workers_then_finish(tmp_path, monkeypatch, jobs):
 
     # 4 x 48 models need only 48 workers of 4
     workers, finish = jobs(1), jobs(2)
+    assert "#SBATCH --job-name=R1-test-Cloudy" in workers
+    assert "#SBATCH --job-name=R1-test-Runner" in finish
     assert "#SBATCH --array=0-47" in workers
     assert "#SBATCH --cpus-per-task=4" in workers
     assert "#SBATCH --time=0-12:00:00" in workers
@@ -120,6 +122,7 @@ def test_finish_requeues_and_submits_a_longer_round(
     assert runner.continue_run() == "4"
     assert queue.counts()["todo"] == 4 * 48
     assert "#SBATCH --time=0-18:00:00" in jobs(3)
+    assert "#SBATCH --job-name=R2-test-Cloudy" in jobs(3)
     assert "#SBATCH --array=0-9" in jobs(3)
     assert "#SBATCH --dependency=afterany:3" in jobs(4)
 
@@ -131,7 +134,7 @@ def test_finish_submits_assembly_when_done(tmp_path, monkeypatch, jobs):
         queue.done(model, "1_0.0")
 
     assert runner.continue_run() == "3"
-    assert "#SBATCH --job-name=test-assemble" in jobs(3)
+    assert "#SBATCH --job-name=R1-test-Assemble" in jobs(3)
     assert "#SBATCH --mem=32G" in jobs(3)
 
 

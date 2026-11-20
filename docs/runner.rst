@@ -147,12 +147,16 @@ The work directory
      state/<worker>.jsonl  each worker's records, until a finish job
                          gathers them into models.json
      cloudy/<grid name>/<i>/<j>.in, .out, ...
-     jobs/<stage>[-<round>].sh
-     logs/<run name>-<stage>-<job ID>.out      each job's own log
-     logs/<run name>-<step>-<job ID>.details   what the incident model and
-                         Cloudy scripts printed
+     jobs/<job name>.sh
+     logs/<job name>-<job ID>.out       each job's own log
+     logs/<job name>-<job ID>.details   what the incident model and Cloudy
+                         scripts printed
 
 ``<i>`` and ``<j>`` are a model's incident and photoionisation indices.
+Jobs are named ``R<round>-<run name>-<kind>``, so they sort by round in
+``squeue``, ``jobs/`` and ``logs/``: ``R0-<name>-Incident`` (the start job),
+``R<n>-<name>-Cloudy`` (round n's workers, whose logs add ``_<task>``),
+``R<n>-<name>-Runner`` (round n's finish job) and ``R<n>-<name>-Assemble``.
 ``state.yaml`` and ``models.json`` are written only by the start, finish and
 assembly jobs, which never run at once, and each is replaced whole; the
 workers, which do run at once, each write their own file in ``state/``.
