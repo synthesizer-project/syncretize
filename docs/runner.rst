@@ -122,11 +122,30 @@ model stopped by it counts as a failed attempt. A model whose worker died
 without stopping it (lost with its job, e.g. a node failure) is treated the
 same way by the finish job.
 
-Models that failed every attempt are marked ``1`` in the final grid's ``failures`` dataset,
-with zeros in their spectra and lines, listed with why they last failed under
+Models that failed every attempt (and couldn't be interpolated, see below)
+are marked ``1`` in the final grid's ``failures`` dataset, with zeros in
+their spectra and lines, listed with why they last failed under
 ``failures`` in ``state.yaml``, and listed in
 ``<work_dir>/cloudy/<grid name>.failures``. Check this mask before using or
 publishing a grid.
+
+Interpolating failed models
+---------------------------
+
+A model that fails every attempt may fail only because of its exact inputs.
+With ``Cloudy.perturb`` given (``perturb: true`` takes its defaults; it is off
+unless given), once every model has run the finish job runs each such model again slightly
+either side of its parameters, along every Cloudy axis of the grid (or along
+its ionisation parameter when the grid has no Cloudy axes), and assembly
+interpolates each pair of successful runs back to the model's own parameters
+(linearly, in log for log-spaced axes such as U and n_H), averaging over the
+axes. The two sides are ``Cloudy.perturb.step`` (default 0.1) of the gap to
+the neighbouring grid value on that side, or ``log_step`` (default 0.05) dex
+for the ionisation parameter; a side that fails is tried again twice as far
+out, up to ``max_steps`` times in all (default 3). Only pairs with
+both sides run are used: a model with none stays failed. Interpolated models
+are marked ``1`` in the final grid's ``interpolated`` dataset, and the plan
+and every run are kept in ``perturb.json`` beside the Cloudy inputs.
 
 Incident points too faint to ionise
 -----------------------------------

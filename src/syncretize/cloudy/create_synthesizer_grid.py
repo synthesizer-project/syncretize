@@ -8,6 +8,7 @@ Example usage:
 
 """
 
+import json
 import os
 import re
 
@@ -460,6 +461,79 @@ def _first_run(cloudy_dir, new_grid_name, incident_index_list, n_photo):
     raise ValueError(f"No cloudy continuum in {cloudy_dir}/{new_grid_name}")
 
 
+def _interpolations(cloudy_dir, new_grid_name, extensions_to_check):
+    """How to fill failed models from runs perturbed around them.
+
+    Reads the plan the Runner keeps (perturb.json, see
+    syncretize.runner.perturb). For each parameter a failed model was
+    perturbed along whose two sides both ran, the model is the linear
+    interpolation between them (in log10 of the parameter where the plan
+    says so).
+
+    Returns:
+        dict
+            Each model ("<i>_<j>") with at least one such pair: a list of
+            (lower run, upper run, weight of the upper run) paths, without
+            extensions.
+    """
+    path = f"{cloudy_dir}/{new_grid_name}/perturb.json"
+    if not os.path.exists(path):
+        return {}
+    with open(path) as file:
+        plan = json.load(file)
+    interpolations = {}
+    for model, parameters in plan.items():
+        incident_index = model.partition("_")[0]
+        pairs = []
+        for parameter in parameters.values():
+            lower, upper = parameter.get("minus"), parameter.get("plus")
+            if lower is None or upper is None:
+                continue
+            paths = [
+                f"{cloudy_dir}/{new_grid_name}/{incident_index}/{run['name']}"
+                for run in (lower, upper)
+            ]
+            if any(check_if_failed(p, extensions_to_check) for p in paths):
+                continue  # one sided isn't enough
+            weight = (parameter["x"] - lower["x"]) / (upper["x"] - lower["x"])
+            pairs.append((*paths, weight))
+        if pairs:
+            interpolations[model] = pairs
+    return interpolations
+
+
+def _normalised_run(cloudy, path, geometry, lam, log10_q):
+    """A run's spectra, and the factor normalising it to the grid point.
+
+    Cloudy runs a model at a total ionising luminosity; the grid stores it
+    per unit of the incident model (e.g. per solar mass), so each run is
+    scaled by the grid point's specific ionising luminosity over the run's.
+
+    Args:
+        log10_q (float)
+            The grid point's log10_specific_ionising_luminosity/HI, or None
+            to leave the run unscaled.
+
+    Returns:
+        (dict, float)
+            The run's spectra (unscaled) and the normalisation.
+    """
+    spec_dict = cloudy.read_continuum(
+        path, return_dict=True, geometry=geometry
+    )
+    if log10_q is None:
+        return spec_dict, 1.0
+    sed = Sed(lam=lam * Angstrom, lnu=spec_dict["incident"] * erg / s / Hz)
+    ionising_photon_production_rate = (
+        sed.calculate_ionising_photon_production_rate(
+            ionisation_energy=13.6 * eV, limit=100
+        )
+    )
+    return spec_dict, 10 ** (
+        log10_q - np.log10(ionising_photon_production_rate)
+    )
+
+
 def check_cloudy_runs(
     new_grid_name,
     cloudy_dir,
@@ -617,6 +691,7 @@ def add_spectra(
     extensions_to_check=["emergent_elin"],
     geometry=None,
     below_threshold=None,
+    interpolations=None,
 ):
     """
     Open cloudy spectra and add them to the grid.
@@ -656,6 +731,10 @@ def add_spectra(
             The incident points below the ionising luminosity threshold,
             which weren't run: their incident light is transmitted as it is,
             with no nebular emission (needs incident_grid_file).
+        interpolations (dict)
+            Failed models to fill from runs perturbed around them (see
+            _interpolations); they are marked in the "interpolated" dataset
+            rather than "failures".
     """
 
     # Always store the spectra add_lines relies on. reflected_incident is
@@ -704,8 +783,11 @@ def add_spectra(
     # used by lines
     spectra["normalisation"] = np.ones(new_shape)
 
-    # Array for recording cloudy failures
+    # Array for recording cloudy failures, and the failures interpolated
+    # from runs perturbed around them
     failures = np.zeros(new_shape)
+    interpolated = np.zeros(new_shape)
+    interpolations = interpolations or {}
 
     # Ratio of the normalised incident continuum to the input SED, per run.
     # The input is read from the file, not a loaded Grid, since synthesizer
@@ -763,8 +845,38 @@ def add_spectra(
                 infile, extensions_to_check=extensions_to_check
             )
 
+            # The grid point's specific ionising luminosity, which the runs
+            # are normalised to
+            log10_q = (
+                new_grid.read_dataset(
+                    "log10_specific_ionising_luminosity/HI", indices=indices
+                )
+                if norm_by_q
+                else None
+            )
+
+            model = f"{incident_index}_{photoionisation_index}"
+            if failed and model in interpolations:
+                # Interpolate between the runs perturbed either side of it
+                # (averaging over the parameters perturbed along)
+                for spec_name in spec_names:
+                    spectra[spec_name][indices] = np.zeros(nlam)
+                for lower, upper, weight in interpolations[model]:
+                    for path, share in ((lower, 1 - weight), (upper, weight)):
+                        spec_dict, normalisation = _normalised_run(
+                            cloudy, path, geometry, lam, log10_q
+                        )
+                        for spec_name in spec_names:
+                            spectra[spec_name][indices] += (
+                                share
+                                * spec_dict[spec_name]
+                                * normalisation
+                                / len(interpolations[model])
+                            )
+                interpolated[indices] = 1
+
             # If the model has failed save the spectra as an array of zeros
-            if failed:
+            elif failed:
                 # Set all the spectra to zero but with the correct shape
                 for spec_name in spec_names:
                     spectra[spec_name][indices] = np.zeros(nlam)
@@ -773,35 +885,14 @@ def add_spectra(
                 failures[indices] = 1
 
             else:
-                # Read the continuum file containing the spectra
-                spec_dict = cloudy.read_continuum(
-                    infile, return_dict=True, geometry=geometry
+                # Read the continuum file containing the spectra and
+                # renormalise it by the specific ionising photon luminosity
+                spec_dict, normalisation = _normalised_run(
+                    cloudy, infile, geometry, lam, log10_q
                 )
 
-                # Calculate the specific ionising photon luminosity and use
-                # this to renormalise the spectrum.
-                if norm_by_q:
-                    # Create sed object
-                    sed = Sed(
-                        lam=lam * Angstrom,
-                        lnu=spec_dict["incident"] * erg / s / Hz,
-                    )
-
-                    # Calculate Q
-                    ionising_photon_production_rate = (
-                        sed.calculate_ionising_photon_production_rate(
-                            ionisation_energy=13.6 * eV, limit=100
-                        )
-                    )
-
-                    # Calculate normalisation
-                    normalisation = new_grid.read_dataset(
-                        "log10_specific_ionising_luminosity/HI",
-                        indices=indices,
-                    ) - np.log10(ionising_photon_production_rate)
-
-                    # Save normalisation for later use (rescaling lines)
-                    spectra["normalisation"][indices] = 10**normalisation
+                # Save normalisation for later use (rescaling lines)
+                spectra["normalisation"][indices] = normalisation
 
                 # Save the normalised spectrum to the correct grid point
                 for spec_name in spec_names:
@@ -863,6 +954,14 @@ def add_spectra(
         False,
         verbose=False,
     )
+    new_grid.write_dataset(
+        "interpolated",
+        interpolated * dimensionless,
+        "1 where the model failed and was interpolated between runs "
+        "perturbed either side of it",
+        False,
+        verbose=False,
+    )
 
     return lam, spectra
 
@@ -880,6 +979,8 @@ def add_lines(
     include_intrinsic=False,
     extensions_to_check=["emergent_elin"],
     below_threshold=None,
+    geometry=None,
+    interpolations=None,
 ):
     """
     Open cloudy lines and add them to the HDF5 grid
@@ -912,7 +1013,21 @@ def add_lines(
             List of file extensions checked to decide if a model failed.
         below_threshold (ndarray of bool)
             The incident points below the ionising luminosity threshold.
+        geometry (str)
+            The Cloudy geometry of the runs.
+        interpolations (dict)
+            Failed models to fill from runs perturbed around them (see
+            _interpolations).
     """
+    interpolations = interpolations or {}
+
+    def read_lines(path, extension):
+        """A run's line IDs, wavelengths and luminosities, by wavelength."""
+        ids, wavelengths, luminosities = cloudy.read_linelist(
+            path, extension=extension
+        )
+        order = np.argsort(wavelengths)
+        return ids[order], wavelengths[order], luminosities[order]
 
     if spectra is not None:
         calculate_continuum = True
@@ -1033,9 +1148,61 @@ def add_lines(
                 infile, extensions_to_check=extensions_to_check
             )
 
+            model = f"{incident_index}_{photoionisation_index}"
+            if failed and model in interpolations:
+                # Interpolate between the runs perturbed either side of it,
+                # each normalised to the grid point (they ran at slightly
+                # different ionising luminosities)
+                log10_q = (
+                    new_grid.read_dataset(
+                        "log10_specific_ionising_luminosity/HI",
+                        indices=indices,
+                    )
+                    if calculate_continuum
+                    else None
+                )
+                extensions = ["emergent_elin"]
+                if include_intrinsic:
+                    extensions.append("intrinsic_elin")
+                totals = {extension: 0.0 for extension in extensions}
+                pairs = interpolations[model]
+                for lower, upper, weight in pairs:
+                    for path, share in ((lower, 1 - weight), (upper, weight)):
+                        normalisation = (
+                            _normalised_run(
+                                cloudy, path, geometry, lam, log10_q
+                            )[1]
+                            if calculate_continuum
+                            else 1.0
+                        )
+                        for extension in extensions:
+                            ids, line_wavelengths, luminosities = read_lines(
+                                path, extension
+                            )
+                            totals[extension] = totals[extension] + (
+                                share
+                                * luminosities
+                                * normalisation
+                                / len(pairs)
+                            )
+                if "wavelength" not in lines:
+                    lines["wavelength"], lines["id"] = line_wavelengths, ids
+                lines["luminosity"][indices] = totals["emergent_elin"]
+                if include_intrinsic:
+                    lines["luminosity_intrinsic"][indices] = totals[
+                        "intrinsic_elin"
+                    ]
+                if calculate_continuum:
+                    for continuum_quantity in continuum_quantities:
+                        lines[continuum_quantity][indices] = np.interp(
+                            line_wavelengths,
+                            lam,
+                            spectra_[continuum_quantity][indices],
+                        )
+
             # If the model has failed save the luminosities as an array of
             # zeros
-            if failed:
+            elif failed:
                 # Set the line luminosities to zero
                 lines["luminosity"][indices] = np.zeros(nlines)
                 if include_intrinsic:
@@ -1171,6 +1338,21 @@ def add_lines(
             "failures",
             failures * dimensionless,
             "array of model failures",
+            False,
+            verbose=False,
+        )
+        interpolated = np.zeros(new_shape)
+        for model in interpolations:
+            i, j = (int(index) for index in model.split("_"))
+            interpolated[
+                tuple(incident_index_list[i])
+                + tuple(photoionisation_index_list[j])
+            ] = 1
+        new_grid.write_dataset(
+            "interpolated",
+            interpolated * dimensionless,
+            "1 where the model failed and was interpolated between runs "
+            "perturbed either side of it",
             False,
             verbose=False,
         )
@@ -1356,6 +1538,17 @@ def create_synthesizer_grid(
         incident_grid.grid_filename,
         fixed_photoionisation_params.get(THRESHOLD_KEY),
     )
+
+    # Failed models that can be interpolated from runs perturbed around them
+    interpolations = _interpolations(
+        cloudy_dir, new_grid_name, extensions_to_check
+    )
+    if interpolations:
+        print(
+            f"{len(interpolations)} failed models are interpolated from runs "
+            "perturbed around them"
+        )
+
     # Check cloudy runs and potentially replace them by the nearest grid point
     # if they fail.
     check_cloudy_runs(
@@ -1388,6 +1581,7 @@ def create_synthesizer_grid(
             extensions_to_check=extensions_to_check,
             geometry=geometry,
             below_threshold=below_threshold,
+            interpolations=interpolations,
         )
         print("Added spectra")
         print(spectra.keys())
@@ -1409,6 +1603,8 @@ def create_synthesizer_grid(
         include_intrinsic=include_intrinsic_lines,
         extensions_to_check=extensions_to_check,
         below_threshold=below_threshold,
+        geometry=geometry,
+        interpolations=interpolations,
     )
     print("Added lines")
 

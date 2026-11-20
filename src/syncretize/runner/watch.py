@@ -555,8 +555,12 @@ def _format(value, log):
 
 
 def _point(points, model, columns):
-    """A model's grid point, as text for each column."""
-    i, j = (int(index) for index in model.split("_"))
+    """A model's grid point, as text for each column.
+
+    A perturbed run ("<i>_<j>p...") shows the grid point it was run around.
+    """
+    i, _, j = model.partition("_")
+    i, j = int(i), int(j.partition("p")[0])
     out = []
     for _, log, part, position in columns:
         try:

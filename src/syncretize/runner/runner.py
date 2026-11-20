@@ -42,7 +42,7 @@ from syncretize.cloudy.create_synthesizer_grid import (
 from syncretize.cloudy.utils import get_cloudy_params, resolve_param_file
 from syncretize.grid_io import write_run_config
 from syncretize.incident.builder import build_grid
-from syncretize.runner import slurm
+from syncretize.runner import perturb, slurm
 from syncretize.runner.cloudy import work
 from syncretize.runner.config import (
     STOP_BEFORE,
@@ -426,6 +426,10 @@ class Runner:
         else:
             rounds.append(summary)
         self._log_round(rounds, records)
+        # With every model run, those that failed every attempt are run again
+        # either side of their parameters, to be interpolated
+        if not counts["todo"] and self._perturb():
+            counts = self.queue.counts()
         if not counts["todo"]:
             self._save_state(rounds=rounds, models=counts, next="assemble")
             return "assemble"
@@ -446,6 +450,51 @@ class Runner:
         )
         return "work"
 
+    def _perturb(self):
+        """Queue runs either side of the models that failed every attempt.
+
+        See syncretize.runner.perturb. A side that failed is tried again
+        further out, until Cloudy.perturb.max_steps.
+
+        Returns:
+            list of str
+                The runs queued.
+        """
+        if self.config.cloudy["perturb"] is None:
+            return []
+
+        from syncretize.cloudy.create_cloudy_input_grid import (
+            write_perturbed_input,
+        )
+
+        states = {}
+        for state in STATES:
+            for name in os.listdir(os.path.join(self.queue.root, state)):
+                states[name.partition("@")[0]] = state
+        failed = [
+            model for model, state in states.items() if state == "failed"
+        ]
+        runs = perturb.advance(
+            self._load_state()["cloudy_dir"],
+            failed,
+            states,
+            self.config.cloudy["perturb"],
+            write_perturbed_input,
+        )
+        if runs:
+            self.queue.add(runs)
+            models = self._load_models()
+            for run in runs:
+                models.setdefault(run, {"state": "todo", "attempts": []})
+            self._save_models(models)
+            points = {run.partition("p")[0] for run in runs}
+            log.info(
+                f"Perturbing {_count(len(points), 'failed model')}: queued "
+                f"{_count(len(runs), 'run')} either side of their Cloudy "
+                "parameters, to interpolate them from"
+            )
+        return runs
+
     def assemble(self):
         """Make the final grid from the Cloudy outputs, in this process.
 
@@ -463,12 +512,40 @@ class Runner:
         with quiet(self._details("assemble")):
             grid = self._assemble(state, cloudy, incident_grid)
         self._write_run_config(grid)
-        self._save_state(grid=grid, next="done")
+
+        # The failed models interpolated from perturbed runs haven't failed
+        from syncretize.cloudy.create_synthesizer_grid import _interpolations
+
+        interpolated = sorted(
+            _interpolations(
+                os.path.dirname(state["cloudy_dir"]),
+                os.path.basename(state["cloudy_dir"]),
+                self._required_extensions(),
+            )
+        )
+        failures = {
+            model: why
+            for model, why in (state.get("failures") or {}).items()
+            if model not in interpolated
+        }
+        self._save_state(
+            grid=grid,
+            next="done",
+            failures=failures,
+            interpolated=interpolated,
+        )
         log.info(
             f"Wrote {grid} ({_shape(grid)}, "
             f"{os.path.getsize(grid) / 1e6:.0f} MB) in {took(start)}"
         )
-        self._log_failures(self._load_state().get("failures", {}))
+        if interpolated:
+            log.info(
+                f"Interpolated {_count(len(interpolated), 'failed model')} "
+                "from runs perturbed either side of them: "
+                + ", ".join(interpolated[:LIST_FAILURES])
+                + (" …" if len(interpolated) > LIST_FAILURES else "")
+            )
+        self._log_failures(failures)
         self._log_done()
         return grid
 
@@ -690,12 +767,14 @@ class Runner:
         for path in files:
             os.remove(path)
 
+        # The grid points that failed (perturbed runs that failed are in
+        # models.json and perturb.json)
         failures = {
             model: entry["attempts"][-1]["reason"]
             if entry["attempts"]
             else None
             for model, entry in models.items()
-            if entry["state"] == "failed"
+            if entry["state"] == "failed" and not perturb.is_perturbed(model)
         }
         self._save_state(failures=failures)
         return records
@@ -877,12 +956,26 @@ class Runner:
             began = datetime.fromisoformat(state["started"])
             elapsed = (datetime.now(timezone.utc) - began).total_seconds()
             since = f" over {duration(elapsed)}"
+        # What the grid's points hold: Cloudy's results, interpolations
+        # from perturbed runs, failures, or no Cloudy (below the threshold)
+        with h5py.File(state["grid"], "r") as hdf:
+            total = int(hdf["failures"].size)
+            filled = {
+                key: int(hdf[key][()].sum())
+                for key in ("failures", "interpolated", "below_threshold")
+                if key in hdf
+            }
+        ran = total - sum(filled.values())
+        runs = sum(counts.values())
         log.info(
-            f"Done: {counts.get('done', 0)} of {sum(counts.values())} Cloudy "
-            f"models in {_count(rounds, 'round')}{since}, "
-            f"{self._cpu_hours():.1f} CPU-hours of Cloudy; "
-            f"{counts.get('failed', 0)} failed. The grid is "
-            f"{state['grid']}"
+            f"Done: {ran} of {total} grid points from Cloudy, "
+            f"{filled.get('interpolated', 0)} interpolated from perturbed "
+            f"runs, {filled.get('failures', 0)} failed, "
+            f"{filled.get('below_threshold', 0)} below the ionising "
+            "threshold; "
+            f"{_count(runs, 'Cloudy run')} in "
+            f"{_count(rounds, 'round')}{since}, "
+            f"{self._cpu_hours():.1f} CPU-hours. The grid is {state['grid']}"
         )
 
     def _cpu_hours(self):

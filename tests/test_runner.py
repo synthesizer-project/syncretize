@@ -269,15 +269,19 @@ def test_unknown_cloudy_config(tmp_path):
 
 FAKE_CLOUDY = f"""#!{sys.executable}
 # A stand-in for cloudy.exe -r <j>, run in <cloudy_dir>/<i>. FAKE_CLOUDY maps
-# a model "<i>_<j>" (or "*", every model) to what it does: "fail" (exit with
+# a model "<i>_<j>" (or a pattern, e.g. "*" for every model; the first match
+# applies) to what it does: "fail" (exit with
 # an error), "fail_once" (fail the first run only), "no_lines" (exit OK
 # without lines), "no_output" (stop before writing anything, as when killed
 # early), "sleep" (take 0.5 s) or "hang" (take a minute).
-import json, os, sys, time
+import fnmatch, json, os, sys, time
 j = sys.argv[2]
 model = os.path.basename(os.getcwd()) + "_" + j
 behaviours = json.loads(os.environ.get("FAKE_CLOUDY", "{{}}"))
-behaviour = behaviours.get(model, behaviours.get("*"))
+behaviour = next(
+    (b for key, b in behaviours.items() if fnmatch.fnmatch(model, key)),
+    None,
+)
 if behaviour == "sleep":
     time.sleep(0.5)
 if behaviour == "hang":
@@ -314,10 +318,13 @@ if behaviour != "no_lines":
 """
 
 
-def cloudy_run(tmp_path, monkeypatch, behaviours, extra=None, **cloudy):
+def cloudy_run(
+    tmp_path, monkeypatch, behaviours, extra=None, perturb=None, **cloudy
+):
     """A Runner set up to run the fake Cloudy on the fake incident grid.
 
-    extra holds Cloudy parameters to add, as an extra_config.
+    extra holds Cloudy parameters to add, as an extra_config; perturb is
+    Cloudy.perturb (by default none, so failed models aren't perturbed).
     """
     exe = tmp_path / "cloudy" / "source" / "cloudy.exe"
     exe.parent.mkdir(parents=True)
@@ -343,6 +350,7 @@ def cloudy_run(tmp_path, monkeypatch, behaviours, extra=None, **cloudy):
                 "config": "c23.01-sps-grid_limited",
                 "extra_config": extra_config,
                 "executable": str(exe.parents[1]),
+                "perturb": perturb,
             },
         )
     )
@@ -405,7 +413,8 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
         "Wrote 192 Cloudy inputs",
         "| round | time limit |",
         "1_3: [Stop in cdMain, something went wrong]",
-        "Done: 189 of 192 Cloudy models in 1 round",
+        "Done: 189 of 192 grid points from Cloudy, 0 interpolated from "
+        "perturbed runs, 3 failed",
     ):
         assert text in run_log
     assert "0_9 done" not in run_log
@@ -661,3 +670,54 @@ def test_points_below_the_ionising_threshold_arent_run(tmp_path, monkeypatch):
         "below the ionising luminosity threshold"
         in (tmp_path / "work" / "run.log").read_text()
     )
+
+
+def test_failed_models_are_interpolated_from_perturbed_runs(
+    tmp_path, monkeypatch
+):
+    runner, queue = cloudy_run(
+        tmp_path,
+        monkeypatch,
+        {
+            # 1_3 fails, but runs either side of it don't
+            "1_3": "fail",
+            # 2_5 fails wherever it's run
+            "2_5*": "fail",
+            # 3_1 fails, and so do the runs below it on every axis
+            "3_1": "fail",
+            "3_1p?-*": "fail",
+        },
+        perturb={"step": 0.1, "max_steps": 2},
+    )
+    grid = runner.run(local=True)
+
+    cloudy_dir = Path(runner._load_state()["cloudy_dir"])
+    plan = json.loads((cloudy_dir / "perturb.json").read_text())
+    assert sorted(plan) == ["1_3", "2_5", "3_1"]
+    # Along every Cloudy axis of the grid (C/O, N/O, depletion, U, nH)
+    assert len(plan["1_3"]) == 5
+    side = plan["1_3"]["ionisation_parameter"]
+    assert side["log"] and side["minus"]["x"] < side["x"] < side["plus"]["x"]
+    # A side that failed was tried again further out (up to max_steps)
+    assert plan["2_5"]["hydrogen_density"]["minus"]["level"] == 2
+    assert (cloudy_dir / "1" / f"{side['minus']['name']}.in").is_file()
+
+    with h5py.File(grid) as hdf:
+        interpolated = hdf["interpolated"][()].reshape(4, 48)
+        failures = hdf["failures"][()].reshape(4, 48)
+        luminosity = hdf["lines/luminosity"][()].reshape(4, 48, -1)
+    # 1_3 is interpolated; 2_5 (no successful run) and 3_1 (one sided)
+    # stay failed
+    assert interpolated.sum() == 1 and list(interpolated.sum(axis=1)) == [
+        0,
+        1,
+        0,
+        0,
+    ]
+    assert failures.sum() == 2
+    assert luminosity[1][interpolated[1] == 1].all()
+
+    run_log = (tmp_path / "work" / "run.log").read_text()
+    assert "Perturbing 3 failed models" in run_log
+    assert "1 interpolated from perturbed runs, 2 failed" in run_log
+    assert sorted(runner._load_state()["failures"]) == ["2_5", "3_1"]

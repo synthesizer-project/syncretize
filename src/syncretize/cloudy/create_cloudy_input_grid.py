@@ -271,6 +271,46 @@ def create_cloudy_input(
     )
 
 
+def write_perturbed_input(cloudy_dir, model, name, changes):
+    """
+    Write a model's cloudy input again with some parameters changed.
+
+    The new input <cloudy_dir>/<i>/<name>.in (and .yaml) uses the model's
+    incident SED and every other parameter of <cloudy_dir>/<i>/<j>.yaml,
+    including its U (for the reference model, the U worked out for it), so
+    "ionisation_parameter" can be changed whichever model set it.
+
+    Args:
+        cloudy_dir (str):
+            The grid's cloudy directory, holding <i>/<j>.in for model "i_j".
+        model (str):
+            The model, "<i>_<j>".
+        name (str):
+            The new input's name in <cloudy_dir>/<i>.
+        changes (dict):
+            The parameters to change, and their new values.
+    """
+    from syncretize.cloudy.create_synthesizer_grid import _cloudy_module
+
+    incident_index, photoionisation_index = model.split("_")
+    with open(
+        f"{cloudy_dir}/{incident_index}/{photoionisation_index}.yaml"
+    ) as file:
+        parameters = yaml.safe_load(file)
+    # The .yaml holds the U the model ran with (for the reference model,
+    # the U worked out for it), which the new input uses directly
+    parameters |= changes
+    parameters["ionisation_parameter_model"] = "fixed"
+    create_cloudy_input(
+        incident_index,
+        name,
+        parameters,
+        0.0,
+        cloudy_dir,
+        _cloudy_module(parameters["cloudy_version"]),
+    )
+
+
 def create_cloudy_inputs(
     incident_grid_name,
     incident_grid_dir,

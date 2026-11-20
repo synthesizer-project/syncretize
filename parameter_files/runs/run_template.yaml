@@ -61,3 +61,7 @@ Incident:
 #   extra_config:                # A second Cloudy config whose parameters replace the first's. Default: none.
 #   include_spectra: true        # Store the spectra in the final grid, as well as the lines. Default: true.
 #   include_intrinsic_lines: false  # Also store the intrinsic line luminosities. Default: false.
+#   perturb:                     # Run models that fail every attempt again either side of their Cloudy parameters, and interpolate them back. Default: off (give this section, or "perturb: true" for the defaults below, to turn it on).
+#     step: 0.1                  # How far either side, as a fraction of the gap to the neighbouring grid value of each Cloudy axis. Default: 0.1.
+#     log_step: 0.05             # How far either side (dex) for the ionisation parameter of a grid with no Cloudy axes. Default: 0.05.
+#     max_steps: 3               # A side that fails is tried again twice as far out, up to this many times in all. Default: 3.

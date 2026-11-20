@@ -56,7 +56,14 @@ CLOUDY_DEFAULTS = {
     "executable": REQUIRED,
     "include_spectra": True,
     "include_intrinsic_lines": False,
+    # Models that fail every attempt are run again either side of their
+    # parameters and interpolated (see syncretize.runner.perturb); off
+    # unless given
+    "perturb": None,
 }
+
+#: Every key of Cloudy.perturb, with its default
+PERTURB_DEFAULTS = {"step": 0.1, "log_step": 0.05, "max_steps": 3}
 
 #: How long before a worker's time limit it stops the Cloudy runs left
 STOP_BEFORE = "00:02:00"
@@ -193,10 +200,38 @@ def load_run(run_file):
                     "file nor a shipped Cloudy config"
                 )
         _check_cloudy_version(run_file, cloudy)
+        if cloudy["perturb"] is not None:
+            _check_perturb(run_file, cloudy)
 
     return SimpleNamespace(
         path=run_file, run=run, incident=incident, cloudy=cloudy
     )
+
+
+def _check_perturb(run_file, cloudy):
+    """Fill in Cloudy.perturb's defaults (``true`` takes them all) and check
+    it."""
+    given = cloudy["perturb"]
+    if given is True:
+        given = {}
+    perturb = _fill(run_file, "perturb", given, PERTURB_DEFAULTS, "Cloudy.")
+    cloudy["perturb"] = perturb
+    for key in ("step", "log_step"):
+        value = perturb[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(
+                f"{run_file}: Cloudy.perturb.{key} must be a number"
+            )
+        if value <= 0:
+            raise ValueError(
+                f"{run_file}: Cloudy.perturb.{key} must be positive"
+            )
+    steps = perturb["max_steps"]
+    if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
+        raise ValueError(
+            f"{run_file}: Cloudy.perturb.max_steps must be a whole number "
+            "of at least 1"
+        )
 
 
 def incident_module(model):

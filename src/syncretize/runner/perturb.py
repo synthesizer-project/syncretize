@@ -1,0 +1,186 @@
+"""Perturb the Cloudy models that failed every attempt, to interpolate them.
+
+A model that keeps failing may fail only because of its exact inputs. Once a
+run's rounds have finished, the finish job writes, for each such model, runs
+slightly to either side of it along each of its Cloudy axes (or, with no
+Cloudy axes, along its ionisation parameter), and queues them. A side that
+fails is tried again twice as far out, up to ``max_steps`` times. The
+assembly then interpolates each pair of successful sides back to the model's
+own parameters (``syncretize.cloudy.create_synthesizer_grid``); a model with
+no successful pair stays failed.
+
+The plan and each side's latest run are kept in ``perturb.json`` beside the
+Cloudy inputs:
+
+    {"<i>_<j>": {"<parameter>": {
+        "log": bool,          interpolated in log10 of the parameter
+        "x": value,           the model's own value
+        "minus": {"level": k, "name": "<j>p<a>-<k>", "x": value},
+        "plus":  {...}}}}
+
+A side at level k is ``step * 2**(k - 1)`` of the gap to the neighbouring
+grid value on that side (``log_step * 2**(k - 1)`` dex for a parameter that
+isn't an axis).
+"""
+
+import json
+import math
+import os
+
+import yaml
+
+#: The file holding the perturbation plan, in the Cloudy directory
+PLAN = "perturb.json"
+
+
+def is_perturbed(model):
+    """Whether a model is a perturbed run (rather than a grid point)."""
+    return not model.partition("_")[2].isdigit()
+
+
+def load(cloudy_dir):
+    """The perturbation plan (empty if none)."""
+    try:
+        with open(os.path.join(cloudy_dir, PLAN)) as file:
+            return json.load(file)
+    except FileNotFoundError:
+        return {}
+
+
+def _save(cloudy_dir, plan):
+    path = os.path.join(cloudy_dir, PLAN)
+    with open(path + ".tmp", "w") as file:
+        json.dump(plan, file, indent=1)
+    os.replace(path + ".tmp", path)
+
+
+def _axes(cloudy_dir, model):
+    """The parameters to perturb a model along, with their gaps.
+
+    Returns:
+        dict
+            Each parameter's "log", "x" (in the interpolation's units: log10
+            when "log") and "gaps" (to the lower and upper neighbouring grid
+            values, None at an edge or for a parameter that isn't an axis).
+    """
+    try:
+        with open(os.path.join(cloudy_dir, "grid_points.json")) as file:
+            points = json.load(file)["photoionisation"]
+    except FileNotFoundError:
+        # Set up before grid_points.json was written: no Cloudy axes known
+        points = {"axes": [], "values": []}
+    incident_index, photoionisation_index = model.split("_")
+    j = int(photoionisation_index)
+    axes = {}
+    for position, axis in enumerate(points["axes"]):
+        values = sorted({v[position] for v in points["values"]})
+        # Log-spaced positive axes (e.g. U, nH) are perturbed in log
+        log = values[0] > 0 and values[-1] / values[0] > 10
+        grid = [math.log10(v) for v in values] if log else values
+        x = points["values"][j][position]
+        x = math.log10(x) if log else x
+        k = min(range(len(grid)), key=lambda n: abs(grid[n] - x))
+        axes[axis] = {
+            "log": log,
+            "x": x,
+            "gaps": [
+                x - grid[k - 1] if k > 0 else None,
+                grid[k + 1] - x if k < len(grid) - 1 else None,
+            ],
+        }
+    if not axes:
+        # No Cloudy axes: perturb the model's own ionisation parameter
+        path = os.path.join(
+            cloudy_dir, incident_index, f"{photoionisation_index}.yaml"
+        )
+        with open(path) as file:
+            u = float(yaml.safe_load(file)["ionisation_parameter"])
+        axes["ionisation_parameter"] = {
+            "log": True,
+            "x": math.log10(u),
+            "gaps": [None, None],
+        }
+    return axes
+
+
+def _side(model, position, parameter, side, level, settings):
+    """Where a side at a level lies, and its run's name."""
+    sign = -1 if side == "minus" else 1
+    gaps = parameter["gaps"]
+    gap = gaps[0] if side == "minus" else gaps[1]
+    # At an edge, the gap on the other side
+    gap = gap if gap is not None else (gaps[1] if side == "minus" else gaps[0])
+    if gap is None:
+        offset = settings["log_step"] * 2 ** (level - 1)
+    else:
+        offset = settings["step"] * 2 ** (level - 1) * gap
+    j = model.partition("_")[2]
+    return {
+        "level": level,
+        "name": f"{j}p{position}{'-' if side == 'minus' else '+'}{level}",
+        "x": parameter["x"] + sign * offset,
+    }
+
+
+def _value(parameter, x):
+    return 10**x if parameter["log"] else x
+
+
+def advance(cloudy_dir, failed, states, settings, write_input):
+    """Plan the next perturbed runs.
+
+    Args:
+        cloudy_dir (str)
+            The grid's Cloudy directory.
+        failed (iterable of str)
+            The models that have failed every attempt.
+        states (dict)
+            Each queued model's state ("todo", "claimed", "done", "failed").
+        settings (dict)
+            Cloudy.perturb: step, log_step, max_steps.
+        write_input (callable)
+            Writes a run's input: (cloudy_dir, model, name, changes).
+
+    Returns:
+        list of str
+            The perturbed runs to queue.
+    """
+    plan = load(cloudy_dir)
+    queue = []
+
+    def start(model, position, name, parameter, side, level):
+        run = _side(model, position, parameter, side, level, settings)
+        write_input(
+            cloudy_dir, model, run["name"], {name: _value(parameter, run["x"])}
+        )
+        parameter[side] = run
+        queue.append(f"{model.partition('_')[0]}_{run['name']}")
+
+    # Grid points that have just failed every attempt
+    for model in sorted(failed):
+        if is_perturbed(model) or model in plan:
+            continue
+        plan[model] = _axes(cloudy_dir, model)
+        for position, (name, parameter) in enumerate(plan[model].items()):
+            for side in ("minus", "plus"):
+                start(model, position, name, parameter, side, 1)
+
+    # Sides that failed are tried again further out
+    for model, parameters in plan.items():
+        incident_index = model.partition("_")[0]
+        for position, (name, parameter) in enumerate(parameters.items()):
+            for side in ("minus", "plus"):
+                run = parameter[side]
+                state = states.get(f"{incident_index}_{run['name']}")
+                if state == "failed" and run["level"] < settings["max_steps"]:
+                    start(
+                        model,
+                        position,
+                        name,
+                        parameter,
+                        side,
+                        run["level"] + 1,
+                    )
+
+    _save(cloudy_dir, plan)
+    return queue
