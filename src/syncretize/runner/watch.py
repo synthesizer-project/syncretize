@@ -4,14 +4,15 @@ Like ``watch``, it redraws every few seconds (``-n``, default 2) from the files
 a run writes, without changing any of them, so it is safe to leave running
 anywhere the work directory is visible:
 
-    state.yaml       next stage and job, rounds, jobs, models given up on
-    queue/*          how many models are waiting, running, done and failed
+    state.yaml       next stage and job, rounds, jobs, failed models
+    queue/*          how many models are waiting, running, done and failed,
+                     and how long each running model has been going
     state/*.jsonl    the current round's worker records (read as they grow)
     run.log          its last lines
     squeue           the run's jobs (every 30 s, when Slurm is there)
 
-Keys: q quits, f toggles a full-screen list of the models given up on, l a
-full-screen run.log.
+Keys: q quits, f toggles a full-screen list of the failed models (those that
+failed every attempt), l a full-screen run.log.
 """
 
 import getpass
@@ -39,6 +40,9 @@ from syncretize.runner.queue import STATES
 
 #: The header's height (a panel of two lines)
 HEADER = 4
+
+#: Measures how many rows a wrapped line takes
+_MEASURE = Console(width=1000)
 
 #: How often squeue is asked about the run's jobs (s)
 SLURM_EVERY = 30
@@ -89,6 +93,8 @@ class Watcher:
         self._records = {}  # worker record file: (offset, records)
         self._counts, self._counted = None, 0.0
         self._jobs, self._asked = {}, 0.0
+        self._ended = {}  # job ID: how its tasks ended, from sacct
+        self._running_cache, self._running_at = [], 0.0
         self._models, self._models_mtime = {}, None
 
     def read(self):
@@ -99,8 +105,10 @@ class Watcher:
             "counts": self._queue_counts(),
             "records": self._round_records(),
             "log": self._log_tail(),
-            "slurm": self._slurm(state.get("name")),
+            "slurm": self._slurm(state),
+            "ended": self._ended,
             "attempts": self._attempts(),
+            "running": self._running(),
             "now": datetime.now(timezone.utc),
         }
 
@@ -129,6 +137,32 @@ class Watcher:
                 counts[state] = 0
         self._counts, self._counted = counts, time.monotonic()
         return counts
+
+    def _running(self):
+        """The claimed models and how long they've run, longest first.
+
+        A claim is a rename into queue/claimed, which sets the file's ctime,
+        so that is when the model started.
+        """
+        directory = self._path("queue", "claimed")
+        busy = len(self._running_cache) > BIG_QUEUE // 10
+        if busy and time.monotonic() - self._running_at < QUEUE_EVERY:
+            return self._running_cache
+        now, running = time.time(), []
+        try:
+            names = os.listdir(directory)
+        except FileNotFoundError:
+            names = []
+        for name in names:
+            try:
+                started = os.stat(os.path.join(directory, name)).st_ctime
+            except FileNotFoundError:
+                continue  # finished since the listing
+            model, _, owner = name.rpartition("@")
+            running.append((model, owner, now - started))
+        running.sort(key=lambda item: -item[2])
+        self._running_cache, self._running_at = running, time.monotonic()
+        return running
 
     def _round_records(self):
         """The workers' records not yet gathered by a finish job."""
@@ -182,8 +216,13 @@ class Watcher:
             self._models_mtime = mtime
         return self._models
 
-    def _slurm(self, name):
-        """The run's queued and running jobs, by job ID (every 30 s)."""
+    def _slurm(self, state):
+        """The run's queued and running jobs, by job ID (every 30 s).
+
+        Also asks sacct how the run's other jobs ended, once each (a job that
+        has ended doesn't change), into ``self._ended``.
+        """
+        name = state.get("name")
         if name is None or shutil.which("squeue") is None:
             return {}
         if time.monotonic() - self._asked < SLURM_EVERY:
@@ -214,7 +253,47 @@ class Watcher:
             else:
                 entry["pending"] += tasks
         self._jobs = jobs
+
+        ask = [
+            str(entry["job"])
+            for entry in state.get("jobs", [])
+            if str(entry["job"]) not in jobs
+            and str(entry["job"]) not in self._ended
+        ]
+        if ask and shutil.which("sacct") is not None:
+            self._ended |= _sacct(ask)
         return jobs
+
+
+def _sacct(jobs):
+    """How the tasks of ended jobs ended, e.g. {"12": {"COMPLETED": 249}}."""
+    try:
+        result = subprocess.run(
+            [
+                "sacct",
+                "-n",
+                "-X",
+                "-P",
+                "-o",
+                "JobID,State",
+                "-j",
+                ",".join(jobs),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    ended = {}
+    for line in result.stdout.splitlines():
+        job, _, status = line.partition("|")
+        status = status.split(" ")[0]  # e.g. "CANCELLED by 123"
+        if status in ("PENDING", "RUNNING", "REQUEUED", "COMPLETING"):
+            continue
+        tasks = ended.setdefault(job.split("_")[0], {})
+        tasks[status] = tasks.get(status, 0) + _count_tasks(job)
+    return ended
 
 
 def _count_tasks(job):
@@ -255,7 +334,8 @@ def render(snapshot, width, height, view="main"):
     layout = Layout()
     header = _header(snapshot)
     footer = Text(
-        f" q quit · f given up · l run.log · every {snapshot['interval']:g}s"
+        f" q quit · f failed models · l run.log · every "
+        f"{snapshot['interval']:g}s"
         f" · {snapshot['work_dir']}",
         style="dim",
         no_wrap=True,
@@ -265,7 +345,7 @@ def render(snapshot, width, height, view="main"):
     if view in ("log", "failures"):
         rows = height - HEADER - 1 - 2
         body = (
-            _log_panel(snapshot["log"], rows)
+            _log_panel(snapshot["log"], rows, width - 4)
             if view == "log"
             else _failures_panel(snapshot, rows, full=True)
         )
@@ -284,10 +364,27 @@ def render(snapshot, width, height, view="main"):
         Layout(_round_panel(snapshot), ratio=3),
         Layout(_jobs_panel(snapshot, middle_height - 2), ratio=4),
     )
+    # run.log on the left; on the right, the failed models (as many rows as
+    # they need, up to 8) above the models running longest
+    failures = _failures(snapshot)
+    failures_height = min(max(len(failures), 1), 8) + 2
+    if len(failures) > 8:
+        failures_height += 1  # "and N more"
+    right = Layout()
+    right.split_column(
+        Layout(
+            _failures_panel(snapshot, failures_height - 2),
+            size=failures_height,
+        ),
+        Layout(_running_panel(snapshot, bottom_height - failures_height - 2)),
+    )
     bottom = Layout()
     bottom.split_row(
-        Layout(_failures_panel(snapshot, bottom_height - 2), ratio=2),
-        Layout(_log_panel(snapshot["log"], bottom_height - 2), ratio=3),
+        Layout(
+            _log_panel(snapshot["log"], bottom_height - 2, width * 3 // 5 - 4),
+            ratio=3,
+        ),
+        Layout(right, ratio=2),
     )
     layout.split_column(
         Layout(header, size=HEADER),
@@ -326,7 +423,7 @@ def _header(snapshot):
     progress.add_row(
         ProgressBar(total=max(total, 1), completed=done + failed),
         f" {done}/{total} done ({100 * done / max(total, 1):.1f}%) · "
-        f"{failed} given up{eta}",
+        f"{failed} failed{eta}",
     )
     return Panel(Group(title, progress), box=box.HEAVY, padding=(0, 1))
 
@@ -393,7 +490,7 @@ def _round_panel(snapshot):
     retried = sum(
         r["result"] == "failed" and r.get("requeued") for r in records
     )
-    table.add_row("failed", f"{results.count('failed')} ({retried} retried)")
+    table.add_row("errors", f"{results.count('failed')} ({retried} retried)")
     table.add_row("stopped", str(results.count("stopped")))
     times = [
         r["seconds"] for r in records if r["result"] in ("done", "failed")
@@ -426,6 +523,20 @@ def _jobs_panel(snapshot, rows):
                     status.append(f" · {now['pending']} queued", style="dim")
             else:
                 status = Text(f"{now['pending']} queued", style="yellow")
+        elif job in snapshot["ended"]:
+            ended = snapshot["ended"][job]
+            bad = set(ended) - {"COMPLETED"}
+            status = Text(
+                " · ".join(
+                    f"{n} {s.lower()}"
+                    if sum(ended.values()) > 1
+                    else s.lower()
+                    for s, n in sorted(ended.items())
+                ),
+                style="red"
+                if bad - {"CANCELLED"}
+                else ("yellow" if bad else "green"),
+            )
         elif "outcome" in entry:
             failed = entry["outcome"] != "completed"
             status = Text(
@@ -473,11 +584,11 @@ def _rounds_panel(rounds):
         "limit",
         "workers",
         "done",
-        "failed",
+        "errors",
         "retried",
         "stopped",
         "lost",
-        "given up",
+        "failed",
         "left",
     ):
         table.add_column(header, justify="right")
@@ -502,22 +613,54 @@ def _rounds_panel(rounds):
     return Panel(table, title="Rounds", title_align="left", padding=0)
 
 
-def _failures_panel(snapshot, rows, full=False):
-    # Those the finish jobs gathered, and those given up since
+def _failures(snapshot):
+    """The models that failed every attempt, with why the last failed.
+
+    Those a finish job has gathered, and those failed since.
+    """
     failures = dict(snapshot["state"].get("failures") or {})
     for record in snapshot["records"]:
         if _given_up(record):
             failures[record["model"]] = record.get("reason")
+    return failures
+
+
+def _running_panel(snapshot, rows):
+    """The models running longest, flagging those slow for this round."""
+    running = snapshot["running"]
+    times = [
+        r["seconds"]
+        for r in snapshot["records"]
+        if r["result"] in ("done", "failed")
+    ]
+    slow = 2 * statistics.median(times) if times else None
+    table = Table(box=None, padding=(0, 1), expand=True, show_header=False)
+    table.add_column(no_wrap=True)
+    table.add_column(no_wrap=True, style="dim", overflow="ellipsis")
+    table.add_column(justify="right", no_wrap=True)
+    for model, owner, seconds in running[: max(rows, 0)]:
+        style = "yellow" if slow is not None and seconds > slow else ""
+        table.add_row(model, owner, Text(_duration(seconds), style=style))
+    if not running:
+        table.add_row(Text("nothing running", style="dim"), "", "")
+    title = f"Running longest ({len(running)} running"
+    title += f", yellow > 2 x median {_duration(slow / 2)})" if slow else ")"
+    return Panel(table, title=title, title_align="left")
+
+
+def _failures_panel(snapshot, rows, full=False):
+    failures = _failures(snapshot)
     attempts = snapshot["attempts"]
     table = Table(box=None, padding=(0, 1), expand=True, show_header=False)
     table.add_column(no_wrap=True, style="red")
-    table.add_column(justify="right", style="dim")
+    table.add_column(justify="right", style="dim", no_wrap=True)
     table.add_column(
         no_wrap=not full, overflow="ellipsis" if not full else "fold"
     )
     items = list(failures.items())
-    shown = items if full else items[: max(rows - 1, 0)]
-    for model, why in shown[: max(rows, 0)]:
+    # All that fit, or room for "and N more" below the rest
+    shown = items if full or len(items) <= rows else items[: max(rows - 1, 0)]
+    for model, why in shown:
         table.add_row(model, f"({attempts.get(model, '?')})", why or "")
     if len(items) > len(shown):
         table.add_row("", "", Text(f"and {len(items) - len(shown)} more (f)"))
@@ -525,25 +668,45 @@ def _failures_panel(snapshot, rows, full=False):
         table.add_row(Text("none", style="dim"), "", "")
     return Panel(
         table,
-        title=f"Given up ({len(items)})",
+        title=f"Failed models ({len(items)}, attempts, last reason)",
         title_align="left",
     )
 
 
-def _log_panel(lines, rows, title="run.log"):
-    # Lines are cut to the panel, so the newest stay in view
-    tail = lines[-max(rows, 0) :] if rows > 0 else []
-    text = Text(no_wrap=True, overflow="ellipsis")
-    for line in tail:
-        # The date is today's; the time is enough
-        if len(line) > 20 and line[4] == "-" and line[10] == " ":
-            line = line[11:]
+def _log_panel(lines, rows, width, title="run.log"):
+    """The end of run.log, its long lines wrapped, as many as fit.
+
+    Args:
+        lines (list of str)
+            run.log's last lines.
+        rows, width (int)
+            The space inside the panel.
+    """
+    # The date is today's; the time is enough
+    lines = [
+        line[11:]
+        if len(line) > 20 and line[4] == "-" and line[10] == " "
+        else line
+        for line in lines
+    ]
+    # Wrap the lines into rows and keep the last rows that fit, so the
+    # newest stay in view and the panel stays full
+    wrapped = []
+    for line in lines[-max(rows, 0) :] if rows > 0 else []:
         style = (
             "red"
             if "ERROR" in line
             else ("yellow" if "WARNING" in line else "")
         )
-        text.append(line + "\n", style=style)
+        text = Text(line, style=style)
+        # Tables (the rounds in run.log) are cropped rather than wrapped
+        if line.partition("] ")[2].lstrip()[:1] in ("+", "|"):
+            text.truncate(max(width, 1))
+            wrapped.append(text)
+        else:
+            wrapped.extend(text.wrap(_MEASURE, max(width, 1)))
+    text = Text("\n").join(wrapped[-max(rows, 0) :] if rows > 0 else [])
+    text.no_wrap, text.overflow = True, "crop"
     return Panel(text, title=title, title_align="left")
 
 

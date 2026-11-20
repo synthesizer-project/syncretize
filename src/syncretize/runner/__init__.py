@@ -8,7 +8,7 @@ See ``parameter_files/runs/run_template.yaml`` for the run config.
 A run keeps its state in ``<work_dir>``:
 
     state.yaml     what has been done and what comes next (``next``), every
-                   job and round, and the models given up on
+                   job and round, and the models that failed
     models.json    every Cloudy model's state and attempts
     queue/         the models waiting, running, done and failed
     state/         each worker's records, gathered into models.json by the
@@ -411,8 +411,8 @@ class Runner:
         if summary["stopped"] + summary["lost"] and longer is not None:
             walltime = longer
             log.info(
-                f"{summary['stopped'] + summary['lost']} models ran out of "
-                f"time, so the next round's time limit grows to "
+                f"{_count(summary['stopped'] + summary['lost'], 'model')} "
+                "ran out of time, so the next round's time limit grows to "
                 f"{slurm_time(walltime)}"
             )
         self._save_state(
@@ -501,10 +501,10 @@ class Runner:
         self._save_state(rounds=rounds)
         finish = self._submit_next("finish", after=array)
         log.info(
-            f"Round {round_}: submitted {workers} workers ("
+            f"Round {round_}: submitted {_count(workers, 'worker')} ("
             f"{settings['cores_per_worker']} cores each, time limit "
             f"{walltime}) as job {array}, then finish job {finish}; "
-            f"{todo} models to run"
+            f"{_count(todo, 'model')} to run"
         )
         return finish
 
@@ -777,11 +777,11 @@ class Runner:
             "time limit",
             "workers",
             "done",
-            "failed",
+            "errors",
             "retried",
             "stopped",
             "lost",
-            "given up",
+            "failed",
             "left",
         ]
         rows = [
@@ -825,12 +825,12 @@ class Runner:
         counts = rounds[-1]["queue"]
         log.info(
             f"{counts['done']} of {sum(counts.values())} models done, "
-            f"{counts['failed']} given up, {counts['todo']} left to run; "
+            f"{counts['failed']} failed, {counts['todo']} left to run; "
             f"{self._cpu_hours():.1f} CPU-hours of Cloudy so far"
         )
 
     def _log_failures(self, failures, when=""):
-        """List (some of) the models given up on, with why."""
+        """List (some of) the models that failed every attempt, with why."""
         if not failures:
             return
         lines = [
@@ -843,8 +843,8 @@ class Runner:
                 "state.yaml)"
             )
         log.info(
-            f"Gave up on {len(failures)} models {when}".rstrip()
-            + " (last reason given):\n"
+            f"{len(failures)} models failed every attempt {when}".rstrip()
+            + " (with why the last failed):\n"
             + "\n".join(lines)
         )
 
@@ -862,7 +862,7 @@ class Runner:
             f"Done: {counts.get('done', 0)} of {sum(counts.values())} Cloudy "
             f"models in {_count(rounds, 'round')}{since}, "
             f"{self._cpu_hours():.1f} CPU-hours of Cloudy; "
-            f"{counts.get('failed', 0)} given up. The grid is "
+            f"{counts.get('failed', 0)} failed. The grid is "
             f"{state['grid']}"
         )
 

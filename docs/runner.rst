@@ -108,8 +108,8 @@ exited OK`` and it wrote ``.emergent_elin`` (and ``.intrinsic_elin`` when the
 grid stores intrinsic lines, and ``.refl`` for open geometries with spectra),
 each at least 100 bytes. The workers and the assembly use this same check.
 A model that fails goes straight back in the queue, to run again in the same
-round, until it has failed ``1 + Run.cloudy.max_retries`` times; then it is
-given up.
+round, until it has failed ``1 + Run.cloudy.max_retries`` times; then it has
+failed.
 
 A worker stops claiming models ``Run.cloudy.margin`` before its time limit,
 or earlier once the time left is under 1.5 times its longest Cloudy run so
@@ -122,7 +122,7 @@ model stopped by it counts as a failed attempt. A model whose worker died
 without stopping it (lost with its job, e.g. a node failure) is treated the
 same way by the finish job.
 
-Models given up on are marked ``1`` in the final grid's ``failures`` dataset,
+Models that failed every attempt are marked ``1`` in the final grid's ``failures`` dataset,
 with zeros in their spectra and lines, listed with why they last failed under
 ``failures`` in ``state.yaml``, and listed in
 ``<work_dir>/cloudy/<grid name>.failures``. Check this mask before using or
@@ -138,7 +138,7 @@ The work directory
      state.yaml          the run's state: the next stage and its job, the
                          incident grid, Cloudy directory and final grid,
                          every job (submitted, started, ended, outcome),
-                         every round's totals, and the models given up on
+                         every round's totals, and the models that failed
      models.json         every Cloudy model's state and attempts (worker,
                          result, why it failed, start time, run time)
      queue/
@@ -172,8 +172,8 @@ syncretize and synthesizer versions, the run config with every default, the
 incident model's parameters and the Cloudy parameters (fixed, and varied with
 the number of photoionisation models). Each stage then adds what it did: the
 incident grid and Cloudy inputs made, each round's workers and time limit, a
-table of the rounds so far after each round (done, failed, retried, stopped,
-lost, given up, left), Cloudy run times, the models given up on with why, and
+table of the rounds so far after each round (done, errors, retried, stopped,
+lost, failed, left), Cloudy run times, the models that failed with why, and
 finally the grid and the run's totals. A job that fails says so, with the
 ``resume`` command to carry on.
 
@@ -193,10 +193,12 @@ Watching a run
 
 shows a live view of a run that fills the terminal, redrawn every 2 seconds
 (``-n`` to change): progress with the rate and an ETA, the queue, the current
-round (workers running and queued, models finished, failed, retried and
-stopped, run times), the run's jobs, every round so far, the models given up
-on and the end of ``run.log``. Press ``f`` for a full-screen list of the models
-given up on, ``l`` for a full-screen ``run.log`` and ``q`` to quit; ``--once``
+round (workers running and queued, models finished, errors, retries and
+stops, run times), the run's jobs and how they ended, every round so far, the
+end of ``run.log``, the models that failed and the models running longest
+(those slow for the round in yellow, to spot one that hangs). Press ``f`` for
+a full-screen list of the failed models, ``l`` for a full-screen ``run.log``
+and ``q`` to quit; ``--once``
 prints the view once. With no argument it watches the run in the current
 directory. It only reads the run's files (and asks Slurm about its jobs every
 30 seconds), so it can be left running anywhere. ``syncretize`` also takes the

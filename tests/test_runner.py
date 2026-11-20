@@ -412,9 +412,9 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
     assert len(screen.splitlines()) == 40
     for text in (
         "189/192 done",
-        "Given up (3)",
+        "Failed models (3",
         "1_3",
-        "Round 1 has finished",
+        "grid_limited.hdf5",  # the end of run.log
     ):
         assert text in screen
 
