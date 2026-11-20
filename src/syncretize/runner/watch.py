@@ -44,6 +44,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, RichLog, Static
 
 from syncretize.runner.cloudy import iteration, model_path
+from syncretize.runner.perturb import is_perturbed
 from syncretize.runner.queue import STATES
 
 #: How often squeue is asked about the run's jobs (s)
@@ -373,11 +374,16 @@ def _duration(seconds):
 
 def _header(snapshot):
     state, counts = snapshot["state"], snapshot["counts"]
-    total = sum(counts.values())
-    done, failed = counts["done"], counts["failed"]
-    # Failed models interpolated from perturbed runs are filled, not failed
+    # Grid points, not runs: runs perturbed around failed models aren't
+    # points of the grid, and the failed models interpolated from them are
+    # filled, not failed
+    points = {
+        queue_state: sum(not is_perturbed(model) for model in names)
+        for queue_state, names in snapshot["names"].items()
+    }
+    total = sum(points.values())
     interpolated = len(state.get("interpolated") or [])
-    failed -= interpolated
+    done, failed = points["done"], points["failed"] - interpolated
     stage = state.get("next", "?")
     title = Text.assemble(
         (" syncretize ", "bold white on blue"),
@@ -399,7 +405,9 @@ def _header(snapshot):
     progress.add_column(ratio=1)
     progress.add_column(no_wrap=True)
     progress.add_row(
-        ProgressBar(total=max(total, 1), completed=done + failed),
+        ProgressBar(
+            total=max(total, 1), completed=done + failed + interpolated
+        ),
         f" {done}/{total} done ({100 * done / max(total, 1):.1f}%) · "
         f"{failed} failed"
         + (f" · {interpolated} interpolated" if interpolated else "")
