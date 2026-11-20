@@ -721,3 +721,12 @@ def test_failed_models_are_interpolated_from_perturbed_runs(
     assert "Perturbing 3 failed models" in run_log
     assert "1 interpolated from perturbed runs, 2 failed" in run_log
     assert sorted(runner._load_state()["failures"]) == ["2_5", "3_1"]
+    # The perturbed runs' rounds are the PerturbCloudy phase
+    state = runner._load_state()
+    assert [r.get("perturb", False) for r in state["rounds"]] == [
+        False,
+        True,
+        True,
+    ]
+    assert runner._job_name("work").endswith("-PerturbCloudy")
+    assert "[perturb]" in run_log

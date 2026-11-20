@@ -408,6 +408,9 @@ STAGE_BADGES = {
     "done": ("DONE", "bold black on green"),
 }
 
+#: The badge while failed models' perturbed runs are under way
+PERTURB_BADGE = ("PERTURBING (ROUND {round})", "bold black on bright_magenta")
+
 
 def _header(snapshot, width=118):
     """The header: the run and its stage, then its progress across the grid.
@@ -421,6 +424,8 @@ def _header(snapshot, width=118):
     done, failed = points["done"], points["failed"]
     stage = state.get("next", "?")
     label, style = STAGE_BADGES.get(stage, (stage.upper(), "bold reverse"))
+    if stage == "finish" and state.get("perturbing"):
+        label, style = PERTURB_BADGE
     label = label.format(round=state.get("round", "?"))
 
     left = Text.assemble(
@@ -551,7 +556,8 @@ def _round_table(snapshot):
     workers = [
         job
         for job in snapshot["slurm"].values()
-        if job["name"].endswith("-Cloudy")
+        # -Cloudy and -PerturbCloudy
+        if job["name"].endswith("Cloudy")
     ]
     if workers:
         running = sum(job["running"] for job in workers)
@@ -615,6 +621,7 @@ def _rounds(state, records, counts):
             (r for r in state.get("rounds", []) if r["round"] == current), {}
         )
         live = {"round": f"{current} ▸", "queue": counts}
+        live["perturb"] = state.get("perturbing", False)
         live["walltime"] = submitted.get("walltime", _limit(state))
         live["workers"] = submitted.get("workers", "here")
         for result in ("done", "failed", "stopped", "lost"):
@@ -833,7 +840,9 @@ def _round_rows(rounds):
             [
                 str(v)
                 for v in (
-                    r["round"],
+                    f"{r['round']} perturb"
+                    if r.get("perturb")
+                    else r["round"],
                     r.get("walltime", ""),
                     r.get("workers", "here"),
                     r.get("done", 0),
@@ -1025,6 +1034,7 @@ STAGE_COLOURS = {
     "resume": "magenta",
     "start": "bright_blue",
     "work": "cyan",
+    "perturb": "bright_magenta",
     "finish": "green",
     "assemble": "yellow",
 }

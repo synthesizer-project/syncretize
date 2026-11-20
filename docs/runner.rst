@@ -145,7 +145,10 @@ for the ionisation parameter; a side that fails is tried again twice as far
 out, up to ``max_steps`` times in all (default 3). Only pairs with
 both sides run are used: a model with none stays failed. Interpolated models
 are marked ``1`` in the final grid's ``interpolated`` dataset, and the plan
-and every run are kept in ``perturb.json`` beside the Cloudy inputs.
+and every run are kept in ``perturb.json`` beside the Cloudy inputs. These
+rounds are the run's perturbation phase: their workers are named
+``R<n>-<name>-PerturbCloudy``, and run.log, the rounds table and
+``syncretize watch`` mark them "perturb".
 
 Incident points too faint to ionise
 -----------------------------------
@@ -186,6 +189,8 @@ The work directory
 Jobs are named ``R<round>-<run name>-<kind>``, so they sort by round in
 ``squeue``, ``jobs/`` and ``logs/``: ``R0-<name>-Incident`` (the start job),
 ``R<n>-<name>-Cloudy`` (round n's workers, whose logs add ``_<task>``),
+``R<n>-<name>-PerturbCloudy`` (the workers running failed models' perturbed
+runs, see below),
 ``R<n>-<name>-Runner`` (round n's finish job) and ``R<n>-<name>-Assemble``.
 ``state.yaml`` and ``models.json`` are written only by the start, finish and
 assembly jobs, which never run at once, and each is replaced whole; the

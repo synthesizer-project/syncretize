@@ -72,6 +72,9 @@ JOB_KINDS = {
     "assemble": "Assemble",
 }
 
+#: The kind of the workers running perturbed models (see Runner._perturb)
+PERTURB_KIND = "PerturbCloudy"
+
 #: The most given-up models run.log lists after a round or the assembly
 LIST_FAILURES = 20
 
@@ -411,6 +414,8 @@ class Runner:
             "walltime": slurm_time(self._walltime()),
             "finished": _now(),
         }
+        if state.get("perturbing"):
+            summary["perturb"] = True
         for result in ("done", "failed", "stopped", "lost"):
             summary[result] = sum(r["result"] == result for r in records)
         summary["retried"] = sum(
@@ -487,6 +492,8 @@ class Runner:
             for run in runs:
                 models.setdefault(run, {"state": "todo", "attempts": []})
             self._save_models(models)
+            # Its rounds (until the assembly) are the PerturbCloudy phase
+            self._save_state(perturbing=True)
             points = {run.partition("p")[0] for run in runs}
             log.info(
                 f"Perturbing {_count(len(points), 'failed model')}: queued "
@@ -573,7 +580,8 @@ class Runner:
                 The finish job's ID.
         """
         settings = self.config.run["cloudy"]
-        round_ = self._load_state().get("round", 1)
+        state = self._load_state()
+        round_ = state.get("round", 1)
         walltime = slurm_time(self._walltime())
         todo = self.queue.counts()["todo"]
         # An empty queue still gets one, so its finish job runs
@@ -599,8 +607,9 @@ class Runner:
         )
         self._save_state(rounds=rounds)
         finish = self._submit_next("finish", after=array)
+        phase = " (perturbing)" if state.get("perturbing") else ""
         log.info(
-            f"Round {round_}: submitted {_count(workers, 'worker')} ("
+            f"Round {round_}{phase}: submitted {_count(workers, 'worker')} ("
             f"{settings['cores_per_worker']} cores each, time limit "
             f"{walltime}) as job {array}, then finish job {finish}; "
             f"{_count(todo, 'model')} to run"
@@ -657,7 +666,8 @@ class Runner:
             elif stage == "finish":
                 # Every local worker has stopped once work returns
                 if self.finish(lambda owner: False) == "work":
-                    set_stage("work")
+                    perturbing = self._load_state().get("perturbing")
+                    set_stage("perturb" if perturbing else "work")
                     self.work("local")
             elif stage == "assemble":
                 self.assemble()
@@ -887,7 +897,7 @@ class Runner:
         ]
         rows = [
             [
-                r["round"],
+                f"{r['round']} perturb" if r.get("perturb") else r["round"],
                 r.get("walltime", "-"),
                 r.get("workers", "here"),
                 # Rounds summarised by an earlier version may lack some
@@ -992,8 +1002,12 @@ class Runner:
 
     def _job_name(self, stage):
         """A stage's job name, e.g. "R2-bc03-Cloudy" (start is round 0)."""
-        round_ = 0 if stage == "start" else self._load_state().get("round", 1)
-        return f"R{round_}-{self.config.run['name']}-{JOB_KINDS[stage]}"
+        state = self._load_state()
+        round_ = 0 if stage == "start" else state.get("round", 1)
+        kind = JOB_KINDS[stage]
+        if stage == "work" and state.get("perturbing"):
+            kind = PERTURB_KIND
+        return f"R{round_}-{self.config.run['name']}-{kind}"
 
     def _details(self, stage):
         """The file a stage's scripts print to (see log.quiet)."""
