@@ -37,6 +37,8 @@ from syncretize.cloudy import (
     submission_scripts,
 )
 from syncretize.cloudy.utils import (
+    THRESHOLD_KEY,
+    below_ionising_threshold,
     get_cloudy_params,
     get_grid_props_cloudy,
     resolve_param_file,
@@ -437,6 +439,27 @@ def check_if_failed(
     return None
 
 
+def _below(below_threshold, incident_index_tuple):
+    """Whether an incident point is below the ionising luminosity threshold
+    (and so wasn't run through cloudy)."""
+    return below_threshold is not None and bool(
+        below_threshold[tuple(incident_index_tuple)]
+    )
+
+
+def _first_run(cloudy_dir, new_grid_name, incident_index_list, n_photo):
+    """The first model with a continuum (.cont), for the wavelength grid."""
+    for incident_index in range(len(incident_index_list)):
+        for photoionisation_index in range(n_photo):
+            path = (
+                f"{cloudy_dir}/{new_grid_name}/"
+                f"{incident_index}/{photoionisation_index}"
+            )
+            if os.path.exists(path + ".cont"):
+                return path
+    raise ValueError(f"No cloudy continuum in {cloudy_dir}/{new_grid_name}")
+
+
 def check_cloudy_runs(
     new_grid_name,
     cloudy_dir,
@@ -445,6 +468,7 @@ def check_cloudy_runs(
     extensions_to_check=["emergent_elin"],
     machine=None,
     cloudy_executable_path=None,
+    below_threshold=None,
 ):
     """
     Check that all the cloudy runs have run properly.
@@ -476,6 +500,10 @@ def check_cloudy_runs(
         for photoionisation_index, photoionisation_index_tuple in enumerate(
             photoionisation_index_list
         ):
+            # Points below the ionising threshold weren't run
+            if _below(below_threshold, incident_index_tuple):
+                continue
+
             # The model to check, including the full path
             model_to_check = (
                 f"{cloudy_dir}/{new_grid_name}/"
@@ -588,6 +616,7 @@ def add_spectra(
     incident_grid_file=None,
     extensions_to_check=["emergent_elin"],
     geometry=None,
+    below_threshold=None,
 ):
     """
     Open cloudy spectra and add them to the grid.
@@ -623,6 +652,10 @@ def add_spectra(
             List of file extensions checked to decide if a model failed.
         geometry (str)
             The Cloudy geometry of the runs.
+        below_threshold (ndarray of bool)
+            The incident points below the ionising luminosity threshold,
+            which weren't run: their incident light is transmitted as it is,
+            with no nebular emission (needs incident_grid_file).
     """
 
     # Always store the spectra add_lines relies on. reflected_incident is
@@ -644,7 +677,14 @@ def add_spectra(
 
     # Read first spectra from the first grid point to get length and
     # wavelength grid.
-    lam = cloudy.read_wavelength(f"{cloudy_dir}/{new_grid_name}/0/0")
+    lam = cloudy.read_wavelength(
+        _first_run(
+            cloudy_dir,
+            new_grid_name,
+            incident_index_list,
+            len(photoionisation_index_list),
+        )
+    )
 
     # Write the spectra names... for some reason (not sure why since .keys()
     # gives the same result)
@@ -673,7 +713,8 @@ def add_spectra(
     band = (lam > CHECK_BAND[0]) & (lam < CHECK_BAND[1])
     continuum_ratios = []
     input_spectra = None
-    if incident_grid_file is not None and band.any():
+    quiet = below_threshold is not None and below_threshold.any()
+    if incident_grid_file is not None and (band.any() or quiet):
         with h5py.File(incident_grid_file, "r") as incident_file:
             # Use the stored units (older grids without them are in
             # Angstrom and erg/s/Hz)
@@ -708,6 +749,14 @@ def add_spectra(
                 f"{cloudy_dir}/{new_grid_name}/"
                 f"{incident_index}/{photoionisation_index}"
             )
+
+            # Below the ionising threshold there is nothing to reprocess:
+            # the incident light is transmitted, with no nebular emission
+            if _below(below_threshold, incident_index_tuple):
+                incident = np.interp(lam, input_lam, input_lnu)
+                spectra["incident"][indices] = incident
+                spectra["transmitted"][indices] = incident
+                continue
 
             # Check to see if the model failed or not
             failed = check_if_failed(
@@ -830,6 +879,7 @@ def add_lines(
     line_type="linelist",
     include_intrinsic=False,
     extensions_to_check=["emergent_elin"],
+    below_threshold=None,
 ):
     """
     Open cloudy lines and add them to the HDF5 grid
@@ -860,6 +910,8 @@ def add_lines(
             lines/luminosity_intrinsic.
         extensions_to_check (list)
             List of file extensions checked to decide if a model failed.
+        below_threshold (ndarray of bool)
+            The incident points below the ionising luminosity threshold.
     """
 
     if spectra is not None:
@@ -952,6 +1004,10 @@ def add_lines(
     # Array for recording cloudy failures
     failures = np.zeros(new_shape)
 
+    # Points below the ionising threshold, filled once the line wavelengths
+    # are known
+    quiet_points = []
+
     # Loop over incident models and photoionisation models
     for incident_index, incident_index_tuple in enumerate(incident_index_list):
         for photoionisation_index, photoionisation_index_tuple in enumerate(
@@ -967,6 +1023,10 @@ def add_lines(
                 f"{cloudy_dir}/{new_grid_name}/"
                 f"{incident_index}/{photoionisation_index}"
             )
+
+            if _below(below_threshold, incident_index_tuple):
+                quiet_points.append(indices)
+                continue
 
             # Check to see if the model failed or not
             failed = check_if_failed(
@@ -1069,6 +1129,20 @@ def add_lines(
             f"(checked extensions: {', '.join(extensions_to_check)}); "
             "cannot build the lines grid."
         )
+
+    # Below the ionising threshold there are no lines, and the continua are
+    # the (transmitted) incident light's
+    for indices in quiet_points:
+        lines["luminosity"][indices] = 0.0
+        if include_intrinsic:
+            lines["luminosity_intrinsic"][indices] = 0.0
+        if calculate_continuum:
+            for continuum_quantity in continuum_quantities:
+                lines[continuum_quantity][indices] = np.interp(
+                    lines["wavelength"],
+                    lam,
+                    spectra_[continuum_quantity][indices],
+                )
 
     # Apply units to the wavelength
     lines["wavelength"] *= Angstrom
@@ -1277,6 +1351,11 @@ def create_synthesizer_grid(
         include_spectra, include_intrinsic_lines, geometry
     )
 
+    # Incident points with too few ionising photons weren't run
+    below_threshold = below_ionising_threshold(
+        incident_grid.grid_filename,
+        fixed_photoionisation_params.get(THRESHOLD_KEY),
+    )
     # Check cloudy runs and potentially replace them by the nearest grid point
     # if they fail.
     check_cloudy_runs(
@@ -1287,6 +1366,7 @@ def create_synthesizer_grid(
         extensions_to_check=extensions_to_check,
         machine=machine,
         cloudy_executable_path=cloudy_executable_path,
+        below_threshold=below_threshold,
     )
 
     # Even if a grid point has failed the code will now still create a grid,
@@ -1307,6 +1387,7 @@ def create_synthesizer_grid(
             incident_grid_file=incident_grid.grid_filename,
             extensions_to_check=extensions_to_check,
             geometry=geometry,
+            below_threshold=below_threshold,
         )
         print("Added spectra")
         print(spectra.keys())
@@ -1327,8 +1408,25 @@ def create_synthesizer_grid(
         line_type="linelist",
         include_intrinsic=include_intrinsic_lines,
         extensions_to_check=extensions_to_check,
+        below_threshold=below_threshold,
     )
     print("Added lines")
+
+    # Mark the points below the ionising threshold, over every
+    # photoionisation point
+    extra = len(new_shape) - below_threshold.ndim
+    new_grid.write_dataset(
+        "below_threshold",
+        np.broadcast_to(
+            below_threshold.reshape(below_threshold.shape + (1,) * extra),
+            new_shape,
+        ).astype(float)
+        * dimensionless,
+        "1 where the incident ionising luminosity is below the "
+        f"threshold ({THRESHOLD_KEY}), so cloudy wasn't run",
+        False,
+        verbose=False,
+    )
 
     return new_grid.filepath
 

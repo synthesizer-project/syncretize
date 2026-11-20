@@ -342,6 +342,12 @@ Keys
    * - ``output_cont``, ``output_linelist``, ``iterate_to_convergence``
      - Save the continuum; the line list to save (a bundled name such as
        ``linelist-standard.dat`` or a path); iterate until converged.
+   * - ``ionising_luminosity_threshold``
+     - The lowest log10 specific ionising luminosity of HI (as in the
+       incident grid's ``log10_specific_ionising_luminosity/HI``) run through
+       Cloudy. Points below it get no Cloudy runs: their incident light is
+       transmitted unchanged, with no nebular emission or lines, and the
+       grid's ``below_threshold`` mask marks them. Blank or absent for none.
 
 ``cosmic_rays``, ``CMB``, ``constant_density`` and ``constant_pressure`` are
 on/off options: set them to ``true`` to add their Cloudy command, and to

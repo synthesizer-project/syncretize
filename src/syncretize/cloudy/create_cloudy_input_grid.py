@@ -19,6 +19,8 @@ from synthesizer.grid import Grid
 import syncretize.cloudy.submission_scripts as submission_scripts
 from syncretize.cloudy import cloudy17, cloudy23, cloudy25
 from syncretize.cloudy.utils import (
+    THRESHOLD_KEY,
+    below_ionising_threshold,
     get_cloudy_params,
     get_grid_props_cloudy,
     resolve_linelist,
@@ -428,6 +430,22 @@ def create_cloudy_inputs(
     with open(f"{output_directory}/grid_parameters.yaml", "w") as file:
         yaml.dump(parameters_to_save, file, default_flow_style=False)
 
+    # Incident points with too few ionising photons get no Cloudy inputs
+    below_threshold = below_ionising_threshold(
+        incident_grid.grid_filename,
+        fixed_photoionisation_params.get(THRESHOLD_KEY),
+    )
+    skipped = [
+        i
+        for i, index in enumerate(incident_index_list)
+        if below_threshold[tuple(index)]
+    ]
+    if skipped:
+        print(
+            f"{len(skipped)} incident points are below the ionising "
+            f"luminosity threshold ({THRESHOLD_KEY}), so get no Cloudy inputs"
+        )
+
     # Save each model's grid point: incident point <i> and photoionisation
     # point <j> of the inputs <i>/<j>.in, by index and value
     if len(variable_photoionisation_params) > 0:
@@ -447,6 +465,8 @@ def create_cloudy_inputs(
                     "values": np.asarray(incident_model_list).tolist(),
                 },
                 "photoionisation": photoionisation_points,
+                # Incident points below the ionising luminosity threshold
+                "below_threshold": skipped,
             },
             file,
         )
@@ -534,6 +554,11 @@ def create_cloudy_inputs(
             resolve_linelist("linelist.dat"),
             f"{output_directory}/{incident_index}/linelist.dat",
         )
+
+        # Below the ionising luminosity threshold there's nothing for Cloudy
+        # to do (and it may fail), so the point gets no inputs
+        if below_threshold[tuple(incident_index_tuple)]:
+            continue
 
         # If the reference ionionisation parameter model is used we want
         # to calculate the difference between the specific ionising photon

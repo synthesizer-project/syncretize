@@ -267,9 +267,15 @@ class Runner:
                 cloudy["config"],
                 cloudy["extra_config"],
             )
+        cloudy_dir = self._path("cloudy", name)
+        # Incident points below the ionising luminosity threshold get no
+        # Cloudy runs
+        with open(os.path.join(cloudy_dir, "grid_points.json")) as file:
+            below = set(json.load(file).get("below_threshold", []))
         models = [
             f"{i}_{j}"
             for i in range(n_incident)
+            if i not in below
             for j in range(n_photoionisation)
         ]
         self.queue.add(models)
@@ -277,9 +283,9 @@ class Runner:
         for model in models:
             records.setdefault(model, {"state": "todo", "attempts": []})
         self._save_models(records)
-        cloudy_dir = self._path("cloudy", name)
         counts = self.queue.counts()
         self._save_state(
+            below_threshold=int(len(below) * n_photoionisation),
             cloudy_dir=cloudy_dir,
             round=self._load_state().get("round", 1),
             models=counts,
@@ -289,6 +295,12 @@ class Runner:
             f"points x {n_photoionisation} photoionisation models) to "
             f"{cloudy_dir} in {took(start)}"
         )
+        if below:
+            log.info(
+                f"{_count(len(below), 'incident point')} "
+                f"({len(below) * n_photoionisation} models) are below the "
+                "ionising luminosity threshold, so aren't run"
+            )
         if counts["todo"] < len(models):
             log.info(
                 f"Kept the earlier state of {len(models) - counts['todo']}"

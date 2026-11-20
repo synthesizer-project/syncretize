@@ -169,6 +169,11 @@ if __name__ == "__main__":
             f"{output_directory}/{incident_index}/{photoionisation_index}.in"
         )
 
+        # Points below the ionising luminosity threshold have no inputs
+        if not os.path.exists(input_file):
+            print(f"No {input_file} (below the ionising threshold?); skipped")
+            continue
+
         # Define the cloudy executable path
         cloudy_executable = (
             f"{args.cloudy_executable_path}/{parameters['cloudy_version']}"

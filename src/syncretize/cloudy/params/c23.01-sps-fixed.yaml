@@ -44,3 +44,4 @@ resolution: 1.0 # energy resolution relative to the default
 output_cont: true
 output_linelist: linelist-standard.dat
 iterate_to_convergence: true
+ionising_luminosity_threshold: 37 # skip incident points below this log10 specific ionising luminosity of HI (s^-1 per Msun formed)

@@ -314,14 +314,21 @@ if behaviour != "no_lines":
 """
 
 
-def cloudy_run(tmp_path, monkeypatch, behaviours, **cloudy):
-    """A Runner set up to run the fake Cloudy on the fake incident grid."""
+def cloudy_run(tmp_path, monkeypatch, behaviours, extra=None, **cloudy):
+    """A Runner set up to run the fake Cloudy on the fake incident grid.
+
+    extra holds Cloudy parameters to add, as an extra_config.
+    """
     exe = tmp_path / "cloudy" / "source" / "cloudy.exe"
     exe.parent.mkdir(parents=True)
     exe.write_text(FAKE_CLOUDY)
     exe.chmod(0o755)
     monkeypatch.setenv("FAKE_CLOUDY", json.dumps(behaviours))
     grid = fake_incident_grid(tmp_path)
+    extra_config = None
+    if extra is not None:
+        extra_config = str(tmp_path / "extra.yaml")
+        Path(extra_config).write_text(yaml.safe_dump(extra))
     runner = Runner(
         write_run(
             tmp_path,
@@ -334,6 +341,7 @@ def cloudy_run(tmp_path, monkeypatch, behaviours, **cloudy):
             Incident={"grid": grid},
             Cloudy={
                 "config": "c23.01-sps-grid_limited",
+                "extra_config": extra_config,
                 "executable": str(exe.parents[1]),
             },
         )
@@ -613,3 +621,43 @@ def check_watch(work_dir):
             await pilot.press("q")
 
     asyncio.run(drive())
+
+
+def test_points_below_the_ionising_threshold_arent_run(tmp_path, monkeypatch):
+    # A threshold between the fake grid's lowest and highest log10 Q(HI)
+    (tmp_path / "probe").mkdir()
+    grid = fake_incident_grid(tmp_path / "probe")
+    with h5py.File(grid) as hdf:
+        log10_q = hdf["log10_specific_ionising_luminosity/HI"][()]
+    threshold = float(np.mean([log10_q.min(), log10_q.max()]))
+    below = log10_q < threshold
+    assert 0 < below.sum() < below.size
+
+    runner, queue = cloudy_run(
+        tmp_path,
+        monkeypatch,
+        {},
+        extra={"ionising_luminosity_threshold": threshold},
+    )
+    grid = runner.run(local=True)
+
+    # Only the points above it were run
+    assert sum(queue.counts().values()) == (~below).sum() * 48
+    with h5py.File(grid) as hdf:
+        mask = hdf["below_threshold"][()]
+        assert mask.sum() == below.sum() * 48
+        assert hdf["failures"][()].sum() == 0
+        quiet = mask.astype(bool)
+        # their light passes through, with no nebular emission or lines
+        np.testing.assert_array_equal(
+            hdf["spectra/transmitted"][()][quiet],
+            hdf["spectra/incident"][()][quiet],
+        )
+        assert hdf["spectra/incident"][()][quiet].max() > 0
+        assert not hdf["spectra/nebular"][()][quiet].any()
+        assert not hdf["lines/luminosity"][()][quiet].any()
+        assert hdf["lines/luminosity"][()][~quiet].all()
+    assert (
+        "below the ionising luminosity threshold"
+        in (tmp_path / "work" / "run.log").read_text()
+    )

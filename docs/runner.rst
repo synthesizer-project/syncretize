@@ -128,6 +128,15 @@ with zeros in their spectra and lines, listed with why they last failed under
 ``<work_dir>/cloudy/<grid name>.failures``. Check this mask before using or
 publishing a grid.
 
+Incident points too faint to ionise
+-----------------------------------
+
+Setting ``ionising_luminosity_threshold`` in the Cloudy config (the lowest
+log10 specific ionising luminosity of HI to run, e.g. 37) skips the incident
+points below it: Cloudy has nothing to do there and can fail. Their incident
+light is transmitted unchanged, with no nebular emission or lines, and the
+final grid's ``below_threshold`` dataset marks them.
+
 The work directory
 ------------------
 

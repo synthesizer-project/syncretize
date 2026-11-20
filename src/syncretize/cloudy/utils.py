@@ -179,3 +179,35 @@ def get_grid_props_cloudy(axes, axes_values, verbose=True):
         print(index_list)
 
     return n_axes, shape, n_models, mesh, model_list, index_list
+
+
+#: The Cloudy config key of the ionising luminosity threshold
+THRESHOLD_KEY = "ionising_luminosity_threshold"
+
+
+def below_ionising_threshold(incident_grid_file, threshold):
+    """Which incident points have too few ionising photons to run Cloudy on.
+
+    Cloudy can fail on (and has nothing to do for) an incident spectrum with
+    almost no ionising photons, so points whose log10 specific ionising
+    luminosity of HI is below the threshold aren't run.
+
+    Args:
+        incident_grid_file (str)
+            The incident grid.
+        threshold (float)
+            The lowest log10_specific_ionising_luminosity/HI run (the Cloudy
+            config's ionising_luminosity_threshold), or None for none.
+
+    Returns:
+        numpy.ndarray of bool
+            True at each incident grid point below the threshold.
+    """
+    import h5py
+
+    with h5py.File(incident_grid_file, "r") as hf:
+        log10_q = hf["log10_specific_ionising_luminosity/HI"][...]
+    if threshold is None:
+        return np.zeros(log10_q.shape, dtype=bool)
+    # A point with no ionising photons at all is -inf (or NaN)
+    return ~(log10_q >= float(threshold))
