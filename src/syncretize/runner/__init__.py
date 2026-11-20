@@ -6,12 +6,14 @@ See ``parameter_files/runs/run_template.yaml`` for the run config.
 """
 
 import os
+import time
 
 import yaml
 
 from syncretize.cloudy.create_cloudy_input_grid import create_cloudy_inputs
 from syncretize.incident.builder import build_grid
-from syncretize.runner.config import incident_module, load_run
+from syncretize.runner.cloudy import work
+from syncretize.runner.config import incident_module, load_run, seconds
 from syncretize.runner.queue import Queue
 
 
@@ -77,15 +79,49 @@ class Runner:
         self._save_state(incident_grid=incident_grid, cloudy_dir=cloudy_dir)
         return cloudy_dir
 
+    def work(self, job, walltime=None):
+        """Run Cloudy models from the queue, as one worker.
+
+        Args:
+            job (str)
+                The worker's name, e.g. its Slurm job ID.
+            walltime (str)
+                The worker's time limit; it starts no model within
+                ``Run.cloudy.margin`` of it. None runs until the queue is
+                empty.
+        """
+        cloudy, settings = self.config.cloudy, self.config.run["cloudy"]
+        deadline = None
+        if walltime is not None:
+            deadline = (
+                time.monotonic()
+                + seconds(walltime)
+                - seconds(settings["margin"])
+            )
+        work(
+            os.path.join(self.config.run["work_dir"], "queue"),
+            self._load_state()["cloudy_dir"],
+            cloudy["executable"],
+            job,
+            slots=settings["cores_per_worker"],
+            claim=settings["claim"],
+            deadline=deadline,
+        )
+
+    def _load_state(self):
+        """The run's state file, <work_dir>/state.yaml, as a dict."""
+        path = os.path.join(self.config.run["work_dir"], "state.yaml")
+        if not os.path.exists(path):
+            return {}
+        with open(path) as file:
+            return yaml.safe_load(file) or {}
+
     def _save_state(self, **values):
         """Add values to the run's state file, <work_dir>/state.yaml."""
+        state = self._load_state() | values
         path = os.path.join(self.config.run["work_dir"], "state.yaml")
-        state = {}
-        if os.path.exists(path):
-            with open(path) as file:
-                state = yaml.safe_load(file) or {}
         with open(path, "w") as file:
-            yaml.safe_dump(state | values, file)
+            yaml.safe_dump(state, file)
 
     def run(self, local=False):
         """Run every stage.
@@ -102,4 +138,5 @@ class Runner:
         if self.config.cloudy is None:
             return
         self.cloudy_setup(incident_grid)
-        raise NotImplementedError("The Cloudy workers aren't written yet")
+        self.work("local")
+        raise NotImplementedError("The finish stage isn't written yet")

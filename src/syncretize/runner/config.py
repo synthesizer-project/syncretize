@@ -13,6 +13,7 @@ See ``parameter_files/runs/run_template.yaml`` for every key.
 
 import importlib
 import os
+import re
 from types import SimpleNamespace
 
 import yaml
@@ -60,6 +61,13 @@ POSITIVE_INTEGERS = {
     "incident": ["cores"],
     "cloudy": ["workers", "cores_per_worker", "claim"],
     "assemble": ["cores"],
+}
+
+#: Keys that are Slurm time limits
+WALLTIMES = {
+    "incident": ["walltime"],
+    "cloudy": ["walltime", "max_walltime", "margin"],
+    "assemble": ["walltime"],
 }
 
 #: Paths resolved against the run config's directory when relative
@@ -112,6 +120,12 @@ def load_run(run_file):
                     f"{run_file}: Run.{group}.{key} must be a whole number "
                     f"of at least 1, got {value!r}"
                 )
+    for group, keys in WALLTIMES.items():
+        for key in keys:
+            try:
+                seconds(run[group][key])
+            except ValueError as error:
+                raise ValueError(f"{run_file}: Run.{group}.{key}: {error}")
     growth = run["cloudy"]["walltime_growth"]
     if not isinstance(growth, (int, float)) or growth < 1:
         raise ValueError(
@@ -189,6 +203,21 @@ def incident_module(model):
             f"Incident.model {model!r} has no setup and generate_point"
         )
     return module
+
+
+def seconds(walltime):
+    """A Slurm time limit, "[D-]HH:MM:SS", in seconds.
+
+    YAML reads an unquoted 12:00:00 as the number 43200 (base 60), so a
+    whole number is taken as seconds already.
+    """
+    if isinstance(walltime, int) and not isinstance(walltime, bool):
+        return walltime
+    match = re.fullmatch(r"(?:(\d+)-)?(\d+):(\d\d):(\d\d)", str(walltime))
+    if match is None:
+        raise ValueError(f"{walltime!r} isn't a time like [D-]HH:MM:SS")
+    days, hours, minutes, secs = (int(x or 0) for x in match.groups())
+    return ((days * 24 + hours) * 60 + minutes) * 60 + secs
 
 
 def _fill(run_file, section, values, defaults, prefix=""):
