@@ -134,8 +134,8 @@ Selection behavior is:
      - Explicit pairs, normally generated when retrying failures.
 
 ``run_cloudy.py`` does not stop on a non-zero Cloudy exit status. Inspect job
-logs before collection. Every attempted model must have a readable ``.out``
-file; the collector can crash while reporting a model that never produced one.
+logs before collection. A model with no ``.out`` file (one that never ran) is
+recorded as a failure.
 
 3. Assemble the final grid
 --------------------------
@@ -173,8 +173,8 @@ Failures
 The collector treats a sufficiently large ``.emergent_elin`` file as a
 successful model. Failed models with readable output are marked ``1`` in the
 ``failures`` dataset and their cells remain zero. Failed index pairs are also
-written to a ``.failures`` file for resubmission. Models missing ``.out`` must
-be rerun before collection.
+written to a ``.failures`` file for resubmission, including models missing
+``.out``.
 
 Do not publish a grid without checking this mask. A completed HDF5 write does
 not mean every Cloudy model succeeded.

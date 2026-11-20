@@ -433,10 +433,14 @@ def check_cloudy_runs(
                     f"{incident_index}/{photoionisation_index}.out"
                 )
 
-                # Grab the final line of
-                with open(outfile, "r") as file:
-                    lines = file.readlines()
-                    last_line = lines[-1].strip()
+                # Grab the final line of the out file (a run stopped before
+                # cloudy started, e.g. at a time limit, may have none)
+                if os.path.isfile(outfile):
+                    with open(outfile, "r") as file:
+                        lines = file.readlines()
+                    last_line = lines[-1].strip() if lines else "(empty .out)"
+                else:
+                    last_line = "(no .out)"
 
                 # Append the incident and photoionisation index to an array
                 failed_list.append([incident_index, photoionisation_index])

@@ -255,7 +255,8 @@ FAKE_CLOUDY = f"""#!{sys.executable}
 # A stand-in for cloudy.exe -r <j>, run in <cloudy_dir>/<i>. FAKE_CLOUDY maps
 # a model "<i>_<j>" (or "*", every model) to what it does: "fail" (exit with
 # an error), "fail_once" (fail the first run only), "no_lines" (exit OK
-# without lines) or "sleep" (take 0.5 s).
+# without lines), "no_output" (stop before writing anything, as when killed
+# early) or "sleep" (take 0.5 s).
 import json, os, sys, time
 j = sys.argv[2]
 model = os.path.basename(os.getcwd()) + "_" + j
@@ -263,6 +264,8 @@ behaviours = json.loads(os.environ.get("FAKE_CLOUDY", "{{}}"))
 behaviour = behaviours.get(model, behaviours.get("*"))
 if behaviour == "sleep":
     time.sleep(0.5)
+if behaviour == "no_output":
+    sys.exit(1)
 if behaviour == "fail_once":
     behaviour = "ok" if os.path.exists(j + ".out") else "fail"
 with open(j + ".out", "w") as file:
@@ -323,7 +326,12 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
     runner, queue = cloudy_run(
         tmp_path,
         monkeypatch,
-        {"1_3": "fail", "2_5": "no_lines", "0_9": "fail_once"},
+        {
+            "1_3": "fail",
+            "2_5": "no_lines",
+            "0_9": "fail_once",
+            "3_1": "no_output",
+        },
     )
     grid = runner.run(local=True)
 
@@ -332,11 +340,11 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
     assert queue.counts() == {
         "todo": 0,
         "claimed": 0,
-        "done": 4 * 48 - 2,
-        "failed": 2,
+        "done": 4 * 48 - 3,
+        "failed": 3,
     }
     failed = tmp_path / "work" / "queue" / "failed"
-    assert sorted(os.listdir(failed)) == ["1_3", "2_5"]
+    assert sorted(os.listdir(failed)) == ["1_3", "2_5", "3_1"]
     assert (failed / "1_3").read_text() == "3"
     assert runner._load_state()["round"] == 3
     cloudy_dir = runner._load_state()["cloudy_dir"]
@@ -356,10 +364,10 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
     assert loaded.spectra["nebular"].max() > 0
     with h5py.File(grid, "r") as hdf:
         failures = hdf["failures"][()]
-        assert failures.sum() == 2
-        # One each at incident points 1 and 2 (the photoionisation index
+        assert failures.sum() == 3
+        # One each at incident points 1, 2 and 3 (the photoionisation index
         # isn't in C order, so isn't checked)
-        assert list(failures.reshape(4, 48).sum(axis=1)) == [0, 1, 1, 0]
+        assert list(failures.reshape(4, 48).sum(axis=1)) == [0, 1, 1, 1]
         assert hdf["RunConfig/Cloudy"].attrs["include_spectra"]
         assert "fake-sps" in hdf["RunConfig/contents"][()].decode()
 
