@@ -104,8 +104,13 @@ class Queue:
             self._path("done", model),
         )
 
-    def fail(self, model, owner):
+    def fail(self, model, owner, max_retries=None):
         """Record that owner's run of model failed.
+
+        Args:
+            max_retries (int)
+                Put the model straight back in todo if it has failed at most
+                this many times; None (or more failures) leaves it in failed.
 
         Returns:
             int
@@ -115,8 +120,16 @@ class Queue:
         attempts = _attempts(claim) + 1
         with open(claim, "w") as file:
             file.write(str(attempts))
-        os.rename(claim, self._path("failed", model))
+        retry = max_retries is not None and attempts <= max_retries
+        os.rename(claim, self._path("todo" if retry else "failed", model))
         return attempts
+
+    def release(self, model, owner):
+        """Put a model owner stopped back in todo, without an attempt."""
+        os.rename(
+            self._path("claimed", f"{model}@{owner}"),
+            self._path("todo", model),
+        )
 
     def requeue_failed(self, max_retries):
         """Put failed models that can still be retried back in todo.

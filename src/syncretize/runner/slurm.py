@@ -126,6 +126,11 @@ def is_running():
     return check
 
 
+def job_running(job):
+    """Whether a job (or any task of an array job) is queued or running."""
+    return bool(_running_tasks(job))
+
+
 def _running_tasks(array):
     """The tasks of an array job that may still be running."""
     result = subprocess.run(

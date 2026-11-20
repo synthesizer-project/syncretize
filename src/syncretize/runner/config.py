@@ -34,7 +34,7 @@ RUN_DEFAULTS = {
     "slurm": {"partition": None, "account": None},
     "incident": {"cores": 1, "walltime": "12:00:00", "memory": None},
     "cloudy": {
-        "workers": 100,
+        "workers": 250,
         "cores_per_worker": 4,
         "walltime": "12:00:00",
         "walltime_growth": 1.5,
@@ -57,6 +57,9 @@ CLOUDY_DEFAULTS = {
     "include_spectra": True,
     "include_intrinsic_lines": False,
 }
+
+#: How long before a worker's time limit it stops the Cloudy runs left
+STOP_BEFORE = "00:02:00"
 
 #: Keys that must be whole numbers of at least one
 POSITIVE_INTEGERS = {
@@ -137,6 +140,11 @@ def load_run(run_file):
     if seconds(run["cloudy"]["margin"]) >= seconds(run["cloudy"]["walltime"]):
         raise ValueError(
             f"{run_file}: Run.cloudy.margin leaves the workers no time"
+        )
+    if seconds(run["cloudy"]["margin"]) <= seconds(STOP_BEFORE):
+        raise ValueError(
+            f"{run_file}: Run.cloudy.margin must be longer than "
+            f"{STOP_BEFORE}, when the workers stop the Cloudy runs left"
         )
     growth = run["cloudy"]["walltime_growth"]
     if not isinstance(growth, (int, float)) or growth < 1:

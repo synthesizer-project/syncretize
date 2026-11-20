@@ -9,8 +9,8 @@ from test_runner import ROOT, cloudy_run, write_run
 
 from syncretize.runner import Runner
 
-# sbatch prints job IDs 1, 2, ... and keeps each script as <id>.sh; sacct
-# prints $FAKE_SACCT
+# sbatch prints job IDs 1, 2, ... and keeps each script as <id>.sh; sacct -j
+# <id> prints the lines of $FAKE_SACCT for that job
 SBATCH = f"""#!{sys.executable}
 import os, shutil, sys
 directory = os.environ["FAKE_SLURM_DIR"]
@@ -19,8 +19,10 @@ shutil.copy(sys.argv[-1], os.path.join(directory, f"{{job + 1}}.sh"))
 print(f"{{job + 1}};cosma")
 """
 SACCT = f"""#!{sys.executable}
-import os
-print(os.environ.get("FAKE_SACCT", ""))
+import os, sys
+for line in os.environ.get("FAKE_SACCT", "").splitlines():
+    if line.split("|")[0].split("_")[0] == sys.argv[-1]:
+        print(line)
 """
 
 SLURM = {"partition": "cosma8-serial", "account": "dp004"}
@@ -151,3 +153,41 @@ def test_worker_names_its_claims_after_its_array_task(tmp_path, monkeypatch):
     )
     assert queue.counts()["done"] == 4 * 48
     assert "7_2.0 " in result.stdout
+
+
+def test_resume_resubmits_a_stopped_job(tmp_path, monkeypatch, jobs):
+    runner = Runner(write_run(tmp_path))
+    assert runner.run() == "1"
+    with pytest.raises(ValueError, match="use resume"):
+        runner.run()
+
+    # Nothing while the start job is queued or running
+    monkeypatch.setenv("FAKE_SACCT", "1|PENDING")
+    assert runner.resume() is None
+
+    # The start job records itself in the state file, and how it ended
+    monkeypatch.setenv("SLURM_JOB_ID", "1")
+    runner.job_started("start")
+    runner.job_ended("start", "failed: OSError()")
+    (entry,) = runner._load_state()["jobs"]
+    assert (
+        entry["stage"] == "start" and entry["outcome"] == "failed: OSError()"
+    )
+    assert {"submitted", "started", "ended"} <= set(entry)
+
+    # Once it has stopped, resume submits it again
+    monkeypatch.setenv("FAKE_SACCT", "1|FAILED")
+    assert runner.resume() == "2"
+    assert jobs(2)[-1].endswith(f"start {tmp_path / 'run.yaml'}")
+    assert runner._load_state()["next_job"] == "2"
+
+
+def test_resume_finishes_a_round_after_its_workers(
+    tmp_path, monkeypatch, jobs
+):
+    runner, queue = submitted_round(tmp_path, monkeypatch, jobs)
+    # The finish job (2) was cancelled while the workers (1) still run
+    monkeypatch.setenv("FAKE_SACCT", "1_0|RUNNING\n2|CANCELLED by 5")
+    assert runner.resume() == "3"
+    assert "#SBATCH --dependency=afterany:1" in jobs(3)
+    assert jobs(3)[-1].endswith(f"finish {tmp_path / 'run.yaml'}")

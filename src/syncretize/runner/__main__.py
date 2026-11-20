@@ -15,18 +15,28 @@ def main():
     )
     parser.add_argument(
         "stage",
-        choices=["run", "incident", "start", "work", "finish", "assemble"],
+        choices=[
+            "run",
+            "resume",
+            "incident",
+            "start",
+            "work",
+            "finish",
+            "assemble",
+        ],
         help="run: every stage (submits the start job, or runs here with "
-        "--local); incident: only the incident grid, here. The Slurm jobs "
-        "run start (incident grid, Cloudy inputs, first round), work (one "
-        "Cloudy worker), finish (tidy the queue, submit the next job) and "
-        "assemble (the final grid)",
+        "--local); resume: carry on a stopped run from its next stage; "
+        "incident: only the incident grid, here. The Slurm jobs run start "
+        "(incident grid, Cloudy inputs, first round), work (one Cloudy "
+        "worker), finish (tidy the queue, submit the next job) and assemble "
+        "(the final grid)",
     )
     parser.add_argument("run_file", help="The run config")
     parser.add_argument(
         "--local",
         action="store_true",
-        help="Run every stage in this process instead of submitting jobs",
+        help="run, resume: run the stages in this process instead of "
+        "submitting jobs",
     )
     parser.add_argument(
         "--walltime",
@@ -36,9 +46,10 @@ def main():
     args = parser.parse_args()
 
     runner = Runner(args.run_file)
-    if args.stage == "run":
-        result = runner.run(local=args.local)
-        print(result if args.local else f"Submitted the start job {result}")
+    if args.stage in ("run", "resume"):
+        result = getattr(runner, args.stage)(local=args.local)
+        if result is not None:
+            print(result if args.local else f"Submitted job {result}")
     elif args.stage == "work":
         # An array task is "<array job>_<task>" to sacct
         task = os.environ.get("SLURM_ARRAY_TASK_ID")
@@ -48,10 +59,23 @@ def main():
             else "local"
         )
         runner.work(job, walltime=args.walltime)
-    elif args.stage == "finish":
-        runner.continue_run()
+    elif args.stage == "incident":
+        runner.incident()
     else:
-        getattr(runner, args.stage)()
+        # The start, finish and assemble jobs record when they ran and how
+        # they ended in the state file
+        method = {
+            "start": runner.start,
+            "finish": runner.continue_run,
+            "assemble": runner.assemble,
+        }[args.stage]
+        runner.job_started(args.stage)
+        try:
+            method()
+        except BaseException as error:
+            runner.job_ended(args.stage, f"failed: {error!r}")
+            raise
+        runner.job_ended(args.stage, "completed")
 
 
 # Guarded, since the incident builder's spawned processes import this module

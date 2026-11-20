@@ -104,18 +104,25 @@ Failures and time limits
 ------------------------
 
 A Cloudy model counts as done when its ``.out`` file ends with ``Cloudy
-exited OK`` and its ``.emergent_elin`` file holds at least 100 bytes.
-Otherwise it has failed, and the finish job puts it back in the queue until it
-has failed ``1 + Run.cloudy.max_retries`` times.
+exited OK`` and it wrote ``.emergent_elin`` (and ``.intrinsic_elin`` when the
+grid stores intrinsic lines, and ``.refl`` for open geometries with spectra),
+each at least 100 bytes. The workers and the assembly use this same check.
+A model that fails goes straight back in the queue, to run again in the same
+round, until it has failed ``1 + Run.cloudy.max_retries`` times; then it is
+given up.
 
-A model still running when its worker hits the time limit hasn't failed: the
-finish job puts it back without counting an attempt, and the next round's
-time limit is ``Run.cloudy.walltime_growth`` times longer, up to
-``Run.cloudy.max_walltime``. Once the limit can't grow, a model stopped by it
-counts as a failed attempt.
+A worker stops claiming models ``Run.cloudy.margin`` before its time limit,
+and stops the Cloudy runs still going 2 minutes before it. A model stopped
+like this hasn't failed: it goes back in the queue without counting an
+attempt, and the next round's time limit is ``Run.cloudy.walltime_growth``
+times longer, up to ``Run.cloudy.max_walltime``. Once the limit can't grow, a
+model stopped by it counts as a failed attempt. A model whose worker died
+without stopping it (lost with its job, e.g. a node failure) is treated the
+same way by the finish job.
 
-Models that failed every attempt are marked ``1`` in the final grid's
-``failures`` dataset, with zeros in their spectra and lines, and listed in
+Models given up on are marked ``1`` in the final grid's ``failures`` dataset,
+with zeros in their spectra and lines, listed with why they last failed under
+``failures`` in ``state.yaml``, and listed in
 ``<work_dir>/cloudy/<grid name>.failures``. Check this mask before using or
 publishing a grid.
 
@@ -125,19 +132,29 @@ The work directory
 .. code-block:: text
 
    <work_dir>/
-     state.yaml          the incident grid, Cloudy directory, round, time
-                         limit and final grid
+     state.yaml          the run's state: the next stage and its job, the
+                         incident grid, Cloudy directory and final grid,
+                         every job (submitted, started, ended, outcome),
+                         every round's totals, and the models given up on
+     models.json         every Cloudy model's state and attempts (worker,
+                         result, why it failed, start time, run time)
      queue/
        todo/<i>_<j>      waiting to run
        claimed/<i>_<j>@<worker>.<slot>
        done/<i>_<j>
        failed/<i>_<j>    holds how many times it failed
+     state/<worker>.jsonl  each worker's records, until a finish job
+                         gathers them into models.json
      cloudy/<grid name>/<i>/<j>.in, .out, ...
      jobs/<stage>[-<round>].sh
      logs/<run name>-<stage>-<job ID>.out
 
-``<i>`` and ``<j>`` are a model's incident and photoionisation indices. To see
-how a run is doing:
+``<i>`` and ``<j>`` are a model's incident and photoionisation indices.
+``state.yaml`` and ``models.json`` are written only by the start, finish and
+assembly jobs, which never run at once, and each is replaced whole; the
+workers, which do run at once, each write their own file in ``state/``.
+
+To see how a round is doing while its workers run:
 
 .. code-block:: console
 
@@ -145,22 +162,28 @@ how a run is doing:
        echo $state $(ls <work_dir>/queue/$state | wc -l)
    done
 
-Each worker's log has a line per model, and each finish job's log a summary of
-its round.
+Each worker's log has a line per model (with why it failed), and each finish
+job's log a summary of its round.
 
 Picking up a stopped run
 ------------------------
 
-Each stage can be run by hand to restart the chain where it stopped, e.g. when
-a finish job failed:
+When a run stops part way (a job failed, the chain was cancelled, the machine
+went down), carry it on with
 
 .. code-block:: console
 
-   python -m syncretize.runner finish run.yaml
+   python -m syncretize.runner resume run.yaml
 
-This tidies the queue and submits the next job. Setting the Cloudy inputs up
-again keeps every model's state, so ``start`` can be repeated after a crash;
-set ``Incident.grid`` to the incident grid first to avoid making it again.
+which submits the stage ``next`` in ``state.yaml`` names: the start job, the
+finish job of the current round (after its workers, if they are still
+running), or the assembly job. It does nothing while that stage's job is still
+queued or running, or when the run is done. With ``--local`` it runs the
+remaining stages here. Every stage keeps what earlier attempts did: the
+incident grid isn't made again, setting up the Cloudy inputs again keeps each
+model's state, and the finish job puts back the models of workers that died.
+
+``run`` refuses a work directory that already holds a run; use ``resume``.
 
 The grid's run config
 ---------------------

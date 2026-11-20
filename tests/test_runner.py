@@ -20,6 +20,7 @@ from syncretize.incident.builder import (
     table_point,
 )
 from syncretize.runner import Runner
+from syncretize.runner.cloudy import work
 from syncretize.runner.config import load_run, seconds, slurm_time
 from syncretize.runner.queue import Queue
 
@@ -116,6 +117,17 @@ def test_defaults_and_relative_paths(tmp_path):
             },
             "no time",
         ),
+        (
+            {
+                "Run": {
+                    "name": "x",
+                    "work_dir": "w",
+                    "grid_dir": "g",
+                    "cloudy": {"margin": "00:01:00"},
+                }
+            },
+            "longer than 00:02:00",
+        ),
         ({"Extra": {}}, "unknown"),
     ],
 )
@@ -209,7 +221,11 @@ def test_cloudy_setup_fills_the_queue(tmp_path):
     assert (cloudy_dir / "3" / "47.in").is_file()
     assert (cloudy_dir / "0" / "linelist.dat").is_file()
     state = yaml.safe_load((work / "state.yaml").read_text())
-    assert state == {"incident_grid": grid, "cloudy_dir": str(cloudy_dir)}
+    assert state["cloudy_dir"] == str(cloudy_dir)
+    assert state["models"]["todo"] == 4 * 48
+    models = json.loads((work / "models.json").read_text())
+    assert len(models) == 4 * 48
+    assert models["3_47"] == {"state": "todo", "attempts": []}
 
     # Setting up again keeps each model's state
     queue = Queue(work / "queue")
@@ -256,7 +272,7 @@ FAKE_CLOUDY = f"""#!{sys.executable}
 # a model "<i>_<j>" (or "*", every model) to what it does: "fail" (exit with
 # an error), "fail_once" (fail the first run only), "no_lines" (exit OK
 # without lines), "no_output" (stop before writing anything, as when killed
-# early) or "sleep" (take 0.5 s).
+# early), "sleep" (take 0.5 s) or "hang" (take a minute).
 import json, os, sys, time
 j = sys.argv[2]
 model = os.path.basename(os.getcwd()) + "_" + j
@@ -264,6 +280,8 @@ behaviours = json.loads(os.environ.get("FAKE_CLOUDY", "{{}}"))
 behaviour = behaviours.get(model, behaviours.get("*"))
 if behaviour == "sleep":
     time.sleep(0.5)
+if behaviour == "hang":
+    time.sleep(60)
 if behaviour == "no_output":
     sys.exit(1)
 if behaviour == "fail_once":
@@ -335,8 +353,8 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
     )
     grid = runner.run(local=True)
 
-    # 0_9 worked when retried; the others failed all 1 + 2 tries
-
+    # Within one round, 0_9 worked when retried and the others failed all
+    # 1 + 2 tries
     assert queue.counts() == {
         "todo": 0,
         "claimed": 0,
@@ -346,7 +364,31 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
     failed = tmp_path / "work" / "queue" / "failed"
     assert sorted(os.listdir(failed)) == ["1_3", "2_5", "3_1"]
     assert (failed / "1_3").read_text() == "3"
-    assert runner._load_state()["round"] == 3
+    state = runner._load_state()
+    assert (state["round"], state["next"], state["grid"]) == (1, "done", grid)
+    assert state["failures"] == {
+        "1_3": "[Stop in cdMain, something went wrong]",
+        "2_5": "no .emergent_elin",
+        "3_1": "no .out",
+    }
+    (summary,) = state["rounds"]
+    assert (summary["done"], summary["failed"]) == (4 * 48 - 3, 10)
+
+    # Every model's attempts are kept, and the workers' records cleared
+    models = json.loads((tmp_path / "work" / "models.json").read_text())
+    assert [a["result"] for a in models["0_9"]["attempts"]] == [
+        "failed",
+        "done",
+    ]
+    assert models["0_9"]["state"] == "done"
+    assert len(models["1_3"]["attempts"]) == 3
+    assert models["1_3"]["state"] == "failed"
+    assert not os.listdir(tmp_path / "work" / "state")
+
+    # A finished run is resumed by doing nothing, and isn't run again
+    assert runner.resume(local=True) is None
+    with pytest.raises(ValueError, match="use resume"):
+        runner.run(local=True)
     cloudy_dir = runner._load_state()["cloudy_dir"]
     with open(os.path.join(cloudy_dir, "0", "7.out")) as file:
         assert file.readline() == f"{tmp_path}/cloudy/data/:./\n"
@@ -372,17 +414,32 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
         assert "fake-sps" in hdf["RunConfig/contents"][()].decode()
 
 
-def test_workers_stop_at_their_deadline(tmp_path, monkeypatch):
-    runner, queue = cloudy_run(
-        tmp_path,
-        monkeypatch,
-        {"*": "sleep"},
-        cores_per_worker=2,
-        margin="00:00:01",
+def run_worker(runner, deadline, stop_at, can_grow=True, max_retries=2):
+    """Run one worker of 2 loops with deadlines in seconds from now."""
+    now = time.monotonic()
+    work(
+        runner.queue.root,
+        runner._load_state()["cloudy_dir"],
+        runner.config.cloudy["executable"],
+        "1",
+        slots=2,
+        claim=1,
+        extensions=["emergent_elin"],
+        max_retries=max_retries,
+        record_file=str(
+            Path(runner.config.run["work_dir"]) / "state" / "1.jsonl"
+        ),
+        deadline=now + deadline,
+        stop_at=now + stop_at,
+        can_grow=can_grow,
     )
+
+
+def test_workers_stop_claiming_at_their_deadline(tmp_path, monkeypatch):
+    runner, queue = cloudy_run(tmp_path, monkeypatch, {"*": "sleep"})
     runner.cloudy_setup(runner.config.incident["grid"])
     start = time.monotonic()
-    runner.work("1", walltime="00:00:03")
+    run_worker(runner, deadline=2, stop_at=10)
 
     # Each loop starts models for 2 s, so runs about 4 of 0.5 s, and the
     # last ends by 2.5 s
@@ -390,6 +447,38 @@ def test_workers_stop_at_their_deadline(tmp_path, monkeypatch):
     counts = queue.counts()
     assert 2 <= counts["done"] <= 12
     assert counts["claimed"] == 0 and counts["failed"] == 0
+
+
+def test_workers_stop_their_cloudy_runs_at_the_time_limit(
+    tmp_path, monkeypatch
+):
+    runner, queue = cloudy_run(tmp_path, monkeypatch, {"*": "hang"})
+    runner.cloudy_setup(runner.config.incident["grid"])
+    start = time.monotonic()
+    run_worker(runner, deadline=0.5, stop_at=1)
+
+    # Both runs stopped at 1 s and were put back without an attempt
+    assert time.monotonic() - start < 5
+    assert queue.counts() == {
+        "todo": 4 * 48,
+        "claimed": 0,
+        "done": 0,
+        "failed": 0,
+    }
+    # so the next round's time limit is longer
+    assert runner.finish(lambda owner: False) == "work"
+    assert runner._load_state()["walltime"] == "0-18:00:00"
+    stopped = [
+        entry["attempts"][0]
+        for entry in runner._load_models().values()
+        if entry["attempts"]
+    ]
+    assert len(stopped) == 2
+    assert stopped[0]["result"] == "stopped" and stopped[0]["requeued"]
+
+    # When the limit can't grow, a stopped run counts as failed
+    run_worker(runner, deadline=0.5, stop_at=1, can_grow=False, max_retries=0)
+    assert queue.counts()["failed"] == 2
 
 
 def test_finish_requeues_stopped_workers_models_with_a_longer_limit(
@@ -404,6 +493,14 @@ def test_finish_requeues_stopped_workers_models_with_a_longer_limit(
     assert queue.counts()["todo"] == 4 * 48
     state = runner._load_state()
     assert (state["round"], state["walltime"]) == (2, "0-18:00:00")
+    assert state["rounds"][0]["lost"] == 3
+    lost = [
+        entry["attempts"]
+        for entry in runner._load_models().values()
+        if entry["attempts"]
+    ]
+    assert len(lost) == 3
+    assert all(attempts[0]["result"] == "lost" for attempts in lost)
 
     # Up to max_walltime, and then a stopped model counts as failed
     queue.claim("8_1.0")

@@ -343,6 +343,36 @@ def get_grid_properties_hf(hf, verbose=True):
     return axes, *get_grid_props_cloudy(axes, axes_values, verbose=verbose)
 
 
+def required_extensions(include_spectra, include_intrinsic_lines, geometry):
+    """
+    The cloudy output files a model needs to count as successful.
+
+    Args:
+        include_spectra (bool)
+            Whether the grid stores the spectra.
+        include_intrinsic_lines (bool)
+            Whether the grid stores the intrinsic line luminosities.
+        geometry (str)
+            The cloudy geometry (e.g. "spherical").
+
+    Returns:
+        list of str
+            The file extensions.
+    """
+    extensions = ["emergent_elin"]
+    if include_intrinsic_lines:
+        extensions.append("intrinsic_elin")
+
+    # Open (non-spherical) geometries need the reflected continuum (.refl) to
+    # separate the reflected incident light from the nebular emission. Without
+    # it nebular would include scattered incident light, so treat a missing
+    # .refl as a failed model rather than storing an incorrect spectrum.
+    # Cloudy cannot write .refl for 'sphere', so it is not required there.
+    if include_spectra and geometry != "spherical":
+        extensions.append("refl")
+    return extensions
+
+
 def check_if_failed(
     model_to_check,
     extensions_to_check=["emergent_elin"],
@@ -350,28 +380,39 @@ def check_if_failed(
     """
     Function to check if a particular model has failed.
 
+    A model has failed unless cloudy ended its .out file with "Cloudy exited
+    OK" and wrote each output file with at least 100 bytes.
+
     Args:
         model_to_check (str)
             The model, including path, to check.
         extensions_to_check (list)
             List of file extensions to check to check for each model.
 
+    Returns:
+        str or None
+            Why the model failed (e.g. cloudy's last line, or "no
+            .emergent_elin"), or None if it didn't.
     """
+    # Cloudy writes "Cloudy exited OK" only when it ends without an error
+    try:
+        with open(model_to_check + ".out", "rb") as file:
+            file.seek(0, os.SEEK_END)
+            file.seek(max(0, file.tell() - 1000))
+            tail = file.read().decode(errors="replace")
+    except FileNotFoundError:
+        return "no .out"
+    if "Cloudy exited OK" not in tail:
+        lines = tail.strip().splitlines()
+        return lines[-1].strip() if lines else "empty .out"
 
-    failed = False
-
-    # Check if files exist
     for ext in extensions_to_check:
-        if not os.path.isfile(model_to_check + "." + ext):
-            failed = True
-
-    # If they exist also check they have size >0
-    if not failed:
-        for ext in extensions_to_check:
-            if os.path.getsize(model_to_check + "." + ext) < 100:
-                failed = True
-
-    return failed
+        path = model_to_check + "." + ext
+        if not os.path.isfile(path):
+            return f"no .{ext}"
+        if os.path.getsize(path) < 100:
+            return f".{ext} under 100 bytes"
+    return None
 
 
 def check_cloudy_runs(
@@ -419,7 +460,7 @@ def check_cloudy_runs(
                 f"{incident_index}/{photoionisation_index}"
             )
 
-            # Check if it failed
+            # Check if it failed (and why)
             failed = check_if_failed(
                 model_to_check,
                 extensions_to_check=extensions_to_check,
@@ -427,34 +468,16 @@ def check_cloudy_runs(
 
             # Record models that have failed
             if failed:
-                # The path to the cloudy out file
-                outfile = (
-                    f"{cloudy_dir}/{new_grid_name}/"
-                    f"{incident_index}/{photoionisation_index}.out"
-                )
-
-                # Grab the final line of the out file (a run stopped before
-                # cloudy started, e.g. at a time limit, may have none)
-                if os.path.isfile(outfile):
-                    with open(outfile, "r") as file:
-                        lines = file.readlines()
-                    last_line = lines[-1].strip() if lines else "(empty .out)"
-                else:
-                    last_line = "(no .out)"
-
                 # Append the incident and photoionisation index to an array
                 failed_list.append([incident_index, photoionisation_index])
 
                 # If at least one model fails print a header
                 if len(failed_list) == 1:
                     print("Failed models:")
-                    print(
-                        "incident_index, photoionisation_index, last line from"
-                        "cloudy"
-                    )
+                    print("incident_index, photoionisation_index, why")
 
-                # Print the indices and the last line of the cloudy out file
-                print("    ", incident_index, photoionisation_index, last_line)
+                # Print the indices and why the model failed
+                print("    ", incident_index, photoionisation_index, failed)
 
     number_of_failed_models = len(failed_list)
 
@@ -1227,18 +1250,10 @@ def create_synthesizer_grid(
     )
 
     # Cloudy output files that must exist for a model to count as successful
-    extensions_to_check = ["emergent_elin"]
-    if include_intrinsic_lines:
-        extensions_to_check.append("intrinsic_elin")
-
-    # Open (non-spherical) geometries need the reflected continuum (.refl) to
-    # separate the reflected incident light from the nebular emission. Without
-    # it nebular would include scattered incident light, so treat a missing
-    # .refl as a failed model rather than storing an incorrect spectrum.
-    # Cloudy cannot write .refl for 'sphere', so it is not required there.
     geometry = fixed_photoionisation_params.get("geometry")
-    if include_spectra and geometry != "spherical":
-        extensions_to_check.append("refl")
+    extensions_to_check = required_extensions(
+        include_spectra, include_intrinsic_lines, geometry
+    )
 
     # Check cloudy runs and potentially replace them by the nearest grid point
     # if they fail.
