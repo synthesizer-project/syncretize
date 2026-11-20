@@ -43,7 +43,7 @@ def extract_and_decompress_ised_files(directory):
         for file in files:
             if file.endswith(".ised.gz") or file.endswith(".3color.gz"):
                 gz_file_path = os.path.join(root, file)
-                new_file_path = os.path.join(input_dir, file)
+                new_file_path = os.path.join(directory, file)
                 with gzip.open(gz_file_path, "rb") as gz_file:
                     with open(new_file_path[:-3], "wb") as decompressed_file:
                         shutil.copyfileobj(gz_file, decompressed_file)
