@@ -991,6 +991,20 @@ class WatchApp(App):
     DataTable:focus, RichLog:focus, VerticalScroll:focus {
         border: round $accent;
     }
+    /* Thin, quiet scrollbars, brighter when used */
+    DataTable, RichLog, VerticalScroll {
+        scrollbar-size-vertical: 1;
+        scrollbar-size-horizontal: 1;
+        scrollbar-background: $surface;
+        scrollbar-background-hover: $surface;
+        scrollbar-background-active: $surface;
+        scrollbar-color: $secondary 30%;
+        scrollbar-color-hover: $secondary 60%;
+        scrollbar-color-active: $accent;
+        scrollbar-corner-color: $surface;
+    }
+    /* run.log wraps, so never needs to scroll sideways */
+    RichLog { overflow-x: hidden; }
     """
     BINDINGS = [
         ("q", "quit", "Quit"),
