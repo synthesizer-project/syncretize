@@ -191,15 +191,19 @@ Watching a run
 
    syncretize watch [run.yaml | work_dir]
 
-shows a live view of a run that fills the terminal, redrawn every 2 seconds
+shows a live view of a run that fills the terminal, refreshed every 2 seconds
 (``-n`` to change): progress with the rate and an ETA, the queue, the current
 round (workers running and queued, models finished, errors, retries and
 stops, run times), the run's jobs and how they ended, every round so far, the
 end of ``run.log``, the models that failed and the models running longest
-(those slow for the round in yellow, to spot one that hangs). Press ``f`` for
-a full-screen list of the failed models, ``l`` for a full-screen ``run.log``
-and ``q`` to quit; ``--once``
-prints the view once. With no argument it watches the run in the current
+(with their grid points and Cloudy iterations; those slow for the round in
+yellow, to spot one that hangs). Every panel scrolls, with the keys or the
+mouse; ``Tab`` moves between them, and ``run.log`` follows new lines unless
+scrolled up. Press ``f`` or ``l`` to show the failed models or ``run.log``
+full screen (again to go back), ``m`` for a map of the grid coloured by each
+point's state, ``s`` for the slowest runs (``Esc`` to go back) and ``q`` to
+quit; ``--once`` prints a summary
+once. With no argument it watches the run in the current
 directory. It only reads the run's files (and asks Slurm about its jobs every
 30 seconds), so it can be left running anywhere. ``syncretize`` also takes the
 other stages, e.g. ``syncretize run run.yaml``, the same as

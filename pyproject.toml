@@ -86,7 +86,8 @@ dependencies = [
   "hoki",
   "fsps",
   "gitpython",
-  "rich"
+  "rich",
+  "textual"
 ]
 
 [project.scripts]

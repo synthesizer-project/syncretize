@@ -402,31 +402,7 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
         assert text in run_log
     assert "0_9 done" not in run_log
 
-    # syncretize watch draws the run, filling the terminal it's given
-    from rich.console import Console
-
-    from syncretize.runner.watch import Watcher, render
-
-    work_dir = str(tmp_path / "work")
-    snapshot = Watcher(work_dir).read() | {"work_dir": work_dir, "interval": 2}
-    console = Console(record=True, width=120, height=40)
-    console.print(render(snapshot, 120, 40))
-    screen = console.export_text()
-    assert len(screen.splitlines()) == 40
-    for view, text in (
-        ("map", "across: log age · down: Z"),
-        ("slowest", "iterations"),
-    ):
-        console = Console(record=True, width=120, height=40)
-        console.print(render(snapshot, 120, 40, view))
-        assert text in console.export_text()
-    for text in (
-        "189/192 done",
-        "Failed models (3",
-        "1_3",
-        "grid_limited.hdf5",  # the end of run.log
-    ):
-        assert text in screen
+    check_watch(str(tmp_path / "work"))
 
     # A finished run is resumed by doing nothing, and isn't run again
     assert runner.resume(local=True) is None
@@ -581,3 +557,59 @@ def test_finish_refuses_while_workers_run(tmp_path, monkeypatch):
     queue.claim("1.0")
     with pytest.raises(RuntimeError, match="still claimed"):
         runner.finish(lambda owner: owner == "1.0")
+
+
+def check_watch(work_dir):
+    """syncretize watch shows a finished local run, in every view."""
+    import asyncio
+
+    from rich.console import Console
+    from textual.widgets import DataTable, RichLog
+
+    from syncretize.runner.watch import (
+        WatchApp,
+        Watcher,
+        _map_text,
+        _slowest_rows,
+        summary,
+    )
+
+    # --once prints a summary
+    snapshot = Watcher(work_dir).read()
+    console = Console(record=True, width=120)
+    console.print(summary(snapshot))
+    text = console.export_text()
+    for expected in (
+        "189/192 done",
+        "Failed models (3)",
+        "1_3",
+        "grid_limited",
+    ):
+        assert expected in text
+    assert "across: log age · down: Z" in _map_text(snapshot, 100, 30).plain
+    headers, rows, _ = _slowest_rows(snapshot)
+    assert "iterations" in headers and len(rows) == 199
+
+    async def drive():
+        app = WatchApp(work_dir, interval=0.5)
+        async with app.run_test(size=(140, 45)) as pilot:
+            await pilot.pause(1.5)
+            assert app.query_one("#failed", DataTable).row_count == 3
+            assert app.query_one("#rounds", DataTable).row_count == 1
+            assert len(app.query_one("#log", RichLog).lines) > 10
+            # The full-screen views open and close
+            await pilot.press("m")
+            await pilot.pause(0.5)
+            assert app.screen.key == "map"
+            await pilot.press("s")
+            await pilot.pause(0.5)
+            assert app.screen.key == "slowest"
+            assert app.screen.query_one("#view", DataTable).row_count == 199
+            await pilot.press("escape")
+            await pilot.press("l")
+            await pilot.pause(0.2)
+            assert app.screen.maximized is app.query_one("#log")
+            await pilot.press("l")
+            await pilot.press("q")
+
+    asyncio.run(drive())

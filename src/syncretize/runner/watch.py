@@ -1,19 +1,21 @@
 """A live, full-terminal view of a run: ``syncretize watch [run]``.
 
-Like ``watch``, it redraws every few seconds (``-n``, default 2) from the files
-a run writes, without changing any of them, so it is safe to leave running
-anywhere the work directory is visible:
+A Textual app that redraws every few seconds (``-n``, default 2) from the
+files a run writes, without changing any of them, so it is safe to leave
+running anywhere the work directory is visible:
 
     state.yaml       next stage and job, rounds, jobs, failed models
     queue/*          how many models are waiting, running, done and failed,
                      and how long each running model has been going
     state/*.jsonl    the current round's worker records (read as they grow)
-    run.log          its last lines
-    squeue           the run's jobs (every 30 s, when Slurm is there)
+    grid_points.json each model's grid point (from the setup)
+    run.log          as it grows
+    squeue, sacct    the run's jobs (every 30 s, when Slurm is there)
 
-Keys: q quits, and each of these toggles a full-screen view: f the failed
-models (those that failed every attempt), l run.log, m a map of the grid
-coloured by each point's state, s the slowest models so far.
+Every panel scrolls (keys or mouse); Tab moves between them. run.log follows
+new lines unless scrolled up. Keys: f the failed models and l run.log full
+screen (again to go back), m a map of the grid coloured by each point's
+state, s the slowest models so far (Esc to go back), q quits.
 """
 
 import functools
@@ -21,32 +23,28 @@ import getpass
 import json
 import math
 import os
-import select
 import shutil
 import statistics
 import subprocess
-import sys
 import time
 from datetime import datetime, timezone
 
 import yaml
 from rich import box
+from rich.columns import Columns
 from rich.console import Console, Group
-from rich.layout import Layout
-from rich.live import Live
 from rich.panel import Panel
 from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
+from textual import work
+from textual.app import App, ComposeResult
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import Screen
+from textual.widgets import DataTable, Footer, RichLog, Static
 
 from syncretize.runner.cloudy import iteration, model_path
 from syncretize.runner.queue import STATES
-
-#: The header's height (a panel of two lines)
-HEADER = 4
-
-#: Measures how many rows a wrapped line takes
-_MEASURE = Console(width=1000)
 
 #: How often squeue is asked about the run's jobs (s)
 SLURM_EVERY = 30
@@ -107,6 +105,7 @@ class Watcher:
         self._finished = []  # every finished attempt, from models.json
         self._names = {state: [] for state in STATES}  # the queue's models
         self._grid_points = None
+        self._log_offset = None  # how much of run.log has been read
 
     def read(self):
         """Everything the view shows, as a dict."""
@@ -116,6 +115,7 @@ class Watcher:
             "counts": self._queue_counts(),
             "records": self._round_records(),
             "log": self._log_tail(),
+            "log_new": self._log_new(),
             "slurm": self._slurm(state),
             "ended": self._ended,
             "attempts": self._attempts(),
@@ -228,6 +228,26 @@ class Watcher:
                 return file.read().decode(errors="replace").splitlines()[1:]
         except FileNotFoundError:
             return []
+
+    def _log_new(self, first=65536):
+        """run.log's lines since the last read (at first, its last 64 KB)."""
+        partial = False
+        try:
+            with open(self._path("run.log"), "rb") as file:
+                file.seek(0, os.SEEK_END)
+                end = file.tell()
+                if self._log_offset is None or self._log_offset > end:
+                    self._log_offset = max(0, end - first)
+                    partial = self._log_offset > 0  # mid-line
+                file.seek(self._log_offset)
+                data = file.read()
+        except FileNotFoundError:
+            return []
+        # A partly written last line waits for the next read
+        done = data.rfind(b"\n") + 1
+        self._log_offset += done
+        lines = data[:done].decode(errors="replace").splitlines()
+        return lines[1:] if partial else lines
 
     def _attempts(self):
         """How many times each model has run, from models.json."""
@@ -351,87 +371,6 @@ def _duration(seconds):
     return f"{seconds / 3600:.1f}h"
 
 
-def render(snapshot, width, height, view="main"):
-    """The whole screen for a snapshot of the run.
-
-    Args:
-        snapshot (dict)
-            From ``Watcher.read``.
-        width, height (int)
-            The terminal's size, which the view fills.
-        view (str)
-            "main", or a full-screen "failures", "log", "map" or "slowest".
-
-    Returns:
-        rich.layout.Layout
-    """
-    state, counts = snapshot["state"], snapshot["counts"]
-    layout = Layout()
-    header = _header(snapshot)
-    footer = Text(
-        f" q quit · f failed · l run.log · m map · s slowest · every "
-        f"{snapshot['interval']:g}s"
-        f" · {snapshot['work_dir']}",
-        style="dim",
-        no_wrap=True,
-        overflow="ellipsis",
-    )
-
-    if view != "main":
-        rows = height - HEADER - 1 - 2
-        body = {
-            "log": lambda: _log_panel(snapshot["log"], rows, width - 4),
-            "failures": lambda: _failures_panel(snapshot, rows, full=True),
-            "map": lambda: _map_panel(snapshot, width - 4, rows),
-            "slowest": lambda: _slowest_panel(snapshot, rows - 1),
-        }[view]()
-        layout.split_column(
-            Layout(header, size=HEADER), Layout(body), Layout(footer, size=1)
-        )
-        return layout
-
-    rounds = _rounds(state, snapshot["records"], counts)
-    rounds_height = min(len(rounds), 8) + 4 if rounds else 3
-    middle_height = 8
-    bottom_height = height - HEADER - middle_height - rounds_height - 1
-    middle = Layout()
-    middle.split_row(
-        Layout(_queue_panel(counts), ratio=2),
-        Layout(_round_panel(snapshot), ratio=3),
-        Layout(_jobs_panel(snapshot, middle_height - 2), ratio=4),
-    )
-    # run.log on the left; on the right, the failed models (as many rows as
-    # they need, up to 8) above the models running longest
-    failures = _failures(snapshot)
-    failures_height = min(max(len(failures), 1), 8) + 2
-    if len(failures) > 8:
-        failures_height += 1  # "and N more"
-    right = Layout()
-    right.split_column(
-        Layout(
-            _failures_panel(snapshot, failures_height - 2),
-            size=failures_height,
-        ),
-        Layout(_running_panel(snapshot, bottom_height - failures_height - 2)),
-    )
-    bottom = Layout()
-    bottom.split_row(
-        Layout(
-            _log_panel(snapshot["log"], bottom_height - 2, width * 3 // 5 - 4),
-            ratio=3,
-        ),
-        Layout(right, ratio=2),
-    )
-    layout.split_column(
-        Layout(header, size=HEADER),
-        Layout(middle, size=middle_height),
-        Layout(_rounds_panel(rounds), size=rounds_height),
-        Layout(bottom),
-        Layout(footer, size=1),
-    )
-    return layout
-
-
 def _header(snapshot):
     state, counts = snapshot["state"], snapshot["counts"]
     total = sum(counts.values())
@@ -492,7 +431,7 @@ def _rate(records, window=600):
     return recent / max(span / 60, 1)
 
 
-def _queue_panel(counts):
+def _queue_table(counts):
     table = Table.grid(padding=(0, 2))
     table.add_column()
     table.add_column(justify="right")
@@ -501,10 +440,10 @@ def _queue_panel(counts):
         table.add_row(
             Text(state, style=styles[state]), f"{counts.get(state, 0):,}"
         )
-    return Panel(table, title="Queue", title_align="left")
+    return table
 
 
-def _round_panel(snapshot):
+def _round_table(snapshot):
     records = snapshot["records"]
     results = [r["result"] for r in records]
     table = Table.grid(padding=(0, 2))
@@ -537,52 +476,7 @@ def _round_panel(snapshot):
             f"median {_duration(statistics.median(times))} · "
             f"max {_duration(max(times))}",
         )
-    return Panel(table, title="This round", title_align="left")
-
-
-def _jobs_panel(snapshot, rows):
-    state, live = snapshot["state"], snapshot["slurm"]
-    table = Table(box=None, padding=(0, 1), expand=True, show_header=False)
-    table.add_column(no_wrap=True, overflow="ellipsis")
-    table.add_column(justify="right", style="dim")
-    table.add_column(no_wrap=True)
-    if not state.get("jobs"):
-        table.add_row(Text("none (a local run)", style="dim"), "", "")
-    for entry in reversed(state.get("jobs", [])[-rows:]):
-        job = str(entry.get("job"))
-        name = entry.get("name", entry.get("stage", ""))
-        if job in live:
-            now = live[job]
-            if now["running"]:
-                status = Text(f"{now['running']} running", style="cyan")
-                if now["pending"]:
-                    status.append(f" · {now['pending']} queued", style="dim")
-            else:
-                status = Text(f"{now['pending']} queued", style="yellow")
-        elif job in snapshot["ended"]:
-            ended = snapshot["ended"][job]
-            bad = set(ended) - {"COMPLETED"}
-            status = Text(
-                " · ".join(
-                    f"{n} {s.lower()}"
-                    if sum(ended.values()) > 1
-                    else s.lower()
-                    for s, n in sorted(ended.items())
-                ),
-                style="red"
-                if bad - {"CANCELLED"}
-                else ("yellow" if bad else "green"),
-            )
-        elif "outcome" in entry:
-            failed = entry["outcome"] != "completed"
-            status = Text(
-                "failed" if failed else "done",
-                style="red" if failed else "green",
-            )
-        else:
-            status = Text("submitted", style="dim")
-        table.add_row(name, job, status)
-    return Panel(table, title="Jobs", title_align="left")
+    return table
 
 
 def _rounds(state, records, counts):
@@ -609,44 +503,6 @@ def _rounds(state, records, counts):
 def _given_up(record):
     """Whether a worker's record gave up on its model."""
     return record.get("attempt") is not None and not record.get("requeued")
-
-
-def _rounds_panel(rounds):
-    table = Table(
-        box=box.SIMPLE_HEAD, expand=True, padding=(0, 1), show_edge=False
-    )
-    for header in (
-        "round",
-        "limit",
-        "workers",
-        "done",
-        "errors",
-        "retried",
-        "stopped",
-        "lost",
-        "failed",
-        "left",
-    ):
-        table.add_column(header, justify="right")
-    for r in rounds[-8:]:
-        table.add_row(
-            *(
-                str(v)
-                for v in (
-                    r["round"],
-                    r.get("walltime", ""),
-                    r.get("workers", "here"),
-                    r.get("done", 0),
-                    r.get("failed", 0),
-                    r.get("retried", 0),
-                    r.get("stopped", 0),
-                    r.get("lost", 0),
-                    r.get("given_up", 0),
-                    r["queue"]["todo"],
-                )
-            )
-        )
-    return Panel(table, title="Rounds", title_align="left", padding=0)
 
 
 def _failures(snapshot):
@@ -722,28 +578,6 @@ def _ionisation_parameter(cloudy_dir, model):
         return None
 
 
-def _models_table(snapshot, rows, extra_headers):
-    """A table of models with their grid points, and columns to add.
-
-    Returns:
-        (Table, columns, show_u): the table, the grid's columns, and whether
-        a "log U" column (the reference model's U, not an axis) is shown.
-    """
-    points = snapshot["points"]
-    columns = _point_columns(points)
-    show_u = "log U" not in [c[0] for c in columns]
-    # Columns as wide as their contents, so none is squeezed
-    table = Table(box=None, padding=(0, 1))
-    table.add_column("model", no_wrap=True, min_width=5)
-    for label, *_ in columns:
-        table.add_column(label, justify="right", no_wrap=True)
-    if show_u:
-        table.add_column("log U", justify="right", no_wrap=True)
-    for header in extra_headers:
-        table.add_column(header, justify="right", no_wrap=True)
-    return table, columns, show_u
-
-
 def _iteration_text(cloudy_dir, model):
     if cloudy_dir is None:
         return "?"
@@ -753,84 +587,11 @@ def _iteration_text(cloudy_dir, model):
     return f"{now}/{most}" if most else str(now)
 
 
-def _running_panel(snapshot, rows):
-    """The models running longest: grid point, iteration, worker, time.
-
-    Those running more than twice this round's median are yellow, to spot
-    one that hangs. Only the rows shown read their .out for the iteration.
-    """
-    running, cloudy_dir = snapshot["running"], snapshot["cloudy_dir"]
-    times = [
-        r["seconds"]
-        for r in snapshot["records"]
-        if r["result"] in ("done", "failed")
-    ]
-    slow = 2 * statistics.median(times) if times else None
-    table, columns, show_u = _models_table(
-        snapshot, rows, ["iter", "worker", "time"]
-    )
-    for model, owner, seconds in running[: max(rows - 1, 0)]:
-        style = "yellow" if slow is not None and seconds > slow else ""
-        u = _ionisation_parameter(cloudy_dir, model) if cloudy_dir else None
-        table.add_row(
-            model,
-            *(_point(snapshot["points"], model, columns) if columns else []),
-            *([_format(u, True) if u else "?"] if show_u else []),
-            _iteration_text(cloudy_dir, model),
-            Text(owner, style="dim"),
-            Text(_duration(seconds), style=style),
-        )
-    title = f"Running now ({len(running)}"
-    title += f", yellow > 2 x median {_duration(slow / 2)})" if slow else ")"
-    if not running:
-        return Panel(
-            Text("nothing running", style="dim"),
-            title=title,
-            title_align="left",
-        )
-    return Panel(table, title=title, title_align="left")
-
-
-def _slowest_panel(snapshot, rows):
-    """The slowest Cloudy runs so far, with their grid points."""
-    finished = snapshot["finished"] + [
-        r for r in snapshot["records"] if r["result"] in ("done", "failed")
-    ]
-    finished.sort(key=lambda r: -r.get("seconds", 0))
-    table, columns, show_u = _models_table(
-        snapshot, rows, ["iterations", "result", "worker", "time"]
-    )
-    for record in finished[: max(rows, 0)]:
-        u = record.get("ionisation_parameter")
-        iterations = record.get("iterations")
-        table.add_row(
-            record["model"],
-            *(
-                _point(snapshot["points"], record["model"], columns)
-                if columns
-                else []
-            ),
-            *([_format(u, True) if u else "?"] if show_u else []),
-            "?" if iterations is None else str(iterations),
-            Text(
-                record["result"],
-                style="green" if record["result"] == "done" else "red",
-            ),
-            Text(record.get("owner", ""), style="dim"),
-            _duration(record.get("seconds", 0)),
-        )
-    return Panel(
-        table,
-        title=f"Slowest Cloudy runs ({len(finished)} finished)",
-        title_align="left",
-    )
-
-
 #: The map's shades, by the fraction of a cell's models done
 SHADES = " ░▒▓█"
 
 
-def _map_panel(snapshot, width, height):
+def _map_text(snapshot, width, height):
     """A map of the grid's first two incident axes, coloured by state.
 
     Each cell holds every model at that point (all the other axes): its
@@ -838,14 +599,10 @@ def _map_panel(snapshot, width, height):
     """
     points = snapshot["points"]
     if points is None:
-        return Panel(
-            Text(
-                "No grid_points.json: the run was set up before the setup "
-                "wrote it",
-                style="dim",
-            ),
-            title="Grid map",
-            title_align="left",
+        return Text(
+            "No grid_points.json: the run was set up before the setup wrote "
+            "it",
+            style="dim",
         )
     incident = points["incident"]
     axes, indices = incident["axes"], incident["indices"]
@@ -919,76 +676,474 @@ def _map_panel(snapshot, width, height):
         " · green all done · cyan running · red failed\n",
         style="dim",
     )
-    return Panel(lines, title="Grid map", title_align="left")
+    return lines
 
 
-def _failures_panel(snapshot, rows, full=False):
-    failures = _failures(snapshot)
-    attempts = snapshot["attempts"]
-    table = Table(box=None, padding=(0, 1), expand=True, show_header=False)
-    items = list(failures.items())
-    # The names and attempts are never squeezed; the reasons take the rest
-    table.add_column(
-        no_wrap=True,
-        style="red",
-        min_width=max((len(m) for m, _ in items), default=4),
-    )
-    table.add_column(justify="right", style="dim", no_wrap=True, min_width=3)
-    table.add_column(
-        no_wrap=not full,
-        overflow="ellipsis" if not full else "fold",
-        ratio=1,
-    )
-    # All that fit, or room for "and N more" below the rest
-    shown = items if full or len(items) <= rows else items[: max(rows - 1, 0)]
-    for model, why in shown:
-        table.add_row(model, f"({attempts.get(model, '?')})", why or "")
-    if len(items) > len(shown):
-        table.add_row("", "", Text(f"and {len(items) - len(shown)} more (f)"))
-    if not items:
-        table.add_row(Text("none", style="dim"), "", "")
-    return Panel(
-        table,
-        title=f"Failed models ({len(items)}, attempts, last reason)",
-        title_align="left",
-    )
+#: The columns of the rounds table
+ROUND_COLUMNS = (
+    "round",
+    "limit",
+    "workers",
+    "done",
+    "errors",
+    "retried",
+    "stopped",
+    "lost",
+    "failed",
+    "left",
+)
 
 
-def _log_panel(lines, rows, width, title="run.log"):
-    """The end of run.log, its long lines wrapped, as many as fit.
-
-    Args:
-        lines (list of str)
-            run.log's last lines.
-        rows, width (int)
-            The space inside the panel.
-    """
-    # The date is today's; the time is enough
-    lines = [
-        line[11:]
-        if len(line) > 20 and line[4] == "-" and line[10] == " "
-        else line
-        for line in lines
-    ]
-    # Wrap the lines into rows and keep the last rows that fit, so the
-    # newest stay in view and the panel stays full
-    wrapped = []
-    for line in lines[-max(rows, 0) :] if rows > 0 else []:
-        style = (
-            "red"
-            if "ERROR" in line
-            else ("yellow" if "WARNING" in line else "")
+def _round_rows(rounds):
+    """The rounds table's rows, newest first."""
+    return [
+        (
+            str(r["round"]),
+            [
+                str(v)
+                for v in (
+                    r["round"],
+                    r.get("walltime", ""),
+                    r.get("workers", "here"),
+                    r.get("done", 0),
+                    r.get("failed", 0),
+                    r.get("retried", 0),
+                    r.get("stopped", 0),
+                    r.get("lost", 0),
+                    r.get("given_up", 0),
+                    r["queue"]["todo"],
+                )
+            ],
         )
-        text = Text(line, style=style)
-        # Tables (the rounds in run.log) are cropped rather than wrapped
-        if line.partition("] ")[2].lstrip()[:1] in ("+", "|"):
-            text.truncate(max(width, 1))
-            wrapped.append(text)
+        for r in reversed(rounds)
+    ]
+
+
+def _job_status(snapshot, entry):
+    """How a job is doing: live from squeue, else how it ended."""
+    job, live = str(entry.get("job")), snapshot["slurm"]
+    if job in live:
+        now = live[job]
+        if now["running"]:
+            status = Text(f"{now['running']} running", style="cyan")
+            if now["pending"]:
+                status.append(f" · {now['pending']} queued", style="dim")
+            return status
+        return Text(f"{now['pending']} queued", style="yellow")
+    if job in snapshot["ended"]:
+        ended = snapshot["ended"][job]
+        bad = set(ended) - {"COMPLETED"}
+        return Text(
+            " · ".join(
+                f"{n} {s.lower()}" if sum(ended.values()) > 1 else s.lower()
+                for s, n in sorted(ended.items())
+            ),
+            style="red"
+            if bad - {"CANCELLED"}
+            else ("yellow" if bad else "green"),
+        )
+    if "outcome" in entry:
+        failed = entry["outcome"] != "completed"
+        return Text(
+            "failed" if failed else "done", style="red" if failed else "green"
+        )
+    return Text("submitted", style="dim")
+
+
+def _job_rows(snapshot):
+    """The jobs table's rows, newest first."""
+    return [
+        (
+            str(entry.get("job")),
+            [
+                entry.get("name", entry.get("stage", "")),
+                Text(str(entry.get("job")), style="dim"),
+                _job_status(snapshot, entry),
+            ],
+        )
+        for entry in reversed(snapshot["state"].get("jobs", []))
+    ]
+
+
+def _failure_rows(snapshot):
+    """The failed models table's rows."""
+    attempts = snapshot["attempts"]
+    return [
+        (
+            model,
+            [
+                Text(model, style="red"),
+                str(attempts.get(model, "?")),
+                why or "",
+            ],
+        )
+        for model, why in _failures(snapshot).items()
+    ]
+
+
+def _model_columns(snapshot, extra):
+    """The columns of a table of models: model, grid point, log U, extra.
+
+    Returns:
+        (list of str, list, bool): the headers, the grid's columns, and
+        whether a "log U" column (the reference model's U, not an axis) is
+        shown.
+    """
+    columns = _point_columns(snapshot["points"])
+    show_u = "log U" not in [c[0] for c in columns]
+    headers = ["model", *(c[0] for c in columns)]
+    headers += ["log U"] if show_u else []
+    return headers + list(extra), columns, show_u
+
+
+#: How many of the longest running models have their .out read for their
+#: iteration each refresh
+ITERATIONS_READ = 50
+
+
+def _running_rows(snapshot):
+    """The running models, longest first: grid point, iteration, worker, time.
+
+    Those running more than twice this round's median are yellow, to spot
+    one that hangs.
+
+    Returns:
+        (headers, rows, title)
+    """
+    running, cloudy_dir = snapshot["running"], snapshot["cloudy_dir"]
+    times = [
+        r["seconds"]
+        for r in snapshot["records"]
+        if r["result"] in ("done", "failed")
+    ]
+    slow = 2 * statistics.median(times) if times else None
+    headers, columns, show_u = _model_columns(
+        snapshot, ["iter", "worker", "time"]
+    )
+    rows = []
+    for n, (model, owner, seconds) in enumerate(running):
+        u = _ionisation_parameter(cloudy_dir, model) if cloudy_dir else None
+        rows.append(
+            (
+                f"{model}@{owner}",
+                [
+                    model,
+                    *_point(snapshot["points"], model, columns),
+                    *([_format(u, True) if u else "?"] if show_u else []),
+                    _iteration_text(cloudy_dir, model)
+                    if n < ITERATIONS_READ
+                    else "",
+                    Text(owner, style="dim"),
+                    Text(
+                        _duration(seconds),
+                        style="yellow" if slow and seconds > slow else "",
+                    ),
+                ],
+            )
+        )
+    title = f"Running now ({len(running)}"
+    title += f", yellow > 2 x median {_duration(slow / 2)})" if slow else ")"
+    return headers, rows, title
+
+
+#: The most rows the slowest view lists
+SLOWEST_ROWS = 2000
+
+
+def _slowest_rows(snapshot):
+    """The slowest Cloudy runs so far, with their grid points.
+
+    Returns:
+        (headers, rows, title)
+    """
+    finished = snapshot["finished"] + [
+        r for r in snapshot["records"] if r["result"] in ("done", "failed")
+    ]
+    finished.sort(key=lambda r: -r.get("seconds", 0))
+    headers, columns, show_u = _model_columns(
+        snapshot, ["iterations", "result", "worker", "time"]
+    )
+    rows = []
+    for n, record in enumerate(finished[:SLOWEST_ROWS]):
+        u = record.get("ionisation_parameter")
+        iterations = record.get("iterations")
+        rows.append(
+            (
+                str(n),
+                [
+                    record["model"],
+                    *_point(snapshot["points"], record["model"], columns),
+                    *([_format(u, True) if u else "?"] if show_u else []),
+                    "?" if iterations is None else str(iterations),
+                    Text(
+                        record["result"],
+                        style="green" if record["result"] == "done" else "red",
+                    ),
+                    Text(record.get("owner", ""), style="dim"),
+                    _duration(record.get("seconds", 0)),
+                ],
+            )
+        )
+    title = f"Slowest Cloudy runs ({len(finished)} finished)"
+    return headers, rows, title
+
+
+def _log_text(line):
+    """A run.log line for the log panel: time only, warnings coloured."""
+    # The date is today's; the time is enough
+    if len(line) > 20 and line[4] == "-" and line[10] == " ":
+        line = line[11:]
+    style = (
+        "red" if "ERROR" in line else ("yellow" if "WARNING" in line else "")
+    )
+    text = Text(line, style=style)
+    # Tables (the rounds in run.log) are cropped rather than wrapped
+    if line.partition("] ")[2].lstrip()[:1] in ("+", "|"):
+        text.no_wrap, text.overflow = True, "crop"
+    return text
+
+
+def _fill(table, headers, rows):
+    """Refill a DataTable, keeping where it is scrolled to and its cursor."""
+    if [str(column.label) for column in table.columns.values()] != headers:
+        table.clear(columns=True)
+        table.add_columns(*headers)
+    cursor, scroll = table.cursor_row, table.scroll_y
+    table.clear()
+    for key, cells in rows:
+        table.add_row(*cells, key=key)
+    if rows:
+        table.move_cursor(row=min(cursor, len(rows) - 1), scroll=False)
+    table.scroll_to(y=scroll, animate=False)
+
+
+def _table(id):
+    # The cursor shows only while the table is focused (see WatchApp)
+    return DataTable(
+        id=id, zebra_stripes=True, cursor_type="row", show_cursor=False
+    )
+
+
+class _FullScreen(Screen):
+    """A full-screen view (the map or the slowest runs); Esc goes back."""
+
+    BINDINGS = [
+        ("escape", "app.pop_screen", "Back"),
+        ("q", "app.quit", "Quit"),
+    ]
+
+    def __init__(self, key):
+        super().__init__()
+        self.key = key
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="header")
+        if self.key == "map":
+            with VerticalScroll(id="view"):
+                yield Static(id="map")
         else:
-            wrapped.extend(text.wrap(_MEASURE, max(width, 1)))
-    text = Text("\n").join(wrapped[-max(rows, 0) :] if rows > 0 else [])
-    text.no_wrap, text.overflow = True, "crop"
-    return Panel(text, title=title, title_align="left")
+            yield _table("view")
+        yield Footer()
+
+    def on_mount(self):
+        if self.app.snapshot is not None:
+            self.show(self.app.snapshot)
+
+    def show(self, snapshot):
+        self.query_one("#header", Static).update(_header(snapshot))
+        view = self.query_one("#view")
+        if self.key == "map":
+            view.border_title = "Grid map"
+            self.query_one("#map", Static).update(
+                _map_text(snapshot, self.size.width - 4, self.size.height - 8)
+            )
+        else:
+            headers, rows, title = _slowest_rows(snapshot)
+            view.border_title = title
+            _fill(view, headers, rows)
+
+
+class WatchApp(App):
+    """The live view of a run."""
+
+    TITLE = "syncretize watch"
+    CSS = """
+    #header { height: 4; }
+    #top { height: 8; }
+    #queue { width: 2fr; }
+    #round { width: 3fr; }
+    #jobs { width: 4fr; }
+    #rounds { height: auto; max-height: 12; }
+    #bottom { height: 1fr; }
+    #log { width: 3fr; }
+    #right { width: 2fr; }
+    #failed { height: auto; max-height: 12; }
+    #running { height: 1fr; }
+    #view { height: 1fr; }
+    #queue, #round, #jobs, #rounds, #log, #failed, #running, #view {
+        border: round $secondary;
+        border-title-align: left;
+    }
+    DataTable:focus, RichLog:focus, VerticalScroll:focus {
+        border: round $accent;
+    }
+    """
+    BINDINGS = [
+        ("q", "quit", "Quit"),
+        ("f", "toggle_max('failed')", "Failed"),
+        ("l", "toggle_max('log')", "Log"),
+        ("m", "view('map')", "Map"),
+        ("s", "view('slowest')", "Slowest"),
+    ]
+
+    def __init__(self, work_dir, interval=2.0):
+        super().__init__()
+        self.work_dir, self.interval = work_dir, interval
+        self.watcher = Watcher(work_dir)
+        self.snapshot = None
+        self.sub_title = work_dir
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="header")
+        with Horizontal(id="top"):
+            yield Static(id="queue")
+            yield Static(id="round")
+            yield _table("jobs")
+        yield _table("rounds")
+        with Horizontal(id="bottom"):
+            yield RichLog(id="log", wrap=True, max_lines=20000)
+            with Vertical(id="right"):
+                yield _table("failed")
+                yield _table("running")
+        yield Footer()
+
+    def on_mount(self):
+        titles = {
+            "queue": "Queue",
+            "round": "This round",
+            "jobs": "Jobs",
+            "rounds": "Rounds",
+            "log": "run.log",
+            "failed": "Failed models",
+            "running": "Running now",
+        }
+        for id, title in titles.items():
+            self.query_one(f"#{id}").border_title = title
+        self.read()
+        self.set_interval(self.interval, self.read)
+
+    @work(thread=True, exclusive=True)
+    def read(self):
+        """Read the run's files (away from the screen, which stays live)."""
+        snapshot = self.watcher.read()
+        self.call_from_thread(self.show, snapshot)
+
+    def show(self, snapshot):
+        """Draw a snapshot of the run on every panel."""
+        self.snapshot = snapshot
+        counts = snapshot["counts"]
+        self.query_one("#header", Static).update(_header(snapshot))
+        self.query_one("#queue", Static).update(_queue_table(counts))
+        self.query_one("#round", Static).update(_round_table(snapshot))
+        _fill(
+            self.query_one("#jobs", DataTable),
+            ["job", "id", "status"],
+            _job_rows(snapshot),
+        )
+        rounds = _rounds(snapshot["state"], snapshot["records"], counts)
+        _fill(
+            self.query_one("#rounds", DataTable),
+            list(ROUND_COLUMNS),
+            _round_rows(rounds),
+        )
+        failed = self.query_one("#failed", DataTable)
+        rows = _failure_rows(snapshot)
+        failed.border_title = f"Failed models ({len(rows)})"
+        _fill(failed, ["model", "attempts", "last reason"], rows)
+        running = self.query_one("#running", DataTable)
+        headers, rows, title = _running_rows(snapshot)
+        running.border_title = title
+        _fill(running, headers, rows)
+
+        # The log follows new lines, unless scrolled up to read
+        log = self.query_one("#log", RichLog)
+        following = log.scroll_y >= log.max_scroll_y
+        for line in snapshot["log_new"]:
+            log.write(_log_text(line), scroll_end=following)
+
+        if isinstance(self.screen, _FullScreen):
+            self.screen.show(snapshot)
+
+    def on_descendant_focus(self, event):
+        """Show the cursor row only in the table being scrolled."""
+        if isinstance(event.widget, DataTable):
+            event.widget.show_cursor = True
+
+    def on_descendant_blur(self, event):
+        if isinstance(event.widget, DataTable):
+            event.widget.show_cursor = False
+
+    def check_action(self, action, parameters):
+        """Hide the main view's keys while the map or slowest view is open."""
+        if action == "toggle_max" and isinstance(self.screen, _FullScreen):
+            return False
+        return True
+
+    def action_toggle_max(self, id):
+        """Show a panel full screen (or go back if it is)."""
+        if isinstance(self.screen, _FullScreen):
+            return
+        if self.screen.maximized is not None:
+            self.screen.minimize()
+        else:
+            self.screen.maximize(self.query_one(f"#{id}"))
+
+    def action_view(self, key):
+        """Open the map or slowest view (or go back if it is open)."""
+        current = getattr(self.screen, "key", None)
+        if current is not None:
+            self.pop_screen()
+        if current != key:
+            self.push_screen(_FullScreen(key))
+
+
+def summary(snapshot, log_lines=15):
+    """A one-off view of the run (``syncretize watch --once``)."""
+    counts = snapshot["counts"]
+    rounds = Table(box=box.SIMPLE_HEAD)
+    for header in ROUND_COLUMNS:
+        rounds.add_column(header, justify="right")
+    for _, cells in _round_rows(
+        _rounds(snapshot["state"], snapshot["records"], counts)
+    ):
+        rounds.add_row(*cells)
+    failed = Table(box=box.SIMPLE_HEAD)
+    for header in ("model", "attempts", "last reason"):
+        failed.add_column(header)
+    for _, cells in _failure_rows(snapshot):
+        failed.add_row(*cells)
+    headers, rows, title = _running_rows(snapshot)
+    running = Table(box=box.SIMPLE_HEAD)
+    for header in headers:
+        running.add_column(header)
+    for _, cells in rows[:10]:
+        running.add_row(*cells)
+    log = Text("\n").join(
+        _log_text(line) for line in snapshot["log"][-log_lines:]
+    )
+    return Group(
+        _header(snapshot),
+        Columns(
+            [
+                Panel(_queue_table(counts), title="Queue"),
+                Panel(_round_table(snapshot), title="This round"),
+            ]
+        ),
+        Panel(rounds, title="Rounds"),
+        Panel(failed, title=f"Failed models ({len(_failures(snapshot))})"),
+        Panel(running, title=title),
+        Panel(log, title="run.log"),
+    )
 
 
 def watch(path=None, interval=2.0, once=False):
@@ -1000,47 +1155,10 @@ def watch(path=None, interval=2.0, once=False):
         interval (float)
             Seconds between redraws.
         once (bool)
-            Print one view and return (e.g. in scripts).
+            Print a summary once and return (e.g. in scripts).
     """
     work_dir = find_work_dir(path)
-    watcher = Watcher(work_dir)
-    console = Console()
-    extra = {"work_dir": work_dir, "interval": interval}
-    if once or not sys.stdin.isatty():
-        snapshot = watcher.read() | extra
-        width, height = console.size
-        console.print(render(snapshot, width, height))
+    if once:
+        Console().print(summary(Watcher(work_dir).read()))
         return
-
-    import termios
-    import tty
-
-    view = "main"
-    settings = termios.tcgetattr(sys.stdin)
-    try:
-        tty.setcbreak(sys.stdin.fileno())
-        with Live(console=console, screen=True, auto_refresh=False) as live:
-            while True:
-                snapshot = watcher.read() | extra
-                width, height = console.size
-                live.update(
-                    render(snapshot, width, height, view), refresh=True
-                )
-                ready, _, _ = select.select([sys.stdin], [], [], interval)
-                if ready:
-                    key = sys.stdin.read(1).lower()
-                    if key == "q":
-                        return
-                    views = {
-                        "f": "failures",
-                        "l": "log",
-                        "m": "map",
-                        "s": "slowest",
-                    }
-                    if key in views:
-                        new = views[key]
-                        view = "main" if view == new else new
-    except KeyboardInterrupt:
-        pass
-    finally:
-        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+    WatchApp(work_dir, interval).run()
