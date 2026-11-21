@@ -27,11 +27,10 @@ import socket
 import time
 
 import yaml
-from synthesizer._version import __version__ as synthesizer_version
 
-from syncretize._version import __version__ as syncretize_version
 from syncretize.grid_io import write_run_config
 from syncretize.incident.builder import build_grid
+from syncretize.provenance import version
 from syncretize.runner import log as logs
 from syncretize.runner import slurm
 from syncretize.runner.config import incident_module, load_run
@@ -310,8 +309,8 @@ class Runner(Stages):
         """
         config = self.config
         lines = [
-            f"syncretize {syncretize_version}, synthesizer "
-            f"{synthesizer_version}, Python {platform.python_version()}",
+            f"syncretize {version('syncretize')}, synthesizer "
+            f"{version('synthesizer')}, Python {platform.python_version()}",
             f"On {socket.gethostname()} as {getpass.getuser()} at {_now()}",
             "",
             f"Run config {config.path} (with every default):",

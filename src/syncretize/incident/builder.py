@@ -29,7 +29,13 @@ from functools import partial
 import numpy as np
 from unyt import dimensionless
 
+from syncretize import provenance
 from syncretize.grid_io import GridFile
+
+# The source data an incident model reads, in its setup or as it makes each
+# point, are recorded in the grid (see GridFile.write_source_data), so the
+# reads are noted from the moment the builder is imported (before any setup)
+provenance.record_reads()
 
 
 @dataclass
@@ -195,6 +201,7 @@ def build_grid(
             )
     if spec.ionising_luminosity:
         out_grid.add_specific_ionising_lum()
+    out_grid.write_source_data()
     return out_grid.filepath
 
 

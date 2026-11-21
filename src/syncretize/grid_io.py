@@ -33,21 +33,31 @@ Example usage:
 
 """
 
+import os
 from datetime import date
 from pathlib import Path
 
 import h5py
 import numpy as np
 import yaml
-from synthesizer._version import __version__ as synthesizer_version
 from synthesizer.emissions import Sed
 from synthesizer.units import has_units
 from tqdm import tqdm
 from unyt import Lsun, dimensionless, unyt_array
 
-from syncretize._version import __version__ as syncretize_version
+from syncretize import provenance
 from syncretize.parser import YAMLLoader
 from syncretize.photoionisation import EDGE_IONS, Ions, edge_wavelength
+
+#: The groups holding a grid's provenance (copied into a Cloudy grid from
+#: its incident grid, see GridFile.copy_provenance)
+PROVENANCE_GROUPS = (
+    "Model",
+    "ParameterFile",
+    "RunConfig",
+    "SourceData",
+    "Software",
+)
 
 #: Offset (Angstrom) of the points inserted either side of an edge.
 EDGE_OFFSET = 0.01
@@ -214,16 +224,39 @@ class GridFile:
         The mode is changed to ``"r+"`` after creation.
         """
         self.hdf = h5py.File(self.filepath, self.mode)
-        self.hdf.attrs["syncretize_version"] = syncretize_version
-        # Existing grid consumers still use the pre-rename metadata key.
-        self.hdf.attrs["synthesizer_grids_version"] = syncretize_version
-        self.hdf.attrs["synthesizer_version"] = synthesizer_version
+        software = provenance.software()
+        for key, name in (
+            ("syncretize_version", "syncretize"),
+            # Existing grid consumers still use the pre-rename metadata key.
+            ("synthesizer_grids_version", "syncretize"),
+            ("synthesizer_version", "synthesizer"),
+        ):
+            self.hdf.attrs[key] = software.get(name, "unknown")
         self.hdf.attrs["date_created"] = str(date.today())
+        self._write_software(software)
         if self.param_file is not None:
             self._write_param_file()
         self.hdf.close()
         self.hdf = None
         self.mode = "r+"
+
+    def _write_software(self, software):
+        """
+        Write the software the grid was made with to the ``Software`` group.
+
+        Versions are attributes; each git checkout's uncommitted changes (a
+        diff, empty if there are none) are a dataset, ``<name>_diff``.
+
+        Args:
+            software (dict)
+                What ``provenance.software`` returns.
+        """
+        grp = self.hdf.create_group("Software")
+        for key, value in software.items():
+            if key.endswith("_diff"):
+                grp.create_dataset(key, data=value, dtype=h5py.string_dtype())
+            else:
+                grp.attrs[key] = value
 
     def _write_param_file(self):
         """
@@ -839,21 +872,82 @@ class GridFile:
 
         self._close_file()
 
-    def write_cloudy_metadata(self, params):
+    def write_cloudy_metadata(self, params, param_files=()):
         """
         Write out the Cloudy metadata.
 
         Args:
             params (dict)
                 A dictionary containing the metadata of the Cloudy run.
+            param_files (iterable of str)
+                The Cloudy parameter files the run was made from (later ones
+                superseding earlier ones), stored verbatim as
+                ``CloudyParams/files/<n>`` (from 0), each with its path.
         """
         # Open the file
         self._open_file()
 
         # Write the parameters to the CloudyParams group
-        _write_attrs(self.hdf.require_group("CloudyParams"), params)
+        grp = self.hdf.require_group("CloudyParams")
+        _write_attrs(grp, params)
+
+        # And the files they came from, verbatim
+        for n, path in enumerate(param_files):
+            dset = grp.create_dataset(
+                f"files/{n}",
+                data=Path(path).read_text(),
+                dtype=h5py.string_dtype(),
+            )
+            dset.attrs["path"] = str(Path(path).resolve())
 
         # Close the file
+        self._close_file()
+
+    def write_source_data(self):
+        """
+        Write the source data files the process read to ``SourceData``.
+
+        Each file is a subgroup (``0``, ``1``, ... in the order read) with
+        its ``path``, ``size`` (bytes) and ``sha256`` as attributes. The
+        files are those ``provenance.source_files`` finds (the parameter
+        file, stored verbatim already, is left out).
+        """
+        files = provenance.source_files(
+            exclude=[self.param_file] if self.param_file else []
+        )
+        self._open_file()
+        grp = self.hdf.require_group("SourceData")
+        grp.attrs["count"] = len(files)
+        for n, path in enumerate(files):
+            entry = grp.create_group(str(n))
+            entry.attrs["path"] = path
+            entry.attrs["size"] = os.path.getsize(path)
+            entry.attrs["sha256"] = provenance.sha256(path)
+        self._close_file()
+
+    def copy_provenance(self, source):
+        """
+        Copy another grid's provenance to the ``IncidentGrid`` group.
+
+        A Cloudy grid holds its incident grid's, so it can be remade from
+        itself alone: the incident grid's root attributes, its
+        ``PROVENANCE_GROUPS`` and, to check a copy of it against, its file
+        name and SHA-256.
+
+        Args:
+            source (str)
+                The other (incident) grid.
+        """
+        self._open_file()
+        grp = self.hdf.require_group("IncidentGrid")
+        with h5py.File(source, "r") as incident:
+            for key, value in incident.attrs.items():
+                grp.attrs[key] = value
+            for name in PROVENANCE_GROUPS:
+                if name in incident:
+                    incident.copy(incident[name], grp, name)
+        grp.attrs["file"] = os.path.basename(source)
+        grp.attrs["sha256"] = provenance.sha256(source)
         self._close_file()
 
     def get_grid_properties(self, verbose=False):
@@ -945,6 +1039,37 @@ def write_run_config(grid_path, run_file, config):
             dtype=h5py.string_dtype(),
         )
         dset.attrs["path"] = str(Path(run_file).resolve())
+
+
+def write_cloudy_build(grid_path, out_file=None, build=None):
+    """
+    Store the Cloudy build a grid's models ran with in its CloudyBuild group.
+
+    Args:
+        grid_path (str)
+            The grid.
+        out_file (str, optional)
+            One of its models' Cloudy .out files, giving the version and its
+            date (see ``provenance.cloudy_version``).
+        build (str, optional)
+            The Cloudy build directory (holding source/cloudy.exe and data/),
+            whose path is stored with the SHA-256 of its executable and of
+            its data directory (see ``provenance.directory_sha256``).
+    """
+    with h5py.File(grid_path, "r+") as hdf:
+        grp = hdf.require_group("CloudyBuild")
+        if out_file is not None:
+            for key, value in provenance.cloudy_version(out_file).items():
+                grp.attrs[key] = value
+        if build is not None:
+            build = os.path.realpath(build)
+            grp.attrs["build"] = build
+            grp.attrs["executable_sha256"] = provenance.sha256(
+                os.path.join(build, "source", "cloudy.exe")
+            )
+            grp.attrs["data_sha256"] = provenance.directory_sha256(
+                os.path.join(build, "data")
+            )
 
 
 def _write_attrs(grp, params):

@@ -478,6 +478,19 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
         # isn't in C order, so isn't checked)
         assert list(failures.reshape(4, 48).sum(axis=1)) == [0, 1, 1, 1]
         assert hdf["RunConfig/Cloudy"].attrs["include_spectra"]
+        # How it was made: the Cloudy build, the Cloudy config verbatim and
+        # the incident grid's provenance (with its source data)
+        build = hdf["CloudyBuild"].attrs
+        assert build["build"] == os.path.realpath(tmp_path / "cloudy")
+        assert len(build["executable_sha256"]) == 64
+        files = hdf["CloudyParams/files"]
+        assert "cloudy_version" in files["0"][()].decode()
+        incident = hdf["IncidentGrid"]
+        assert incident.attrs["file"] == "fake-sps.hdf5"
+        # (made here without a parameter file or a run, so without theirs)
+        for name in ("Model", "SourceData", "Software"):
+            assert name in incident
+        assert "syncretize_commit" in hdf["Software"].attrs
         assert "fake-sps" in hdf["RunConfig/contents"][()].decode()
 
 

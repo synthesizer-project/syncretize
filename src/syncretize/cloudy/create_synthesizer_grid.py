@@ -44,8 +44,9 @@ from syncretize.cloudy.utils import (
     get_grid_props_cloudy,
     resolve_param_file,
 )
-from syncretize.grid_io import GridFile
+from syncretize.grid_io import GridFile, write_cloudy_build
 from syncretize.parser import Parser
+from syncretize.provenance import find_out_file
 
 #: Non-ionising band (Angstrom) used to check the normalised incident spectra.
 CHECK_BAND = (1500.0, 5000.0)
@@ -113,9 +114,13 @@ def create_empty_grid(
     new_axes_values,
     photoionisation_parameters,
     incident_grid_dir=None,
+    param_files=(),
 ):
     """
     Create an empty Synthesizer grid file based on an existing incident grid.
+
+    The new grid holds a copy of the incident grid's provenance (see
+    ``GridFile.copy_provenance``), so it can be remade from itself alone.
 
     Args:
         grid_dir (str):
@@ -132,6 +137,8 @@ def create_empty_grid(
             Dictionary of photoionisation modelling parameters.
         incident_grid_dir (str, optional):
             Directory holding the incident grid, if not grid_dir.
+        param_files (iterable of str, optional):
+            The cloudy parameter files, stored verbatim in CloudyParams.
 
     Returns:
         out_grid (GridFile):
@@ -158,8 +165,10 @@ def create_empty_grid(
         data=incident_grid.axes,
     )
 
-    # Copy over the model metadata
+    # Copy over the model metadata, and everything recorded about how the
+    # incident grid was made
     out_grid.write_model_metadata(incident_grid._model_metadata)
+    out_grid.copy_provenance(incident_grid.grid_filename)
 
     # Get properties of the grid
     (
@@ -329,7 +338,7 @@ def create_empty_grid(
     )
 
     # Write out cloudy parameters
-    out_grid.write_cloudy_metadata(photoionisation_parameters)
+    out_grid.write_cloudy_metadata(photoionisation_parameters, param_files)
 
     return out_grid, incident_grid
 
@@ -1525,6 +1534,11 @@ def create_synthesizer_grid(
         new_axes_values,
         fixed_photoionisation_params,
         incident_grid_dir=incident_grid_dir,
+        param_files=[
+            path
+            for path in (cloudy_param_file, extra_cloudy_param_file)
+            if path is not None
+        ],
     )
 
     # Cloudy output files that must exist for a model to count as successful
@@ -1623,6 +1637,11 @@ def create_synthesizer_grid(
         False,
         verbose=False,
     )
+
+    # The Cloudy version the models ran with, from one of their outputs
+    out_file = find_out_file(os.path.join(cloudy_dir, new_grid_name))
+    if out_file is not None:
+        write_cloudy_build(new_grid.filepath, out_file=out_file)
 
     return new_grid.filepath
 

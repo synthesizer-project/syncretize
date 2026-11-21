@@ -39,6 +39,11 @@ Core layout
    |-- lines/
    |-- CloudyParams/
    |-- ParameterFile/
+   |-- RunConfig/
+   |-- Software/
+   |-- SourceData/
+   |-- CloudyBuild/
+   |-- IncidentGrid/
    `-- log10_specific_ionising_luminosity/
 
 Only pieces needed by a particular grid must be present. ``GridFile`` writes
@@ -59,6 +64,54 @@ file verbatim, so a run can be reproduced with:
 New files record ``syncretize_version``. They also record the legacy
 ``synthesizer_grids_version`` key with the same value so existing grid
 catalogues and readers remain compatible.
+
+Provenance
+----------
+
+A grid records enough about how it was made to be remade from the file
+alone (see ``syncretize.provenance``):
+
+``Software``
+   The Python version, the platform and the version of each package that
+   shapes a grid (syncretize, synthesizer, numpy, scipy, h5py, unyt, astropy
+   and, when installed, fsps). When syncretize or synthesizer is run from a
+   git checkout, its full commit (``syncretize_commit``) and any changes not
+   yet committed, as a diff (the ``syncretize_diff`` dataset, empty if
+   none), so the exact code can be checked out again. Run from a checkout,
+   ``syncretize_version`` is worked out from git (the version file written
+   on installing goes out of date as commits are made).
+
+``SourceData`` (incident grids)
+   Each source data file the incident model read, as a subgroup (``0``,
+   ``1``, ... in the order read) with its ``path``, ``size`` and ``sha256``.
+   The files are found by watching what the process opens for reading (an
+   audit hook), so every model is covered without saying what it reads;
+   code and YAML configs aren't counted, and files read by compiled code
+   (e.g. FSPS's own data, which ``Model`` names the version of) aren't seen.
+   Where each file came from is in the incident script, at the commit
+   ``Software`` names.
+
+``ParameterFile`` and ``RunConfig``
+   The parameter file verbatim (above) and, for grids made by the Runner,
+   the run config verbatim and with every default (see :doc:`runner`).
+
+``CloudyParams`` (Cloudy grids)
+   The Cloudy parameters as attributes and, in ``files/0`` (and
+   ``files/1`` for an extra parameter file superseding it), the parameter
+   files verbatim, each with its ``path``.
+
+``CloudyBuild`` (Cloudy grids)
+   The Cloudy ``version`` and its ``date``, read from one of the models'
+   outputs, and, for grids made by the Runner, the ``build`` directory with
+   the SHA-256 of its executable (``executable_sha256``) and of its whole
+   ``data`` directory (``data_sha256``), which a patched or rebuilt Cloudy
+   changes.
+
+``IncidentGrid`` (Cloudy grids)
+   A copy of the incident grid's provenance (its root attributes and its
+   ``Model``, ``ParameterFile``, ``RunConfig``, ``SourceData`` and
+   ``Software`` groups), with its ``file`` name and ``sha256``, so a Cloudy
+   grid can be remade, incident grid and all, from itself alone.
 
 Required for an incident spectral grid
 --------------------------------------

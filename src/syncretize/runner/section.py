@@ -36,7 +36,7 @@ from syncretize.cloudy.create_synthesizer_grid import (
     required_extensions,
 )
 from syncretize.cloudy.utils import get_cloudy_params, resolve_param_file
-from syncretize.grid_io import write_run_config
+from syncretize.grid_io import write_cloudy_build, write_run_config
 from syncretize.runner import perturb, slurm
 from syncretize.runner.cloudy import work
 from syncretize.runner.config import (
@@ -409,6 +409,7 @@ class Section(Stages):
                 "Cloudy": cloudy,
             },
         )
+        write_cloudy_build(grid, build=cloudy["executable"])
 
         # The failed models interpolated from perturbed runs haven't failed
         from syncretize.cloudy.create_synthesizer_grid import _interpolations
