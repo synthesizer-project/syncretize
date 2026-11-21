@@ -820,7 +820,7 @@ def test_several_cloudy_sections_share_the_incident_grid(
         app = WatchApp(str(tmp_path / "work"), interval=0.5)
         async with app.run_test(size=(140, 45)) as pilot:
             await pilot.pause(1.5)
-            tabs = app.query_one("#sections")
+            tabs = app.query_one(".sections")
             assert not tabs.has_class("single")
             assert tabs.active == "tab-C1"
             await pilot.press("tab")
@@ -830,3 +830,46 @@ def test_several_cloudy_sections_share_the_incident_grid(
             await pilot.press("q")
 
     asyncio.run(drive())
+
+    # Watching the directory holding the run: a tab per run under way,
+    # [ and ] then cycling through the shown run's sections
+    from syncretize.runner.watch import find_runs
+
+    work_dir = str(tmp_path / "work")
+    runs = tmp_path / "runs"
+    for name, run_work_dir in (("a", work_dir), ("b", "work")):
+        (runs / name).mkdir(parents=True)
+        (runs / name / "run.yaml").write_text(
+            yaml.safe_dump({"Run": {"work_dir": run_work_dir}})
+        )
+    other = runs / "b"
+    assert find_runs(str(runs)) == {
+        "active": [],
+        "done": [work_dir],
+        "waiting": [str(other / "work")],
+    }
+    state = yaml.safe_load((tmp_path / "work" / "state.yaml").read_text())
+    (tmp_path / "work" / "state.yaml").write_text(
+        yaml.safe_dump({**state, "next": "cloudy"})
+    )
+    (other / "work").mkdir()
+    (other / "work" / "state.yaml").write_text(
+        yaml.safe_dump({"name": "other", "next": "start"})
+    )
+
+    async def drive_directory():
+        app = WatchApp(interval=0.5, directory=str(runs))
+        async with app.run_test(size=(140, 45)) as pilot:
+            await pilot.pause(1.5)
+            assert not app.query_one("#runs").has_class("single")
+            assert app._shown() == work_dir
+            sections = app._run_view().sections
+            assert sections.active == "tab-C1"
+            await pilot.press("right_square_bracket")
+            assert sections.active == "tab-C2"
+            await pilot.press("tab")
+            await pilot.pause(0.5)
+            assert app._shown() == str(other / "work")
+            await pilot.press("q")
+
+    asyncio.run(drive_directory())

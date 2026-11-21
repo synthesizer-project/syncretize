@@ -36,8 +36,9 @@ def main():
     parser.add_argument(
         "run_file",
         nargs="?",
-        help="The run config (for watch, also a work directory; by default "
-        "the current directory)",
+        help="The run config (for watch, also a work directory or a directory "
+        "holding runs, to watch every one under way; by default the current "
+        "directory)",
     )
     parser.add_argument(
         "--local",

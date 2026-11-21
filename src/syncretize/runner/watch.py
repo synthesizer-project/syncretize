@@ -23,6 +23,13 @@ with one section shows no tabs. Every panel scrolls with the mouse; run.log
 follows new lines unless scrolled up. Keys: l run.log and r the running
 models full screen (again to go back), s your Slurm queue (Esc to go back),
 q quits.
+
+Given a directory holding runs instead (e.g. many runs' directories, each
+with its run.yaml), every run under it that is under way gets a tab of its
+own, holding the view above: 1-9 and 0, Tab and Shift+Tab then pick runs,
+and [ and ] cycle through the shown run's sections. Runs drop off once done
+and appear once submitted (the directory is searched every 30 s). Only the
+run shown is read in full; the others' state files title their tabs.
 """
 
 import functools
@@ -52,6 +59,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import (
+    ContentSwitcher,
     DataTable,
     Footer,
     RichLog,
@@ -118,6 +126,41 @@ def find_work_dir(path=None):
             (yaml.safe_load(file) or {})["Run"]["work_dir"]
         )
     return os.path.normpath(os.path.join(os.path.dirname(path), work_dir))
+
+
+def find_runs(directory):
+    """The runs under a directory, by where they are.
+
+    A run is a directory holding a run.yaml; the directories inside a run
+    aren't searched (they hold its work, not more runs).
+
+    Args:
+        directory (str)
+            The directory to search.
+
+    Returns:
+        dict
+            The work directories of the runs "active" (submitted, not done),
+            "done" and "waiting" (not yet submitted), in path order.
+    """
+    found = {"active": [], "done": [], "waiting": []}
+    for root, dirs, files in os.walk(directory):
+        dirs.sort()
+        if "run.yaml" not in files:
+            continue
+        dirs.clear()
+        try:
+            work_dir = find_work_dir(os.path.join(root, "run.yaml"))
+        except (KeyError, TypeError, yaml.YAMLError):
+            continue  # not a Runner config
+        state = _read_yaml(os.path.join(work_dir, "state.yaml"))
+        if not state:
+            found["waiting"].append(work_dir)
+        elif state.get("next") == "done":
+            found["done"].append(work_dir)
+        else:
+            found["active"].append(work_dir)
+    return found
 
 
 class Watcher:
@@ -199,6 +242,24 @@ class Watcher:
             }
             sections.append(reader.read(state, shared))
         return {"run": run, "sections": sections, "squeue": squeue, "now": now}
+
+    def brief(self):
+        """Only the run's state and each section's (enough for its tab title).
+
+        Returns:
+            dict
+                "run" (the run's state) and "sections" (each section's
+                "label" and "state").
+        """
+        run = _read_yaml(self._path("state.yaml"))
+        sections = [
+            {
+                "label": label,
+                "state": _read_yaml(self._path(name, "state.yaml")),
+            }
+            for label, name in (run.get("sections") or {}).items()
+        ]
+        return {"run": run, "sections": sections}
 
     def _path(self, *names):
         """A path in the run's work directory."""
@@ -738,18 +799,47 @@ def _tab_title(snapshot):
             e.g. "1 c23.01-sps ▸ R3".
     """
     state = snapshot["state"]
+    number = snapshot["label"].removeprefix("C")
+    return f"{number} {state.get('name') or snapshot['label']} {_where(state)}"
+
+
+def _where(state):
+    """Where a section is, from its state, e.g. "▸ R3" or "✓"."""
     stage = state.get("next")
     if stage == "done":
-        where = "✓"
-    elif stage == "finish":
+        return "✓"
+    if stage == "finish":
         where = f"▸ R{state.get('round', 1)}"
-        where += " perturb" if state.get("perturbing") else ""
-    elif stage == "assemble":
-        where = "▸ assembling"
-    else:
-        where = "…"
-    number = snapshot["label"].removeprefix("C")
-    return f"{number} {state.get('name') or snapshot['label']} {where}"
+        return where + (" perturb" if state.get("perturbing") else "")
+    if stage == "assemble":
+        return "▸ assembling"
+    return "…"
+
+
+def _run_title(number, view):
+    """A run's tab title: its place and name, and where each section is.
+
+    Args:
+        number (int)
+            The tab's place.
+        view (dict)
+            What ``Watcher.read`` (or ``Watcher.brief``) returns.
+
+    Returns:
+        str
+            e.g. "2 bc03-2016-chabrier ▸ R3 ✓ ×2" (one section in round 3,
+            two done).
+    """
+    # How many sections are at each place, in order
+    places = {}
+    for snapshot in view["sections"]:
+        if snapshot["label"]:
+            place = _where(snapshot["state"])
+            places[place] = places.get(place, 0) + 1
+    where = " ".join(
+        place + (f" ×{n}" if n > 1 else "") for place, n in places.items()
+    )
+    return f"{number} {view['run'].get('name', '?')} {where or '…'}"
 
 
 def _limit(state):
@@ -1437,6 +1527,63 @@ class _SectionView(Vertical):
             log.write(_log_text(line), scroll_end=following)
 
 
+class _RunView(Vertical):
+    """One run's header and a tab per Cloudy section (the body of its tab)."""
+
+    def compose(self) -> ComposeResult:
+        """The run's header and its sections' tabs."""
+        yield Static(classes="header")
+        yield TabbedContent(classes="sections single")
+
+    @property
+    def sections(self):
+        """The sections' tabs."""
+        return self.query_one(".sections", TabbedContent)
+
+    async def show(self, view):
+        """Draw a read of the run: the header, then each section's tab.
+
+        Args:
+            view (dict)
+                What ``Watcher.read`` returns.
+        """
+        header = self.query_one(".header", Static)
+        header.update(_header(view, header.content_size.width or 118))
+        tabs = self.sections
+        tabs.set_class(len(view["sections"]) == 1, "single")
+        for snapshot in view["sections"]:
+            pane_id = f"tab-{snapshot['label'] or 'run'}"
+            if not tabs.query(f"#{pane_id}"):
+                # A new section (the run's sections are known once it starts)
+                await tabs.add_pane(
+                    TabPane(
+                        _tab_title(snapshot) if snapshot["label"] else "run",
+                        _SectionView(),
+                        id=pane_id,
+                    )
+                )
+            self._show_pane(pane_id, snapshot)
+
+    def _show_pane(self, pane_id, snapshot):
+        """Draw a section's snapshot in its tab, and retitle the tab.
+
+        Args:
+            pane_id (str)
+                The tab's ID.
+            snapshot (dict)
+                The section's snapshot.
+        """
+        tabs = self.sections
+        if snapshot["label"]:
+            tabs.get_tab(pane_id).label = _tab_title(snapshot)
+        tabs.get_pane(pane_id).query_one(_SectionView).show(snapshot)
+
+    def current(self):
+        """The section view of the tab shown, or None before the first read."""
+        pane = self.sections.active_pane
+        return None if pane is None else pane.query_one(_SectionView)
+
+
 class WatchApp(App):
     """The live view of a run."""
 
@@ -1444,14 +1591,17 @@ class WatchApp(App):
     # No panel is focused (and so shows a cursor row) until clicked
     AUTO_FOCUS = None
     CSS = """
-    #header {
+    #header, .header {
         height: 4;
         border: heavy $accent;
         padding: 0 1;
     }
     /* A run with one Cloudy section (or none) has no tabs to pick */
-    .single ContentTabs { display: none; }
-    TabbedContent, ContentSwitcher, TabPane, _SectionView { height: 1fr; }
+    TabbedContent.single > ContentTabs { display: none; }
+    TabbedContent, ContentSwitcher, TabPane, _RunView, _SectionView {
+        height: 1fr;
+    }
+    #status { height: 1; padding: 0 1; }
     TabPane { padding: 0; }
     .top { height: 9; }
     /* Every panel in a row fills it, so their borders line up */
@@ -1520,98 +1670,178 @@ class WatchApp(App):
         ("l", "toggle_max('log')", "Log"),
         ("r", "toggle_max('running')", "Running"),
         ("s", "squeue", "Slurm queue"),
-        # Tab cycles through the sections rather than the panels
-        Binding("tab", "cycle(1)", "Next section", priority=True),
-        Binding("shift+tab", "cycle(-1)", "Previous section", priority=True),
+        # Tab cycles through the runs (or, watching one run, its sections)
+        # rather than the panels
+        Binding("tab", "cycle(1)", "Next", priority=True),
+        Binding("shift+tab", "cycle(-1)", "Previous", priority=True),
         *(
             Binding(str(n % 10), f"pick({n})", show=False)
             for n in range(1, 11)
         ),
+        # Watching several runs, [ and ] cycle through the shown run's
+        # sections
+        Binding(
+            "right_square_bracket",
+            "section(1)",
+            "Next section",
+            key_display="]",
+        ),
+        Binding(
+            "left_square_bracket",
+            "section(-1)",
+            "Previous section",
+            key_display="[",
+        ),
     ]
 
-    def __init__(self, work_dir, interval=2.0):
-        """Watch a run.
+    def __init__(self, work_dir=None, interval=2.0, directory=None):
+        """Watch a run, or the runs under way under a directory.
 
         Args:
             work_dir (str)
                 The run's work directory.
             interval (float)
                 Seconds between redraws.
+            directory (str)
+                A directory holding runs, to watch those under way (see
+                ``find_runs``) instead of one run.
         """
         super().__init__()
-        self.work_dir, self.interval = work_dir, interval
-        self.watcher = Watcher(work_dir)
-        self.view = None
-        self.sub_title = work_dir
+        self.interval, self.directory = interval, directory
+        # Each run's watcher, by its work directory (the runs under way,
+        # watching a directory)
+        self.watchers = {} if directory else {work_dir: Watcher(work_dir)}
+        self.views = {}  # each run's last read, by its work directory
+        self.shown = None  # the work directory of the run shown
+        self._pane_ids = {}  # each run's tab ID, by its work directory
+        self._made = 0  # how many run tabs have been made (for their IDs)
+        self._drawing = False  # whether a read is being drawn
+        self._found_at = -math.inf  # when the directory was last searched
+        self.sub_title = directory or work_dir
 
     def compose(self) -> ComposeResult:
-        """The run's header, a tab per section, and the keys."""
-        yield Static(id="header")
-        yield TabbedContent(id="sections", classes="single")
+        """How many runs are where (watching a directory), a tab per run,
+        and the keys."""
+        status = Static(id="status")
+        status.display = self.directory is not None
+        yield status
+        yield TabbedContent(id="runs", classes="single")
         yield Footer()
 
     def on_mount(self):
-        """Read the run now and every interval."""
+        """Read the runs now and every interval."""
         self.read()
         self.set_interval(self.interval, self.read)
 
+    @property
+    def watcher(self):
+        """The shown run's watcher (None while no run is under way)."""
+        return self.watchers.get(self._shown())
+
+    @property
+    def view(self):
+        """The shown run's last full read (None before the first)."""
+        view = self.views.get(self._shown())
+        return view if view is not None and "now" in view else None
+
+    def _shown(self):
+        """The shown run's work directory (the first run's, at first)."""
+        if self.shown in self.watchers:
+            return self.shown
+        return next(iter(self.watchers), None)
+
     @work(thread=True, exclusive=True)
     def read(self):
-        """Read the run's files (away from the screen, which stays live)."""
-        view = self.watcher.read()
-        self.call_from_thread(self.show, view)
+        """Read the runs' files (away from the screen, which stays live): the
+        shown run's in full, the others' state files only."""
+        if (
+            self.directory is not None
+            and time.monotonic() - self._found_at >= SLURM_EVERY
+        ):
+            found = find_runs(self.directory)
+            self._found_at = time.monotonic()
+            self.watchers = {
+                work_dir: self.watchers.get(work_dir) or Watcher(work_dir)
+                for work_dir in found["active"]
+            }
+            status = Text.assemble(
+                ("◆ syncretize ", "bold magenta"),
+                (self.directory, "bold"),
+                ": ",
+                *(
+                    f"{len(runs)} {where}  "
+                    for where, runs in found.items()
+                    if runs
+                ),
+            )
+            self.call_from_thread(
+                self.query_one("#status", Static).update, status
+            )
+        shown = self._shown()
+        views = {
+            work_dir: watcher.read() if work_dir == shown else watcher.brief()
+            for work_dir, watcher in self.watchers.items()
+        }
+        self.call_from_thread(self.show, views)
 
-    def show(self, view):
-        """Draw what was read: the header, then each section's tab.
+    async def show(self, views):
+        """Draw what was read: a tab per run, the shown run in full.
 
         Args:
-            view (dict)
-                What ``Watcher.read`` returns.
+            views (dict)
+                Each run's read, by its work directory (see ``read``).
         """
-        self.view = view
-        header = self.query_one("#header", Static)
-        header.update(_header(view, header.content_size.width or 118))
-        tabs = self.query_one("#sections", TabbedContent)
-        tabs.set_class(len(view["sections"]) == 1, "single")
-        for snapshot in view["sections"]:
-            pane_id = f"tab-{snapshot['label'] or 'run'}"
-            panes = tabs.query(f"#{pane_id}")
-            if not panes:
-                # A new section (the run's sections are known once it starts)
-                tabs.add_pane(
-                    TabPane(
-                        _tab_title(snapshot) if snapshot["label"] else "run",
-                        _SectionView(),
-                        id=pane_id,
-                    )
-                )
-                # Drawn once the pane is mounted
-                self.call_after_refresh(self._show_pane, pane_id, snapshot)
-                continue
-            self._show_pane(pane_id, snapshot)
-        if isinstance(self.screen, _SlurmQueue):
-            self.screen.show(view)
+        # A read that arrives while the last is being drawn (while new tabs
+        # mount) is dropped; the next will follow it
+        if self._drawing:
+            return
+        self._drawing = True
+        try:
+            await self._draw(views)
+        finally:
+            self._drawing = False
+
+    async def _draw(self, views):
+        """Draw what was read (see ``show``)."""
+        self.views = views
+        runs = self.query_one("#runs", TabbedContent)
+        runs.set_class(len(views) <= 1, "single")
+        # The runs no longer under way lose their tabs
+        for work_dir in list(self._pane_ids):
+            if work_dir not in views:
+                runs.remove_pane(self._pane_ids.pop(work_dir))
+        for number, (work_dir, view) in enumerate(views.items(), 1):
+            title = _run_title(number, view)
+            if work_dir not in self._pane_ids:
+                self._made += 1
+                pane_id = self._pane_ids[work_dir] = f"run-{self._made}"
+                await runs.add_pane(TabPane(title, _RunView(), id=pane_id))
+            pane_id = self._pane_ids[work_dir]
+            runs.get_tab(pane_id).label = title
+            if "now" in view:
+                await runs.get_pane(pane_id).query_one(_RunView).show(view)
+        if isinstance(self.screen, _SlurmQueue) and self.view is not None:
+            self.screen.show(self.view)
         self.refresh_bindings()
 
-    def _show_pane(self, pane_id, snapshot):
-        """Draw a section's snapshot in its tab, and retitle the tab.
+    def on_tabbed_content_tab_activated(self, event):
+        """Read a run in full as soon as its tab is picked."""
+        if event.tabbed_content.id != "runs":
+            return
+        for work_dir, pane_id in self._pane_ids.items():
+            if pane_id == event.pane.id and work_dir != self.shown:
+                self.shown = work_dir
+                self.read()
 
-        Args:
-            pane_id (str)
-                The tab's ID.
-            snapshot (dict)
-                The section's snapshot.
-        """
-        tabs = self.query_one("#sections", TabbedContent)
-        pane = tabs.get_pane(pane_id)
-        if snapshot["label"]:
-            tabs.get_tab(pane_id).label = _tab_title(snapshot)
-        pane.query_one(_SectionView).show(snapshot)
+    def _run_view(self):
+        """The shown run's view, or None before the first read."""
+        pane = self.query_one("#runs", TabbedContent).active_pane
+        return None if pane is None else pane.query_one(_RunView)
 
     def _current(self):
         """The section view of the tab shown, or None before the first read."""
-        pane = self.query_one("#sections", TabbedContent).active_pane
-        return None if pane is None else pane.query_one(_SectionView)
+        run = self._run_view()
+        return None if run is None else run.current()
 
     def on_descendant_focus(self, event):
         """Show the cursor row only in the table being scrolled."""
@@ -1624,12 +1854,18 @@ class WatchApp(App):
             event.widget.show_cursor = False
 
     def check_action(self, action, parameters):
-        """Hide the main view's keys while the Slurm queue is open, and the
-        section keys for a run with one section (or none)."""
+        """Hide the main view's keys while the Slurm queue is open, the run
+        keys with one run, and the section keys for a run with one section
+        (or none)."""
         if isinstance(self.screen, _SlurmQueue):
-            return action not in ("toggle_max", "cycle", "pick")
+            return action not in ("toggle_max", "cycle", "pick", "section")
+        several = self.view is not None and len(self.view["sections"]) > 1
         if action in ("cycle", "pick"):
-            return self.view is not None and len(self.view["sections"]) > 1
+            return len(self.views) > 1 or several
+        if action == "section":
+            return len(self.views) > 1 and several
+        if action == "squeue":
+            return self.watcher is not None
         return True
 
     def action_toggle_max(self, name):
@@ -1644,33 +1880,68 @@ class WatchApp(App):
         elif self._current() is not None:
             self.screen.maximize(self._current().panel(name), container=False)
 
+    def _tabs(self):
+        """The tabs Tab and the number keys pick from: the runs', or watching
+        one run, its sections'."""
+        if len(self.views) > 1 or self._run_view() is None:
+            return self.query_one("#runs", TabbedContent)
+        return self._run_view().sections
+
     def action_cycle(self, step):
-        """Show the next (or previous) section's tab.
+        """Show the next (or previous) run's (or section's) tab.
 
         Args:
             step (int)
                 1 for the next, -1 for the previous.
         """
-        tabs = self.query_one("#sections", TabbedContent)
-        ids = [pane.id for pane in tabs.query(TabPane)]
-        if ids and tabs.active in ids:
-            tabs.active = ids[(ids.index(tabs.active) + step) % len(ids)]
+        _cycle(self._tabs(), step)
 
     def action_pick(self, number):
-        """Show a section's tab by its place (1 to 10).
+        """Show a run's (or section's) tab by its place (1 to 10).
 
         Args:
             number (int)
                 The tab's place.
         """
-        tabs = self.query_one("#sections", TabbedContent)
-        ids = [pane.id for pane in tabs.query(TabPane)]
+        ids = _pane_ids(self._tabs())
         if number <= len(ids):
-            tabs.active = ids[number - 1]
+            self._tabs().active = ids[number - 1]
+
+    def action_section(self, step):
+        """Show the shown run's next (or previous) section's tab.
+
+        Args:
+            step (int)
+                1 for the next, -1 for the previous.
+        """
+        if self._run_view() is not None:
+            _cycle(self._run_view().sections, step)
 
     def action_squeue(self):
         """Open the Slurm queue."""
         self.push_screen(_SlurmQueue())
+
+
+def _cycle(tabs, step):
+    """Show the next (or previous) tab of a TabbedContent.
+
+    Args:
+        tabs (TabbedContent)
+            The tabs.
+        step (int)
+            1 for the next, -1 for the previous.
+    """
+    ids = _pane_ids(tabs)
+    if ids and tabs.active in ids:
+        tabs.active = ids[(ids.index(tabs.active) + step) % len(ids)]
+
+
+def _pane_ids(tabs):
+    """The IDs of a TabbedContent's own panes (not those of tabs inside
+    them), in order."""
+    return [
+        pane.id for pane in tabs.get_child_by_type(ContentSwitcher).children
+    ]
 
 
 def summary(view, log_lines=15):
@@ -1746,14 +2017,23 @@ def watch(path=None, interval=2.0, once=False):
 
     Args:
         path (str)
-            The run (see ``find_work_dir``).
+            The run (see ``find_work_dir``), or a directory holding runs to
+            watch every one under way (see ``find_runs``).
         interval (float)
             Seconds between redraws.
         once (bool)
             Print a summary once and return (e.g. in scripts).
     """
-    work_dir = find_work_dir(path)
+    try:
+        work_dir, directory = find_work_dir(path), None
+    except ValueError:
+        # Not a run, so a directory holding runs
+        work_dir, directory = None, os.path.abspath(path or os.getcwd())
     if once:
-        Console().print(summary(Watcher(work_dir).read()))
+        runs = (
+            [work_dir] if directory is None else find_runs(directory)["active"]
+        )
+        for run in runs:
+            Console().print(summary(Watcher(run).read()))
         return
-    WatchApp(work_dir, interval).run()
+    WatchApp(work_dir, interval, directory=directory).run()

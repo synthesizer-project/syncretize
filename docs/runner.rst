@@ -244,7 +244,7 @@ Watching a run
 
 .. code-block:: console
 
-   syncretize watch [run.yaml | work_dir]
+   syncretize watch [run.yaml | work_dir | directory]
 
 shows a live view of a run that fills the terminal, refreshed every 2 seconds
 (``-n`` to change). The header covers the whole run: its stage and its
@@ -263,7 +263,18 @@ models full screen (again to go back), ``s`` for your Slurm queue, refreshed
 every 10 seconds (``s`` or ``Esc`` to go back), and ``q`` to quit;
 ``--once`` prints a summary once. With no argument it watches the run in the current
 directory. It only reads the run's files (and asks Slurm about its jobs every
-30 seconds), so it can be left running anywhere. ``syncretize`` also takes the
+30 seconds), so it can be left running anywhere.
+
+Given a directory holding runs instead (any directory with runs' ``run.yaml``
+files in it or below, e.g. a campaign's ``runs/``), it watches every run
+under way there: each gets a tab of its own (e.g.
+``2 bc03-2016-chabrier ▸ R3 ✓``, one section in round 3 and one done),
+holding the view above, with a line counting the runs under way, done and
+not yet submitted. Number keys and ``Tab``/``Shift+Tab`` then pick runs, and
+``[`` and ``]`` cycle through the shown run's sections. Runs appear once
+submitted and drop off once done (the directory is searched every 30
+seconds); only the run shown is read in full, the others' state files title
+their tabs. ``--once`` prints a summary of each run under way. ``syncretize`` also takes the
 other stages, e.g. ``syncretize run run.yaml``, the same as
 ``python -m syncretize.runner``.
 
