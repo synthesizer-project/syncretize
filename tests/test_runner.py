@@ -810,7 +810,7 @@ def test_several_cloudy_sections_share_the_incident_grid(
     # watch shows a tab per section, each with its own log
     import asyncio
 
-    from syncretize.runner.watch import WatchApp, Watcher
+    from syncretize.runner.watch import WatchApp, Watcher, _SectionView
 
     view = Watcher(str(tmp_path / "work")).read()
     assert [s["label"] for s in view["sections"]] == ["C1", "C2"]
@@ -820,19 +820,20 @@ def test_several_cloudy_sections_share_the_incident_grid(
         app = WatchApp(str(tmp_path / "work"), interval=0.5)
         async with app.run_test(size=(140, 45)) as pilot:
             await pilot.pause(1.5)
-            tabs = app.query_one(".sections")
+            tabs = app.query_one("#sections")
             assert not tabs.has_class("single")
-            assert tabs.active == "tab-C1"
+            assert tabs.active_pane.query_one(_SectionView) is app._current()
+            first = tabs.active
             await pilot.press("tab")
-            assert tabs.active == "tab-C2"
+            assert tabs.active != first
             await pilot.press("1")
-            assert tabs.active == "tab-C1"
+            assert tabs.active == first
             await pilot.press("q")
 
     asyncio.run(drive())
 
-    # Watching the directory holding the run: a tab per run under way,
-    # [ and ] then cycling through the shown run's sections
+    # Watching a directory holding runs: a tab per section of each run under
+    # way, the shown run read in full
     from syncretize.runner.watch import find_runs
 
     work_dir = str(tmp_path / "work")
@@ -861,13 +862,11 @@ def test_several_cloudy_sections_share_the_incident_grid(
         app = WatchApp(interval=0.5, directory=str(runs))
         async with app.run_test(size=(140, 45)) as pilot:
             await pilot.pause(1.5)
-            assert not app.query_one("#runs").has_class("single")
+            tabs = app.query_one("#sections")
+            titles = [str(tab.label) for tab in tabs.query("ContentTab")]
+            assert titles == ["1 test/C1 ✓", "2 test/C2 ✓", "3 other …"]
             assert app._shown() == work_dir
-            sections = app._run_view().sections
-            assert sections.active == "tab-C1"
-            await pilot.press("right_square_bracket")
-            assert sections.active == "tab-C2"
-            await pilot.press("tab")
+            await pilot.press("3")
             await pilot.pause(0.5)
             assert app._shown() == str(other / "work")
             await pilot.press("q")

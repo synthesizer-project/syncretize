@@ -267,14 +267,13 @@ directory. It only reads the run's files (and asks Slurm about its jobs every
 
 Given a directory holding runs instead (any directory with runs' ``run.yaml``
 files in it or below, e.g. a campaign's ``runs/``), it watches every run
-under way there: each gets a tab of its own (e.g.
-``2 bc03-2016-chabrier ▸ R3 ✓``, one section in round 3 and one done),
-holding the view above, with a line counting the runs under way, done and
-not yet submitted. Number keys and ``Tab``/``Shift+Tab`` then pick runs, and
-``[`` and ``]`` cycle through the shown run's sections. Runs appear once
-submitted and drop off once done (the directory is searched every 30
-seconds); only the run shown is read in full, the others' state files title
-their tabs. ``--once`` prints a summary of each run under way. ``syncretize`` also takes the
+under way there: every Cloudy section of each gets a tab, titled with its
+run's name (and, for a run with several, its label, e.g.
+``3 bpass-2p2p1-bin-chabrier03-0p1-300p0/C2 ▸ R1``), the header covering the
+shown tab's run, under a line counting the runs under way, done and not yet
+submitted. Runs appear once submitted and drop off once done (the directory
+is searched every 30 seconds); only the shown tab's run is read in full, the
+others' state files title their tabs. ``--once`` prints a summary of each run under way. ``syncretize`` also takes the
 other stages, e.g. ``syncretize run run.yaml``, the same as
 ``python -m syncretize.runner``.
 
