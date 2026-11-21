@@ -16,20 +16,20 @@ and, for each Cloudy section (in <work_dir>/<section>):
     state/*.jsonl    the current round's worker records (read as they grow)
     grid_points.json each model's grid point (from the setup)
 
-The header covers the whole run; below it, each Cloudy section has its own
-tab (1-9 and 0 pick one, Tab and Shift+Tab cycle through them), whose log
-shows the run.log lines about that section and the run as a whole. A run
-with one section shows no tabs. Every panel scrolls with the mouse; run.log
-follows new lines unless scrolled up. Keys: l run.log and r the running
-models full screen (again to go back), s your Slurm queue (Esc to go back),
-q quits.
+One grid (Cloudy section) is shown at a time: a card with its run, name,
+stage and progress, then its panels, whose log shows the run.log lines about
+that section and the run as a whole. g opens the all grids page (progress
+across every grid, then a row per grid; Enter shows one), and 1-9 and 0
+show the grid at that place. Every
+panel scrolls with the mouse; run.log follows new lines unless scrolled up.
+Keys: l run.log and r the running models full screen (again to go back), s
+your Slurm queue (Esc to go back), q quits.
 
 Given a directory holding runs instead (e.g. many runs' directories, each
-with its run.yaml), every Cloudy section of every run under way there gets a
-tab (titled with its run's name), the header covering the shown tab's run.
-Runs appear once submitted and drop off once done (the directory is searched
-every 30 s). Only the shown tab's run is read in full; the others' state
-files title their tabs.
+with its run.yaml), every grid of every run under way there is watched. Runs
+appear once submitted and drop off once done (the directory is searched
+every 30 s). Only the shown grid's run is read in full; the others' state
+files and queues are read every QUEUE_EVERY seconds, for the all grids page.
 """
 
 import functools
@@ -59,12 +59,11 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import (
+    ContentSwitcher,
     DataTable,
     Footer,
     RichLog,
     Static,
-    TabbedContent,
-    TabPane,
 )
 
 from syncretize.runner.cloudy import iteration, model_path
@@ -187,6 +186,7 @@ class Watcher:
         self._ended = {}  # job ID: how its tasks ended, from sacct
         self._log_offset = None  # how much of run.log has been read
         self._squeue, self._squeue_at = None, 0.0
+        self._brief, self._briefed_at = None, -math.inf
 
     def read(self):
         """Everything the view shows.
@@ -199,14 +199,7 @@ class Watcher:
                 queue, when asked for) and "now".
         """
         run = _read_yaml(os.path.join(self.work_dir, "state.yaml"))
-        for label, name in (run.get("sections") or {}).items():
-            if label not in self._sections:
-                self._sections[label] = _SectionReader(
-                    os.path.join(self.work_dir, name), label
-                )
-        readers = list(self._sections.values()) or [
-            _SectionReader(self.work_dir, None)
-        ]
+        readers = self._readers(run)
         states = {reader.label: reader.state() for reader in readers}
 
         # The run's start job, then each section's own
@@ -243,26 +236,47 @@ class Watcher:
         return {"run": run, "sections": sections, "squeue": squeue, "now": now}
 
     def brief(self):
-        """Only the run's state and each section's (enough for its tab title).
+        """Only the run's state, and each section's with its queue's counts
+        (enough for its tab and the overview). Read again only every
+        QUEUE_EVERY seconds, as many runs are briefed at once.
 
         Returns:
             dict
                 "run" (the run's state) and "sections" (each section's
-                "label" and "state", or as ``read``, for a run without
-                Cloudy sections yet one of the run itself, labelled None).
+                "label", "state" and "counts", or for a run without Cloudy
+                sections yet one of the run itself, labelled None).
         """
+        if time.monotonic() - self._briefed_at < QUEUE_EVERY:
+            return self._brief
         run = _read_yaml(self._path("state.yaml"))
         sections = [
             {
-                "label": label,
-                "state": _read_yaml(self._path(name, "state.yaml")),
+                "label": reader.label,
+                "run": run,
+                "state": reader.state() if reader.label else run,
+                "counts": reader._queue_counts() if reader.label else {},
             }
-            for label, name in (run.get("sections") or {}).items()
+            for reader in self._readers(run)
         ]
-        return {
-            "run": run,
-            "sections": sections or [{"label": None, "state": run}],
-        }
+        self._brief = {"run": run, "sections": sections}
+        self._briefed_at = time.monotonic()
+        return self._brief
+
+    def _readers(self, run):
+        """Each Cloudy section's reader, or one of the run without Cloudy.
+
+        Args:
+            run (dict)
+                The run's state.
+        """
+        for label, name in (run.get("sections") or {}).items():
+            if label not in self._sections:
+                self._sections[label] = _SectionReader(
+                    os.path.join(self.work_dir, name), label
+                )
+        return list(self._sections.values()) or [
+            _SectionReader(self.work_dir, None)
+        ]
 
     def _path(self, *names):
         """A path in the run's work directory."""
@@ -698,6 +712,11 @@ STAGE_BADGES = {
 #: The badge while failed models' perturbed runs are under way
 PERTURB_BADGE = ("PERTURBING (ROUND {round})", "bold black on bright_magenta")
 
+#: The badges of a round whose workers haven't started (its models all
+#: waiting), and of one with no models left (waiting for its finish job)
+QUEUED_BADGE = ("ROUND {round} QUEUED", "bold black on grey70")
+FINISHING_BADGE = ("ROUND {round} FINISHING", "bold black on cyan")
+
 
 def _header(view, width=118):
     """The header: the run and its stage, then its progress across its grids.
@@ -719,45 +738,110 @@ def _header(view, width=118):
     """
     run, sections = view["run"], view["sections"]
     if len(sections) == 1:
-        state = sections[0]["state"]
-        stage = state.get("next", "?")
-        label, style = STAGE_BADGES.get(stage, (stage.upper(), "bold reverse"))
-        if stage == "finish" and state.get("perturbing"):
-            label, style = PERTURB_BADGE
-        label = label.format(round=state.get("round", "?"))
-        details = [
-            ("round", state.get("round", "-")),
-            ("limit", _limit(state)),
-            ("next job", state.get("next_job", "-")),
-        ]
+        label, style = _badge(sections[0]["state"], sections[0]["counts"])
+        details = _section_details(sections[0]["state"])
     else:
         done = sum(s["state"].get("next") == "done" for s in sections)
         stage = run.get("next", "?")
         label, style = STAGE_BADGES.get(stage, (stage.upper(), "bold reverse"))
         if stage == "cloudy":
             label, style = (
-                f"{len(sections) - done} SECTIONS RUNNING",
+                f"{len(sections) - done} GRIDS RUNNING",
                 "bold black on bright_cyan",
             )
         details = [("grids done", f"{done}/{len(sections)}")]
-
     left = Text.assemble(
-        ("◆ syncretize ", "bold magenta"),
-        (run.get("name", "?"), "bold"),
-        "   ",
-        (f" {label} ", style),
+        (run.get("name", "?"), "bold"), "   ", (f" {label} ", style)
     )
-    right = Text()
-    for name, value in details:
-        right.append(f"{name} ", style="dim")
-        right.append(f"{value}   ")
-    right.append(view["now"].strftime("%H:%M:%S UTC"), style="dim")
-    top = left + " " * max(width - left.cell_len - right.cell_len, 1) + right
+    return Text("\n").join(
+        [_spread(left, _details(details), width), _progress(sections, width)]
+    )
 
-    # Progress across every section's grid points
+
+def _badge(state, counts=None):
+    """A section's stage badge (or a run's without Cloudy), from its state.
+
+    Args:
+        state (dict)
+            Its state file.
+        counts (dict)
+            How many of its models are in each queue state, to tell a round
+            under way from one queued or finishing (None not to).
+
+    Returns:
+        (str, str)
+            Its label, e.g. "ROUND 3 RUNNING", and style.
+    """
+    stage = state.get("next", "?")
+    label, style = STAGE_BADGES.get(stage, (stage.upper(), "bold reverse"))
+    if stage == "finish" and state.get("perturbing"):
+        label, style = PERTURB_BADGE
+    elif stage == "finish" and counts and not counts.get("claimed"):
+        label, style = QUEUED_BADGE if counts.get("todo") else FINISHING_BADGE
+    return label.format(round=state.get("round", "?")), style
+
+
+def _section_details(state):
+    """A section's round, its workers' time limit and its next job."""
+    return [
+        ("round", state.get("round", "-")),
+        ("limit", _limit(state)),
+        ("next job", state.get("next_job", "-")),
+    ]
+
+
+def _details(details):
+    """Name-value pairs as one line, e.g. "round 3 · limit 2:00:00"."""
+    text = Text()
+    for n, (name, value) in enumerate(details):
+        if n:
+            text.append("  ·  ", style="grey50")
+        text.append(f"{name} ", style="dim")
+        text.append(str(value))
+    return text
+
+
+def _counts(counts):
+    """Counts as one line, each before what it counts, e.g. "10 runs under
+    way · 18 done"."""
+    text = Text()
+    for n, (count, what) in enumerate(counts):
+        if n:
+            text.append("  ·  ", style="grey50")
+        text.append(f"{count:,} ", style="bold")
+        text.append(what, style="dim")
+    return text
+
+
+def _spread(left, right, width):
+    """Two texts on one line of the given width, at its two ends."""
+    return left + " " * max(width - left.cell_len - right.cell_len, 1) + right
+
+
+def _bar(fraction, width, style="green"):
+    """A progress bar of the given width, filled to a fraction."""
+    filled = round(max(width, 0) * min(max(fraction, 0.0), 1.0))
+    return Text("━" * filled, style=style) + Text(
+        "━" * (max(width, 0) - filled), style="grey30"
+    )
+
+
+def _progress(snapshots, width):
+    """Progress across sections' grid points: a bar, then the counts.
+
+    Args:
+        snapshots (list of dict)
+            The sections' snapshots (see ``_SectionReader.read``).
+        width (int)
+            The line's width.
+
+    Returns:
+        Text
+            One line, e.g. "━━━━━━━  656/657 grid points (99.8%) · 1 failed".
+    """
     done = failed = total = interpolated = left_to_run = 0
     rate = 0.0
-    for snapshot in sections:
+    for snapshot in snapshots:
         points, filled, _ = _grid_points(snapshot)
         done += points["done"]
         failed += points["failed"]
@@ -767,27 +851,116 @@ def _header(view, width=118):
         left_to_run += counts["todo"] + counts["claimed"]
         rate += _rate(snapshot["records"])
     summary = Text.assemble(
-        " ",
+        "  ",
         (f"{done:,}", "bold green"),
         f"/{total:,} grid points ",
         (f"({100 * done / max(total, 1):.1f}%)", "dim"),
-        ("  ·  ", "dim"),
+        ("  ·  ", "grey50"),
         (f"{failed:,} failed", "bold red" if failed else "dim"),
     )
     if interpolated:
-        summary.append("  ·  ", style="dim")
+        summary.append("  ·  ", style="grey50")
         summary.append(f"{interpolated:,} interpolated", style="bold yellow")
     if rate and left_to_run:
-        summary.append("  ·  ", style="dim")
-        summary.append(
-            f"{rate:.1f}/min, ETA ~{_duration(left_to_run / rate * 60)}"
-        )
-    bar_width = max(width - summary.cell_len, 10)
-    filled = round(bar_width * (done + failed + interpolated) / max(total, 1))
-    bar = Text("━" * filled, style="green") + Text(
-        "━" * (bar_width - filled), style="grey30"
+        summary.append("  ·  ", style="grey50")
+        summary.append(f"{rate:.1f}/min", style="dim")
+        summary.append(f"  ETA ~{_duration(left_to_run / rate * 60)}")
+    fraction = (done + failed + interpolated) / max(total, 1)
+    return _bar(fraction, max(width - summary.cell_len, 10)) + summary
+
+
+def _card(snapshot, width=118):
+    """A grid's card, atop its tab: its run, name and stage, then progress.
+
+    Args:
+        snapshot (dict)
+            The section's snapshot (see ``_SectionReader.read``).
+        width (int)
+            The card's width.
+
+    Returns:
+        Text
+            The two lines.
+    """
+    state = snapshot["state"]
+    title = Text.assemble((snapshot["run"].get("name", "?"), "bold"))
+    if snapshot["label"] is not None:
+        title.append("  ·  ", style="grey50")
+        title.append(f"{snapshot['label']} ", style="bold cyan")
+        title.append(state.get("name") or "", style="bold cyan")
+    label, style = _badge(state, snapshot["counts"])
+    title.append("   ")
+    title.append(f" {label} ", style=style)
+    details = _details(_section_details(state) if snapshot["label"] else [])
+    return Text("\n").join(
+        [_spread(title, details, width), _progress([snapshot], width)]
     )
-    return Text("\n").join([top, bar + summary])
+
+
+def _overview(views, found, width=118):
+    """Progress across every grid being run under a directory.
+
+    Args:
+        views (dict)
+            Each run under way's read (``Watcher.read`` or ``brief``).
+        found (dict)
+            The runs by where they are (see ``find_runs``).
+        width (int)
+            The overview's width.
+
+    Returns:
+        Text
+            Two lines: a bar across every grid's models, then how many runs
+            and grids are where.
+    """
+    counts = {state: 0 for state in STATES}
+    grids = {"done": 0, "running": 0, "starting": 0}
+    for view in views.values():
+        for snapshot in view["sections"]:
+            for state, n in (snapshot.get("counts") or {}).items():
+                counts[state] = counts.get(state, 0) + n
+            stage = snapshot["state"].get("next")
+            if snapshot["label"] is None or stage is None:
+                grids["starting"] += 1
+            else:
+                grids["done" if stage == "done" else "running"] += 1
+    total = sum(counts.values())
+    summary = Text.assemble(
+        "  ",
+        (f"{counts['done']:,}", "bold green"),
+        f"/{total:,} models ",
+        (f"({100 * counts['done'] / max(total, 1):.1f}%)", "dim"),
+        ("  ·  ", "grey50"),
+        (f"{counts['claimed']:,} running", "cyan"),
+        ("  ·  ", "grey50"),
+        (
+            f"{counts['failed']:,} failed",
+            "bold red" if counts["failed"] else "dim",
+        ),
+    )
+    label = Text.assemble((" ALL GRIDS ", "bold black on magenta"), "  ")
+    fraction = (counts["done"] + counts["failed"]) / max(total, 1)
+    bar = _bar(fraction, width - label.cell_len - summary.cell_len)
+    runs = _counts(
+        [
+            (len(found.get(key, [])), where)
+            for where, key in (
+                ("runs under way", "active"),
+                ("done", "done"),
+                ("waiting", "waiting"),
+            )
+            if found.get(key) or key == "active"
+        ]
+    )
+    # e.g. "2 grids done · 19 running"
+    grids = [(n, where) for where, n in grids.items() if n]
+    if grids:
+        grids[0] = (grids[0][0], f"grids {grids[0][1]}")
+    sections = _counts(grids)
+    indent = Text(" " * label.cell_len)
+    return Text("\n").join(
+        [label + bar + summary, _spread(indent + runs, sections, width)]
+    )
 
 
 def _tab_title(snapshot):
@@ -817,31 +990,6 @@ def _where(state):
     if stage == "assemble":
         return "▸ assembling"
     return "…"
-
-
-def _runs_tab_title(number, view, snapshot, alone):
-    """A section's tab title watching several runs: its place, its run's
-    name (and its label, for a run with several sections) and where it is.
-
-    Args:
-        number (int)
-            The tab's place.
-        view (dict)
-            Its run's read (``Watcher.read`` or ``Watcher.brief``).
-        snapshot (dict)
-            The section's snapshot (or, from ``Watcher.brief``, its "label"
-            and "state").
-        alone (bool)
-            Whether it is its run's only section.
-
-    Returns:
-        str
-            e.g. "3 bpass-2p2p1-bin-chabrier03-0p1-300p0/C2 ▸ R1".
-    """
-    name = view["run"].get("name", "?")
-    if not alone:
-        name += f"/{snapshot['label']}"
-    return f"{number} {name} {_where(snapshot['state'])}"
 
 
 def _limit(state):
@@ -970,12 +1118,8 @@ def _round_table(snapshot):
     if times:
         table.add_row(
             "run times",
-            Text.assemble(
-                ("median ", "dim"),
-                _duration(statistics.median(times)),
-                ("  max ", "dim"),
-                _duration(max(times)),
-            ),
+            f"median {_duration(statistics.median(times))}, "
+            f"longest {_duration(max(times))}",
         )
         table.add_row(
             "CPU time",
@@ -1171,12 +1315,16 @@ def _job_status(snapshot, entry):
 
 
 def _job_rows(snapshot):
-    """The jobs table's rows, newest first."""
+    """The jobs table's rows, newest first, each job named without its run's
+    name (e.g. "R3 C1 Cloudy")."""
+    run = f"-{snapshot['run'].get('name')}-"
     return [
         (
             str(entry.get("job")),
             [
-                entry.get("name", entry.get("stage", "")),
+                entry.get("name", entry.get("stage", ""))
+                .replace(run, "-")
+                .replace("-", " "),
                 Text(str(entry.get("job")), style="dim"),
                 _job_status(snapshot, entry),
             ],
@@ -1341,7 +1489,8 @@ def _fill(table, headers, rows, right=(), stretch="even"):
 
     Columns are as wide as their contents, and the room left over goes to
     the stretch columns (their indices, or "even" for every column), so the
-    table fills its panel.
+    table fills its panel; with too little room, the stretch columns (if
+    given) give it up, down to 8 characters, cropping what they hold.
 
     Args:
         headers (list of str)
@@ -1362,10 +1511,15 @@ def _fill(table, headers, rows, right=(), stretch="even"):
     # The room inside the border, less the scrollbar
     room = table.content_size.width - 1
     spare = room - sum(width + 2 * padding for width in widths)
+    targets = list(range(len(widths)) if stretch == "even" else stretch)
     if table.content_size.width and spare > 0:
-        targets = list(range(len(widths)) if stretch == "even" else stretch)
         for n, i in enumerate(targets):
             widths[i] += spare // len(targets) + (n < spare % len(targets))
+    elif table.content_size.width and spare < 0 and stretch != "even":
+        for i in targets:
+            give = min(-spare, max(widths[i] - 8, 0))
+            widths[i] -= give
+            spare += give
     columns = list(table.columns.values())
     if [str(c.label) for c in columns] != list(headers) or [
         c.width for c in columns
@@ -1446,6 +1600,161 @@ class _SlurmQueue(Screen):
         _fill(table, list(SQUEUE_COLUMNS), rows, right=[4, 5, 6])
 
 
+#: The all grids page's columns (the names last, as they may not fit)
+GRID_COLUMNS = (
+    "#",
+    "stage",
+    "progress",
+    "done",
+    "running",
+    "failed",
+    "run",
+    "grid",
+)
+
+
+#: The order of a section's stages, to sort the all grids page by stage
+STAGE_ORDER = ("start", "finish", "assemble", "done")
+
+#: The columns the all grids page sorts by most first (the rest A to Z)
+MOST_FIRST = ("progress", "done", "running", "failed")
+
+
+def _grid_row(snapshot):
+    """A grid's cells in the all grids page (after its place), and what
+    each sorts by.
+
+    Args:
+        snapshot (dict)
+            The section's snapshot (or, from ``Watcher.brief``, its "label",
+            "run", "state" and "counts").
+
+    Returns:
+        (list, list)
+            Its stage, progress bar, models done (of all), running and
+            failed, its run's name and its own; then each one's sort key.
+    """
+    state, label = snapshot["state"], snapshot["label"]
+    counts = snapshot.get("counts") or {}
+    total = sum(counts.values())
+    stage, style = _badge(state, counts) if label else ("STARTING", "blue")
+    done, running, failed = (
+        counts.get(name, 0) for name in ("done", "claimed", "failed")
+    )
+    name = f"{label} {state.get('name', '')}" if label else ""
+    run = snapshot["run"].get("name", "?")
+    next_stage = state.get("next") if label else None
+    cells = [
+        Text(stage.lower(), style=style.split(" on ")[-1]),
+        _bar(done / max(total, 1), 20) if total else Text(""),
+        f"{done:,}/{total:,}",
+        Text(f"{running:,}", style="cyan" if running else "dim"),
+        Text(f"{failed:,}", style="bold red" if failed else "dim"),
+        run,
+        name,
+    ]
+    keys = [
+        (
+            STAGE_ORDER.index(next_stage) if next_stage in STAGE_ORDER else -1,
+            state.get("round", 0),
+        ),
+        done / max(total, 1),
+        done,
+        running,
+        failed,
+        run,
+        name,
+    ]
+    return cells, keys
+
+
+class _AllGrids(Screen):
+    """Every grid being run, full screen: the overview, then a row per grid,
+    sorted by any column (o picks the next, O reverses, or click a column's
+    title). Enter shows the grid; g or Esc goes back."""
+
+    BINDINGS = [
+        ("escape", "app.pop_screen", "Back"),
+        ("g", "app.pop_screen", "Back"),
+        ("o", "sort(1)", "Sort by next column"),
+        ("O", "reverse", "Reverse"),
+        ("q", "app.quit", "Quit"),
+    ]
+
+    def __init__(self):
+        """The page, in place order at first."""
+        super().__init__()
+        self.sort = 0  # the column sorted by
+        self.reverse = False  # whether the sort is reversed
+
+    def compose(self) -> ComposeResult:
+        """The title bar, the overview and the grids."""
+        yield Static(id="title")
+        yield Static(id="overview")
+        yield _table("view")
+        yield Footer()
+
+    def on_mount(self):
+        """Draw now rather than at the next redraw, and pick with the keys."""
+        self.show()
+        self.query_one(".view", DataTable).focus()
+
+    def show(self):
+        """Draw the title, the overview and every grid's row, sorted."""
+        title = self.query_one("#title", Static)
+        title.update(self.app.title_bar(title.content_size.width or 118))
+        overview = self.query_one("#overview", Static)
+        overview.update(self.app.overview(overview.content_size.width or 116))
+        rows = self.app.grid_rows()
+        column = GRID_COLUMNS[self.sort]
+        rows.sort(
+            key=lambda row: row[2][self.sort],
+            reverse=(column in MOST_FIRST) != self.reverse,
+        )
+        table = self.query_one(".view", DataTable)
+        order = "in order" if column == "#" else f"sorted by {column}"
+        if self.reverse:
+            order += ", reversed"
+        table.border_title = (
+            f"All grids ({len(rows)})  ·  {order}  ·  Enter shows one"
+        )
+        _fill(
+            table,
+            list(GRID_COLUMNS),
+            [(key, cells) for key, cells, _ in rows],
+            right=[0, 3, 4, 5],
+            stretch=[7],
+        )
+
+    def action_sort(self, step):
+        """Sort by the next column (from the first, its place, again).
+
+        Args:
+            step (int)
+                How many columns along.
+        """
+        self.sort, self.reverse = (self.sort + step) % len(GRID_COLUMNS), False
+        self.show()
+
+    def action_reverse(self):
+        """Reverse the sort."""
+        self.reverse = not self.reverse
+        self.show()
+
+    def on_data_table_header_selected(self, event):
+        """Sort by the column whose title was clicked (again to reverse)."""
+        if event.column_index == self.sort:
+            self.reverse = not self.reverse
+        else:
+            self.sort, self.reverse = event.column_index, False
+        self.show()
+
+    def on_data_table_row_selected(self, event):
+        """Show the grid picked."""
+        self.app.pop_screen()
+        self.app.select(event.row_key.value)
+
+
 class _SectionView(Vertical):
     """One Cloudy section's panels (the body of its tab)."""
 
@@ -1461,8 +1770,9 @@ class _SectionView(Vertical):
     }
 
     def compose(self) -> ComposeResult:
-        """The panels: the section's queue, round and jobs, its rounds, then
-        its log, failed and running models."""
+        """The section's card, then its panels: its queue, round and jobs,
+        its rounds, then its log, failed and running models."""
+        yield Static(classes="card")
         with Horizontal(classes="top"):
             yield Static(classes="queue")
             yield Static(classes="round")
@@ -1491,6 +1801,8 @@ class _SectionView(Vertical):
                 The section's snapshot (see ``_SectionReader.read``).
         """
         counts = snapshot["counts"]
+        card = self.panel("card")
+        card.update(_card(snapshot, card.content_size.width or 118))
         self.panel("queue").update(_queue_table(snapshot))
         self.panel("round").update(_round_table(snapshot))
         _fill(
@@ -1536,18 +1848,23 @@ class WatchApp(App):
     # No panel is focused (and so shows a cursor row) until clicked
     AUTO_FOCUS = None
     CSS = """
-    #header {
+    /* The title bar, then the tabs, then the overview */
+    #title {
+        height: 1;
+        padding: 0 1;
+        background: $boost;
+    }
+    #header, #overview {
         height: 4;
         border: heavy $accent;
         padding: 0 1;
     }
-    /* A run with one Cloudy section (or none) has no tabs to pick */
-    TabbedContent.single > ContentTabs { display: none; }
-    TabbedContent, ContentSwitcher, TabPane, _SectionView {
-        height: 1fr;
+    .card {
+        height: 4;
+        border: round $secondary;
+        padding: 0 1;
     }
-    #status { height: 1; padding: 0 1; }
-    TabPane { padding: 0; }
+    ContentSwitcher, _SectionView { height: 1fr; }
     .top { height: 9; }
     /* Every panel in a row fills it, so their borders line up */
     .top > *, .bottom > * { height: 100%; }
@@ -1615,9 +1932,7 @@ class WatchApp(App):
         ("l", "toggle_max('log')", "Log"),
         ("r", "toggle_max('running')", "Running"),
         ("s", "squeue", "Slurm queue"),
-        # Tab cycles through the sections rather than the panels
-        Binding("tab", "cycle(1)", "Next section", priority=True),
-        Binding("shift+tab", "cycle(-1)", "Previous section", priority=True),
+        ("g", "grids", "All grids"),
         *(
             Binding(str(n % 10), f"pick({n})", show=False)
             for n in range(1, 11)
@@ -1642,26 +1957,28 @@ class WatchApp(App):
         # watching a directory)
         self.watchers = {} if directory else {work_dir: Watcher(work_dir)}
         self.views = {}  # each run's last read, by its work directory
+        self.found = {}  # the runs by where they are (watching a directory)
         self.shown = None  # the work directory of the run shown
-        # Each section's tab ID, by its run's work directory and its label
+        # Each section's number (naming its view, "view-<n>"), by its run's
+        # work directory and its label
         self._pane_ids = {}
-        self._made = 0  # how many tabs have been made (for their IDs)
+        self._made = 0  # how many views have been made
+        self._order = []  # the views' IDs, in order
         self._found_at = -math.inf  # when the directory was last searched
         self._drawing = False  # whether a read is being drawn
         self.sub_title = directory or work_dir
 
     def compose(self) -> ComposeResult:
-        """How many runs are where (watching a directory), the shown run's
-        header, a tab per section, and the keys."""
-        status = Static(id="status")
-        status.display = self.directory is not None
-        yield status
-        yield Static(id="header")
-        yield TabbedContent(id="sections", classes="single")
+        """The title bar, the shown grid's view, and the keys."""
+        yield Static(id="title")
+        yield ContentSwitcher(id="sections")
         yield Footer()
 
     def on_mount(self):
-        """Read the runs now and every interval."""
+        """Keep the main page's widgets (other pages open over it), then read
+        the runs now and every interval."""
+        self._title = self.query_one("#title", Static)
+        self._switcher = self.query_one("#sections", ContentSwitcher)
         self.read()
         self.set_interval(self.interval, self.read)
 
@@ -1685,30 +2002,17 @@ class WatchApp(App):
     @work(thread=True, exclusive=True)
     def read(self):
         """Read the runs' files (away from the screen, which stays live): the
-        shown run's in full, the others' state files only."""
+        shown run's in full, the others' state files and queues only."""
         if (
             self.directory is not None
             and time.monotonic() - self._found_at >= SLURM_EVERY
         ):
-            found = find_runs(self.directory)
+            self.found = find_runs(self.directory)
             self._found_at = time.monotonic()
             self.watchers = {
                 work_dir: self.watchers.get(work_dir) or Watcher(work_dir)
-                for work_dir in found["active"]
+                for work_dir in self.found["active"]
             }
-            status = Text.assemble(
-                ("◆ syncretize ", "bold magenta"),
-                (self.directory, "bold"),
-                ": ",
-                *(
-                    f"{len(runs)} {where}  "
-                    for where, runs in found.items()
-                    if runs
-                ),
-            )
-            self.call_from_thread(
-                self.query_one("#status", Static).update, status
-            )
         shown = self._shown()
         views = {
             work_dir: watcher.read() if work_dir == shown else watcher.brief()
@@ -1717,14 +2021,14 @@ class WatchApp(App):
         self.call_from_thread(self.show, views)
 
     async def show(self, views):
-        """Draw what was read: the shown run's header, then a tab per section
-        of every run (the shown run's drawn in full).
+        """Draw what was read: the title, then the shown grid's view (and the
+        page open over it).
 
         Args:
             views (dict)
                 Each run's read, by its work directory (see ``read``).
         """
-        # A read that arrives while the last is being drawn (while new tabs
+        # A read that arrives while the last is being drawn (while new views
         # mount) is dropped; the next will follow it
         if self._drawing:
             return
@@ -1737,65 +2041,122 @@ class WatchApp(App):
     async def _draw(self, views):
         """Draw what was read (see ``show``)."""
         self.views = views
-        if self.view is not None:
-            header = self.query_one("#header", Static)
-            header.update(_header(self.view, header.content_size.width or 118))
-        tabs = self.query_one("#sections", TabbedContent)
 
-        # Every run's sections, in order
+        # Every run's sections, in order, each with a view (made as it
+        # appears, dropped once its run is done or has started its sections)
         sections = [
-            (work_dir, view, snapshot)
+            (work_dir, snapshot)
             for work_dir, view in views.items()
             for snapshot in view["sections"]
         ]
-        tabs.set_class(len(sections) <= 1, "single")
-        keys = [(work_dir, s["label"]) for work_dir, _, s in sections]
-        # The sections no longer shown (their run is done, or has started
-        # its sections) lose their tabs
+        keys = [(work_dir, s["label"]) for work_dir, s in sections]
         for key in list(self._pane_ids):
             if key not in keys:
-                await tabs.remove_pane(self._pane_ids.pop(key))
-
-        before = None  # the tab the next new one goes after
-        for number, (work_dir, view, snapshot) in enumerate(sections, 1):
+                n = self._pane_ids.pop(key)
+                await self._switcher.get_child_by_id(f"view-{n}").remove()
+        for work_dir, snapshot in sections:
             key = (work_dir, snapshot["label"])
             if key not in self._pane_ids:
-                # Next to its run's other sections (or first)
-                shown = [pane.id for pane in tabs.query(TabPane)]
-                place = {"after": before} if before else {}
-                if not before and shown:
-                    place = {"before": shown[0]}
                 self._made += 1
-                self._pane_ids[key] = f"tab-{self._made}"
-                await tabs.add_pane(
-                    TabPane("", _SectionView(), id=self._pane_ids[key]),
-                    **place,
+                self._pane_ids[key] = self._made
+                await self._switcher.add_content(
+                    _SectionView(id=f"view-{self._made}")
                 )
-            pane_id = before = self._pane_ids[key]
-            if self.directory is None:
-                title = _tab_title(snapshot) if snapshot["label"] else "run"
-            else:
-                alone = len(view["sections"]) == 1
-                title = _runs_tab_title(number, view, snapshot, alone)
-            tabs.get_tab(pane_id).label = title
-            if "now" in view:
-                tabs.get_pane(pane_id).query_one(_SectionView).show(snapshot)
+            if "now" in snapshot:
+                n = self._pane_ids[key]
+                self._switcher.get_child_by_id(f"view-{n}").show(snapshot)
+        self._order = [f"view-{self._pane_ids[key]}" for key in keys]
+        if self._switcher.current not in self._order and self._order:
+            self.select(self._order[0])
+
+        self._title.update(
+            self.title_bar(self._title.content_size.width or 118)
+        )
         if isinstance(self.screen, _SlurmQueue) and self.view is not None:
             self.screen.show(self.view)
+        if isinstance(self.screen, _AllGrids):
+            self.screen.show()
         self.refresh_bindings()
 
-    def on_tabbed_content_tab_activated(self, event):
-        """Read a run in full as soon as one of its sections' tabs is
-        picked."""
-        for (work_dir, _), pane_id in self._pane_ids.items():
-            if pane_id == event.pane.id and work_dir != self.shown:
+    def title_bar(self, width):
+        """The title bar: what is watched, which grid is shown, and the time.
+
+        Args:
+            width (int)
+                Its width.
+
+        Returns:
+            Text
+        """
+        right = Text()
+        if len(self._order) > 1 and self._switcher.current in self._order:
+            place = self._order.index(self._switcher.current) + 1
+            right.append(f"grid {place} of {len(self._order)}", style="bold")
+            right.append("  ·  ", style="grey50")
+        right.append(
+            datetime.now(timezone.utc).strftime("%H:%M:%S UTC"), style="dim"
+        )
+        subject = self.directory
+        if subject is None:
+            subject = (self.view or {}).get("run", {}).get("name", "")
+        left = Text.assemble(
+            ("◆ syncretize watch", "bold magenta"), "   ", (subject, "bold")
+        )
+        return _spread(left, right, width)
+
+    def overview(self, width):
+        """Progress across every grid under the directory, or the run's.
+
+        Args:
+            width (int)
+                Its width.
+
+        Returns:
+            Text
+        """
+        if self.directory is not None:
+            return _overview(self.views, self.found, width)
+        if self.view is not None:
+            return _header(self.view, width)
+        return Text()
+
+    def select(self, view_id):
+        """Show a grid's view, reading its run in full.
+
+        Args:
+            view_id (str)
+                The view's ID, "view-<n>".
+        """
+        self._switcher.current = view_id
+        n = int(view_id.removeprefix("view-"))
+        for (work_dir, _), number in self._pane_ids.items():
+            if number == n and work_dir != self.shown:
                 self.shown = work_dir
                 self.read()
 
+    def grid_rows(self):
+        """Every grid's row in the all grids page, in order.
+
+        Returns:
+            list of (str, list, list)
+                Each grid's view ID, its cells and what each sorts by.
+        """
+        rows = []
+        for work_dir, view in self.views.items():
+            for snapshot in view["sections"]:
+                n = self._pane_ids.get((work_dir, snapshot["label"]))
+                if n is not None:
+                    place = len(rows) + 1
+                    cells, keys = _grid_row(snapshot)
+                    rows.append(
+                        (f"view-{n}", [str(place), *cells], [place, *keys])
+                    )
+        return rows
+
     def _current(self):
-        """The section view of the tab shown, or None before the first read."""
-        pane = self.query_one("#sections", TabbedContent).active_pane
-        return None if pane is None else pane.query_one(_SectionView)
+        """The section view shown, or None before the first read."""
+        current = self._switcher.visible_content
+        return current if isinstance(current, _SectionView) else None
 
     def on_descendant_focus(self, event):
         """Show the cursor row only in the table being scrolled."""
@@ -1808,19 +2169,19 @@ class WatchApp(App):
             event.widget.show_cursor = False
 
     def check_action(self, action, parameters):
-        """Hide the main view's keys while the Slurm queue is open, the
-        section keys with one section (or none), and the Slurm queue's key
-        with no run."""
-        if isinstance(self.screen, _SlurmQueue):
-            return action not in ("toggle_max", "cycle", "pick")
-        if action in ("cycle", "pick"):
+        """Hide the main page's keys while another page is open, the grid
+        keys with one grid (or none), and the Slurm queue's key with no
+        run."""
+        if isinstance(self.screen, (_SlurmQueue, _AllGrids)):
+            return action not in ("toggle_max", "pick", "grids")
+        if action in ("pick", "grids"):
             return len(self._pane_ids) > 1
         if action == "squeue":
             return self.watcher is not None
         return True
 
     def action_toggle_max(self, name):
-        """Show a panel of the tab shown full screen (or go back if it is).
+        """Show a panel of the grid shown full screen (or go back if it is).
 
         Args:
             name (str)
@@ -1831,33 +2192,23 @@ class WatchApp(App):
         elif self._current() is not None:
             self.screen.maximize(self._current().panel(name), container=False)
 
-    def action_cycle(self, step):
-        """Show the next (or previous) section's tab.
-
-        Args:
-            step (int)
-                1 for the next, -1 for the previous.
-        """
-        tabs = self.query_one("#sections", TabbedContent)
-        ids = [pane.id for pane in tabs.query(TabPane)]
-        if ids and tabs.active in ids:
-            tabs.active = ids[(ids.index(tabs.active) + step) % len(ids)]
-
     def action_pick(self, number):
-        """Show a section's tab by its place (1 to 10).
+        """Show a grid by its place (1 to 10, as in the all grids page).
 
         Args:
             number (int)
-                The tab's place.
+                The grid's place.
         """
-        tabs = self.query_one("#sections", TabbedContent)
-        ids = [pane.id for pane in tabs.query(TabPane)]
-        if number <= len(ids):
-            tabs.active = ids[number - 1]
+        if number <= len(self._order):
+            self.select(self._order[number - 1])
 
     def action_squeue(self):
         """Open the Slurm queue."""
         self.push_screen(_SlurmQueue())
+
+    def action_grids(self):
+        """Open the all grids page."""
+        self.push_screen(_AllGrids())
 
 
 def summary(view, log_lines=15):

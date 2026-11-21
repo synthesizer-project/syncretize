@@ -820,10 +820,11 @@ def test_several_cloudy_sections_share_the_incident_grid(
     for text in ("[C1 assemble]", "[C2 assemble]", "Cloudy section C2"):
         assert text in run_log
 
-    # watch shows a tab per section, each with its own log
+    # watch shows one section at a time, each with its own log, and every
+    # section on the all grids page
     import asyncio
 
-    from syncretize.runner.watch import WatchApp, Watcher, _SectionView
+    from syncretize.runner.watch import WatchApp, Watcher
 
     view = Watcher(str(tmp_path / "work")).read()
     assert [s["label"] for s in view["sections"]] == ["C1", "C2"]
@@ -833,14 +834,32 @@ def test_several_cloudy_sections_share_the_incident_grid(
         app = WatchApp(str(tmp_path / "work"), interval=0.5)
         async with app.run_test(size=(140, 45)) as pilot:
             await pilot.pause(1.5)
-            tabs = app.query_one("#sections")
-            assert not tabs.has_class("single")
-            assert tabs.active_pane.query_one(_SectionView) is app._current()
-            first = tabs.active
-            await pilot.press("tab")
-            assert tabs.active != first
+            switcher = app.query_one("#sections")
+            assert app._current() is switcher.visible_content
+            first = switcher.current
+            await pilot.press("2")
+            assert switcher.current != first
             await pilot.press("1")
-            assert tabs.active == first
+            assert switcher.current == first
+            # The all grids page lists both, and Enter shows the one picked
+            await pilot.press("g")
+            await pilot.pause(0.5)
+            rows = app.grid_rows()
+            assert [cells[7].split()[0] for _, cells, _ in rows] == [
+                "C1",
+                "C2",
+            ]
+            # o sorts by the next column, O reverses, and the place order
+            # comes back after the last
+            page = app.screen
+            await pilot.press("o", "O")
+            assert (page.sort, page.reverse) == (1, True)
+            for _ in range(7):
+                await pilot.press("o")
+            assert (page.sort, page.reverse) == (0, False)
+            await pilot.press("down", "enter")
+            await pilot.pause(0.5)
+            assert switcher.current == rows[1][0]
             await pilot.press("q")
 
     asyncio.run(drive())
@@ -875,9 +894,11 @@ def test_several_cloudy_sections_share_the_incident_grid(
         app = WatchApp(interval=0.5, directory=str(runs))
         async with app.run_test(size=(140, 45)) as pilot:
             await pilot.pause(1.5)
-            tabs = app.query_one("#sections")
-            titles = [str(tab.label) for tab in tabs.query("ContentTab")]
-            assert titles == ["1 test/C1 ✓", "2 test/C2 ✓", "3 other …"]
+            grids = [
+                (cells[6], cells[7].split()[:1])
+                for _, cells, _ in app.grid_rows()
+            ]
+            assert grids == [("test", ["C1"]), ("test", ["C2"]), ("other", [])]
             assert app._shown() == work_dir
             await pilot.press("3")
             await pilot.pause(0.5)

@@ -247,33 +247,36 @@ Watching a run
    syncretize watch [run.yaml | work_dir | directory]
 
 shows a live view of a run that fills the terminal, refreshed every 2 seconds
-(``-n`` to change). The header covers the whole run: its stage and its
-progress across every grid, with the rate and an ETA. Below it each Cloudy
-section has a tab, titled with where it is (e.g. ``2 c23.01-sps ▸ R3``):
-its queue, its current round (workers running and queued, models finished,
-errors, retries and stops, run times), its jobs and how they ended, every
-round so far, the ``run.log`` lines about it and the whole run, the models
-that failed and the models running longest (with their grid points and
-Cloudy iterations; those slow for the round in yellow, to spot one that
-hangs). Number keys ``1``-``9`` and ``0`` pick a tab, and ``Tab`` and
-``Shift+Tab`` cycle through them; a run with one section shows no tabs.
-Every panel scrolls with the mouse, and ``run.log`` follows new lines
-unless scrolled up. Press ``l`` or ``r`` to show ``run.log`` or the running
-models full screen (again to go back), ``s`` for your Slurm queue, refreshed
-every 10 seconds (``s`` or ``Esc`` to go back), and ``q`` to quit;
-``--once`` prints a summary once. With no argument it watches the run in the current
-directory. It only reads the run's files (and asks Slurm about its jobs every
-30 seconds), so it can be left running anywhere.
+(``-n`` to change). It shows one grid (one Cloudy section) at a time: a card
+with the grid's run, name, stage and progress (with the rate and an ETA),
+then its queue, its current round (workers running and queued, models
+finished, errors, retries and stops, run times), its jobs and how they ended,
+every round so far, the ``run.log`` lines about it and the whole run, the
+models that failed and the models running longest (with their grid points
+and Cloudy iterations; those slow for the round in yellow, to spot one that
+hangs). The title bar says which grid is shown, e.g. ``grid 2 of 4``.
+
+Press ``g`` for the all grids page: progress across every grid, then a row
+per grid (its stage, progress, models done, running and failed, its run and
+its name); ``Enter`` shows the grid picked (``g`` or ``Esc`` goes back).
+``o`` sorts the rows by the next column (counts most first, names A to Z),
+``O`` reverses the sort, and clicking a column's title sorts by it. Number
+keys ``1``-``9`` and ``0`` show the grid with that number (``#``). Every
+panel scrolls with the mouse, and ``run.log`` follows new lines unless
+scrolled up. Press ``l`` or ``r`` to show ``run.log`` or the running models
+full screen (again to go back), ``s`` for your Slurm queue, refreshed every 10
+seconds (``s`` or ``Esc`` to go back), and ``q`` to quit; ``--once`` prints a
+summary once. With no argument it watches the run in the current directory.
+It only reads the run's files (and asks Slurm about its jobs every 30
+seconds), so it can be left running anywhere.
 
 Given a directory holding runs instead (any directory with runs' ``run.yaml``
-files in it or below, e.g. a campaign's ``runs/``), it watches every run
-under way there: every Cloudy section of each gets a tab, titled with its
-run's name (and, for a run with several, its label, e.g.
-``3 bpass-2p2p1-bin-chabrier03-0p1-300p0/C2 ▸ R1``), the header covering the
-shown tab's run, under a line counting the runs under way, done and not yet
-submitted. Runs appear once submitted and drop off once done (the directory
-is searched every 30 seconds); only the shown tab's run is read in full, the
-others' state files title their tabs. ``--once`` prints a summary of each run under way. ``syncretize`` also takes the
+files in it or below, e.g. a campaign's ``runs/``), it watches every grid of
+every run under way there, and the all grids page counts the runs under way,
+done and not yet submitted. Runs appear once submitted and drop off once done
+(the directory is searched every 30 seconds); only the shown grid's run is
+read in full, the others' state files and queues every 10 seconds.
+``--once`` prints a summary of each run under way. ``syncretize`` also takes the
 other stages, e.g. ``syncretize run run.yaml``, the same as
 ``python -m syncretize.runner``.
 
