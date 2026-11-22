@@ -34,6 +34,7 @@ every 30 s). Only the shown grid's run is read in full; the others' state
 files and queues are read every QUEUE_EVERY seconds, for the all grids page.
 """
 
+import collections
 import functools
 import getpass
 import glob
@@ -44,6 +45,7 @@ import re
 import shutil
 import statistics
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -73,6 +75,9 @@ from textual.widgets import (
 from syncretize.runner.cloudy import iteration, model_path
 from syncretize.runner.perturb import is_perturbed
 from syncretize.runner.queue import STATES
+
+#: How many run.log lines each grid's log panel holds
+LOG_LINES = 20000
 
 #: How often squeue is asked about the run's jobs (s)
 SLURM_EVERY = 30
@@ -426,7 +431,7 @@ class _SectionReader:
         self._counts, self._counted = None, 0.0
         self._running_cache, self._running_at = [], 0.0
         self._models, self._models_mtime = {}, None
-        self._finished = []  # every finished attempt, from models.json
+        self._finished = []  # every finished run's time, from models.json
         self._names = {state: [] for state in STATES}  # the queue's models
         self._grid_points = None
 
@@ -450,19 +455,23 @@ class _SectionReader:
         Returns:
             dict
                 The shared values and the section's "label", "state",
-                "counts", "records", "attempts", "finished", "running",
+                "counts", "records", "grid_points" (see ``_grid_points``),
+                "rate" (see ``_rate``), "attempts", "finished", "running",
                 "names", "points", "cloudy_dir" and "directory" (its
                 own).
         """
+        counts, records = self._queue_counts(), self._round_records()
         return {
             **shared,
             "label": self.label,
             "state": state,
-            "counts": self._queue_counts(),
-            "records": self._round_records(),
+            "counts": counts,
+            "records": records,
+            "grid_points": _grid_points(self._names, state),
+            "rate": _rate(records),
             "attempts": self._attempts(),
             "finished": self._finished,
-            "running": self._running(),
+            "running": self._running(state.get("cloudy_dir")),
             "names": self._names,
             "points": self._points(state.get("cloudy_dir")),
             "cloudy_dir": state.get("cloudy_dir"),
@@ -504,8 +513,13 @@ class _SectionReader:
                 return None
         return self._grid_points
 
-    def _running(self):
-        """The claimed models and how long they've run, longest first.
+    def _running(self, cloudy_dir):
+        """The claimed models and how long they've run, longest first, with
+        each one's log U and the longest running's Cloudy iterations.
+
+        Args:
+            cloudy_dir (str)
+                The section's Cloudy directory (None before its setup).
 
         A claim is a rename into queue/claimed, which sets the file's ctime,
         so that is when the model started.
@@ -527,6 +541,22 @@ class _SectionReader:
             model, _, owner = name.rpartition("@")
             running.append((model, owner, now - started))
         running.sort(key=lambda item: -item[2])
+        # Each one's log U and, for the longest running, its iteration (read
+        # here, off the screen's thread, as they are files on Lustre)
+        running = [
+            (
+                model,
+                owner,
+                seconds,
+                _ionisation_parameter(cloudy_dir, model)
+                if cloudy_dir
+                else None,
+                iteration(model_path(cloudy_dir, model))
+                if cloudy_dir and n < ITERATIONS_READ
+                else None,
+            )
+            for n, (model, owner, seconds) in enumerate(running)
+        ]
         self._running_cache, self._running_at = running, time.monotonic()
         return running
 
@@ -571,7 +601,7 @@ class _SectionReader:
                 return self._models
             self._models = {m: len(e["attempts"]) for m, e in models.items()}
             self._finished = [
-                attempt
+                attempt.get("seconds", 0)
                 for entry in models.values()
                 for attempt in entry["attempts"]
                 if attempt.get("result") in ("done", "failed")
@@ -682,11 +712,19 @@ def _duration(seconds):
     return f"{seconds / 3600:.1f}h"
 
 
-def _grid_points(snapshot):
+def _grid_points(names, state):
     """How many grid points are in each queue state, and interpolated.
 
     Runs perturbed around failed models aren't points of the grid, and the
-    failed models interpolated from them are filled, not failed.
+    failed models interpolated from them are filled, not failed. A queue
+    holds tens of thousands of models, so this is counted as the section is
+    read (see ``_SectionReader.read``), not as it is drawn.
+
+    Args:
+        names (dict)
+            The models in each queue state.
+        state (dict)
+            The section's state file.
 
     Returns:
         (dict, int, int)
@@ -694,16 +732,12 @@ def _grid_points(snapshot):
             interpolated), how many were interpolated, and how many perturbed
             runs there are.
     """
-    points = {
-        state: sum(not is_perturbed(model) for model in names)
-        for state, names in snapshot["names"].items()
-    }
-    perturbed = sum(
-        is_perturbed(model)
-        for names in snapshot["names"].values()
-        for model in names
-    )
-    interpolated = len(snapshot["state"].get("interpolated") or [])
+    points, perturbed = {}, 0
+    for where, models in names.items():
+        runs = sum(map(is_perturbed, models))
+        points[where] = len(models) - runs
+        perturbed += runs
+    interpolated = len(state.get("interpolated") or [])
     points["failed"] -= interpolated
     return points, interpolated, perturbed
 
@@ -851,14 +885,14 @@ def _progress(snapshots, width):
     done = failed = total = interpolated = left_to_run = 0
     rate = 0.0
     for snapshot in snapshots:
-        points, filled, _ = _grid_points(snapshot)
+        points, filled, _ = snapshot["grid_points"]
         done += points["done"]
         failed += points["failed"]
         interpolated += filled
         total += sum(points.values()) + filled
         counts = snapshot["counts"]
         left_to_run += counts["todo"] + counts["claimed"]
-        rate += _rate(snapshot["records"])
+        rate += snapshot["rate"]
     summary = Text.assemble(
         "  ",
         (f"{done:,}", "bold green"),
@@ -1031,7 +1065,7 @@ def _rate(records, window=600):
 
 def _queue_table(snapshot):
     """The grid points in each state, with their share of the grid."""
-    points, interpolated, perturbed = _grid_points(snapshot)
+    points, interpolated, perturbed = snapshot["grid_points"]
     total = max(sum(points.values()) + interpolated, 1)
     table = Table.grid(padding=(0, 1), expand=True)
     table.add_column(no_wrap=True)
@@ -1077,7 +1111,7 @@ def _round_table(snapshot):
     table.add_column(no_wrap=True)
     if snapshot["state"].get("next") != "finish" and not records:
         # Between rounds (or done): the run's Cloudy time so far
-        cpu = sum(r.get("seconds", 0) for r in snapshot["finished"]) / 3600
+        cpu = sum(snapshot["finished"]) / 3600
         table.add_row("", Text("no round running", style="dim italic"))
         table.add_row("Cloudy runs", f"{len(snapshot['finished']):,}")
         table.add_row("CPU time", f"{cpu:,.1f} h")
@@ -1102,7 +1136,7 @@ def _round_table(snapshot):
         "finished",
         Text.assemble(
             (f"{len(records):,}", "bold green" if records else "dim"),
-            (f"  {_rate(records):.1f}/min" if records else "", "dim"),
+            (f"  {snapshot['rate']:.1f}/min" if records else "", "dim"),
         ),
     )
     # Runs that errored or hit the time limit (and how many did), those put
@@ -1240,10 +1274,11 @@ def _ionisation_parameter(cloudy_dir, model):
         return None
 
 
-def _iteration_text(cloudy_dir, model):
-    if cloudy_dir is None:
-        return "?"
-    now, most = iteration(model_path(cloudy_dir, model))
+def _iteration_text(reached):
+    """A running model's iteration, e.g. "2/10" (from ``iteration``)."""
+    if reached is None:
+        return ""
+    now, most = reached
     if now is None:
         return Text("–", style="yellow")
     return f"{now}/{most}" if most else str(now)
@@ -1389,7 +1424,7 @@ def _running_rows(snapshot):
     Returns:
         (headers, rows, title)
     """
-    running, cloudy_dir = snapshot["running"], snapshot["cloudy_dir"]
+    running = snapshot["running"]
     times = [
         r["seconds"]
         for r in snapshot["records"]
@@ -1400,8 +1435,7 @@ def _running_rows(snapshot):
         snapshot, ["iter", "worker", "time"]
     )
     rows = []
-    for n, (model, owner, seconds) in enumerate(running):
-        u = _ionisation_parameter(cloudy_dir, model) if cloudy_dir else None
+    for model, owner, seconds, u, reached in running:
         rows.append(
             (
                 f"{model}@{owner}",
@@ -1409,9 +1443,7 @@ def _running_rows(snapshot):
                     model,
                     *_point(snapshot["points"], model, columns),
                     *([_format(u, True) if u else "?"] if show_u else []),
-                    _iteration_text(cloudy_dir, model)
-                    if n < ITERATIONS_READ
-                    else "",
+                    _iteration_text(reached),
                     Text(owner, style="dim"),
                     Text(
                         _duration(seconds),
@@ -1631,7 +1663,7 @@ def _model_details(snapshot, model):
     cloudy_dir = snapshot["cloudy_dir"]
     columns = _point_columns(snapshot["points"])
     point = _point(snapshot["points"], model, columns)
-    running = {m: (owner, t) for m, owner, t in snapshot["running"]}
+    running = {m: (owner, t) for m, owner, t, *_ in snapshot["running"]}
     if model in running:
         owner, seconds = running[model]
         status = Text(f"running on {owner} for {_duration(seconds)}", "cyan")
@@ -1775,6 +1807,19 @@ def _fill(table, headers, rows, right=(), stretch="even"):
             give = min(-spare, max(widths[i] - 8, 0))
             widths[i] -= give
             spare += give
+    # Refilling a table is the slowest part of a redraw, so one whose rows
+    # haven't changed is left as it is
+    drawn = (
+        list(headers),
+        widths,
+        [
+            (key, [(_plain(c), str(getattr(c, "style", ""))) for c in cells])
+            for key, cells in rows
+        ],
+    )
+    if getattr(table, "drawn", None) == drawn:
+        return
+    table.drawn = drawn
     columns = list(table.columns.values())
     if [str(c.label) for c in columns] != list(headers) or [
         c.width for c in columns
@@ -2105,6 +2150,24 @@ class _SectionView(Vertical):
         "running": "Running now",
     }
 
+    def __init__(self, **kwargs):
+        """A section's view, empty until its first snapshot."""
+        super().__init__(**kwargs)
+        self.snapshot = None  # the snapshot last drawn
+        self.latest = None  # the latest snapshot, drawn once shown
+        # run.log's lines not yet written to the log panel
+        self.unwritten = collections.deque(maxlen=LOG_LINES)
+
+    def keep(self, snapshot):
+        """Keep a snapshot (and its new run.log lines) to draw when shown.
+
+        Args:
+            snapshot (dict)
+                The section's snapshot (see ``_SectionReader.read``).
+        """
+        self.latest = snapshot
+        self.unwritten.extend(snapshot["log_new"])
+
     def compose(self) -> ComposeResult:
         """The section's card, then its panels: its queue, round and jobs,
         its rounds, then its log, failed and running models."""
@@ -2117,7 +2180,7 @@ class _SectionView(Vertical):
         # scrolls)
         yield _table("rounds")
         with Horizontal(classes="bottom"):
-            yield _Log(classes="log", wrap=True, max_lines=20000)
+            yield _Log(classes="log", wrap=True, max_lines=LOG_LINES)
             with Vertical(classes="right"):
                 yield _table("failed", "Model details")
                 yield _table("running", "Model details")
@@ -2176,8 +2239,10 @@ class _SectionView(Vertical):
         # The log follows new lines, unless scrolled up to read
         log = self.panel("log")
         following = log.scroll_y >= log.max_scroll_y
-        for line in snapshot["log_new"]:
-            log.write(_log_text(line), scroll_end=following)
+        while self.unwritten:
+            log.write(
+                _log_text(self.unwritten.popleft()), scroll_end=following
+            )
 
     def on_data_table_row_selected(self, event):
         """Show the details of the job or model picked."""
@@ -2332,6 +2397,8 @@ class WatchApp(App):
         self._order = []  # the views' IDs, in order
         self._found_at = -math.inf  # when the directory was last searched
         self._drawing = False  # whether a read is being drawn
+        self._reading = False  # whether the runs are being read
+        self._read_lock = threading.Lock()
         self.sub_title = directory or work_dir
 
     def compose(self) -> ComposeResult:
@@ -2365,10 +2432,26 @@ class WatchApp(App):
             return self.shown
         return next(iter(self.watchers), None)
 
-    @work(thread=True, exclusive=True)
+    @work(thread=True)
     def read(self):
         """Read the runs' files (away from the screen, which stays live): the
-        shown run's in full, the others' state files and queues only."""
+        shown run's in full, the others' state files and queues only.
+
+        A read asked for while one is under way (Lustre can take seconds to
+        list a queue) is skipped, so reads don't pile up on each other or
+        read the same files at once; the next interval's read follows.
+        """
+        with self._read_lock:
+            if self._reading:
+                return
+            self._reading = True
+        try:
+            self._read()
+        finally:
+            self._reading = False
+
+    def _read(self):
+        """Read the runs' files and draw them (see ``read``)."""
         if (
             self.directory is not None
             and time.monotonic() - self._found_at >= SLURM_EVERY
@@ -2429,8 +2512,12 @@ class WatchApp(App):
                     _SectionView(id=f"view-{self._made}")
                 )
             if "now" in snapshot:
-                n = self._pane_ids[key]
-                self._switcher.get_child_by_id(f"view-{n}").show(snapshot)
+                # Drawing is slow, so only the grid shown is drawn
+                view_id = f"view-{self._pane_ids[key]}"
+                view = self._switcher.get_child_by_id(view_id)
+                view.keep(snapshot)
+                if view_id == self._switcher.current:
+                    view.show(snapshot)
         self._order = [f"view-{self._pane_ids[key]}" for key in keys]
         if self._switcher.current not in self._order and self._order:
             self.select(self._order[0])
@@ -2494,6 +2581,9 @@ class WatchApp(App):
                 The view's ID, "view-<n>".
         """
         self._switcher.current = view_id
+        view = self._switcher.get_child_by_id(view_id)
+        if view.latest is not None:
+            view.show(view.latest)
         n = int(view_id.removeprefix("view-"))
         for (work_dir, _), number in self._pane_ids.items():
             if number == n and work_dir != self.shown:

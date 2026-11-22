@@ -28,13 +28,21 @@ import time
 #: The Runner's logger
 log = logging.getLogger("syncretize.runner")
 
-BANNER = r"""
-                                         _    _
-  ___  _   _   _ __     ___  _ __   ___ | |_ (_) ____   ___
- / __|| | | | | '_ \   / __|| '__| / _ \| __|| ||_  /  / _ \
- \__ \| |_| | | | | | | (__ | |   |  __/| |_ | | / /  |  __/
- |___/ \__, | |_| |_|  \___||_|    \___| \__||_|/___|  \___|
-       |___/                                     grid runner
+#: Printed as a run starts: its grid of points, named
+BANNER = """
+⡏⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⠉⢹
+⡇⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⢸
+⡇⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⢸
+⡇⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⢸
+⡇⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⢸
+⡇⠀+-+-+-+-+-+-+-+-+-+-+⠀⢸
+⡇⠀|S|Y|N|C|R|E|T|I|Z|E|⠀⢸
+⡇⠀+-+-+-+-+-+-+-+-+-+-+⠀⢸
+⡇⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⢸
+⡇⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⢸
+⡇⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⢸
+⡇⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⠶⠀⢸
+⣇⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣸
 """
 
 #: What run.log lines say made them (e.g. "finish 12379722"), and which
@@ -72,7 +80,9 @@ def setup(work_dir, stage, job=None, run_log=True, section=None):
     log.addHandler(stdout)
     if run_log:
         os.makedirs(work_dir, exist_ok=True)
-        run = logging.FileHandler(os.path.join(work_dir, "run.log"))
+        run = logging.FileHandler(
+            os.path.join(work_dir, "run.log"), encoding="utf-8"
+        )
         run.setLevel(logging.INFO)
         run.setFormatter(_Formatter(_dated))
         log.addHandler(run)

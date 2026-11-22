@@ -438,7 +438,7 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
     # run.log tells the run's story; each model's line is only in the job log
     run_log = (tmp_path / "work" / "run.log").read_text()
     for text in (
-        "grid runner",
+        "|S|Y|N|C|R|E|T|I|Z|E|",
         "max_retries: 2",
         "48 photoionisation models per incident point",
         "Wrote 192 Cloudy inputs",
