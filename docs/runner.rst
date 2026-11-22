@@ -252,11 +252,19 @@ shows a live view of a run that fills the terminal, refreshed every 2 seconds
 (``-n`` to change). It shows one grid (one Cloudy section) at a time: a card
 with the grid's run, name, stage and progress (with the rate and an ETA),
 then its queue, its current round (workers running and queued, models
-finished, errors, retries and stops, run times), its jobs and how they ended,
+finished, how many errored, timed out, were retried and failed, run
+times), its jobs and how they ended,
 every round so far, the ``run.log`` lines about it and the whole run, the
 models that failed and the models running longest (with their grid points
 and Cloudy iterations; those slow for the round in yellow, to spot one that
 hangs). The title bar says which grid is shown, e.g. ``grid 2 of 4``.
+
+``Tab`` moves between the panels with more to show (or click one), and
+``Enter`` shows more: a job's details (its entry in the state file, its
+``run.log`` lines, the end of its Slurm output, its tasks from ``sacct`` and
+its script), a failed or running model's (its grid point, every attempt with
+why it ended, and the end of its Cloudy output), or ``run.log`` full screen.
+The details open over the page; ``Esc`` or ``Enter`` closes them.
 
 Press ``g`` for the all grids page: progress across every grid, then a row
 per grid (its stage, progress, models done, running and failed, its run and
@@ -265,9 +273,10 @@ its name); ``Enter`` shows the grid picked (``g`` or ``Esc`` goes back).
 ``O`` reverses the sort, and clicking a column's title sorts by it. Number
 keys ``1``-``9`` and ``0`` show the grid with that number (``#``). Every
 panel scrolls with the mouse, and ``run.log`` follows new lines unless
-scrolled up. Press ``l`` or ``r`` to show ``run.log`` or the running models
-full screen (again to go back), ``s`` for your Slurm queue, refreshed every 10
-seconds (``s`` or ``Esc`` to go back), and ``q`` to quit; ``--once`` prints a
+scrolled up. Press ``l``, ``r`` or ``f`` to show ``run.log``, the running models
+or the failed models full screen (again to go back), ``s`` for your Slurm
+queue, refreshed every 10 seconds (``Enter`` shows a job's details, ``s`` or
+``Esc`` goes back), and ``q`` to quit; ``--once`` prints a
 summary once. With no argument it watches the run in the current directory.
 It only reads the run's files (and asks Slurm about its jobs every 30
 seconds), so it can be left running anywhere.

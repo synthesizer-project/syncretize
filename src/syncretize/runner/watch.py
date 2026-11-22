@@ -22,8 +22,10 @@ that section and the run as a whole. g opens the all grids page (progress
 across every grid, then a row per grid; Enter shows one), and 1-9 and 0
 show the grid at that place. Every
 panel scrolls with the mouse; run.log follows new lines unless scrolled up.
-Keys: l run.log and r the running models full screen (again to go back), s
-your Slurm queue (Esc to go back), q quits.
+Tab moves between the panels with more to show: Enter shows a job's or a
+model's details over the page (Esc closes them), or run.log full screen.
+Keys: l run.log, r the running and f the failed models full screen (again to
+go back), s your Slurm queue (Esc to go back), q quits.
 
 Given a directory holding runs instead (e.g. many runs' directories, each
 with its run.yaml), every grid of every run under way there is watched. Runs
@@ -34,6 +36,7 @@ files and queues are read every QUEUE_EVERY seconds, for the all grids page.
 
 import functools
 import getpass
+import glob
 import json
 import math
 import os
@@ -51,13 +54,14 @@ from rich.columns import Columns
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.progress_bar import ProgressBar
+from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
-from textual.screen import Screen
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     ContentSwitcher,
     DataTable,
@@ -231,6 +235,7 @@ class Watcher:
                     line for line in log_new if _about_line(line, label)
                 ],
                 "now": now,
+                "work_dir": self.work_dir,
             }
             sections.append(reader.read(state, shared))
         return {"run": run, "sections": sections, "squeue": squeue, "now": now}
@@ -439,13 +444,15 @@ class _SectionReader:
                 What it shares with the run: "run" (the run's state),
                 "jobs" (the start job and the section's own), "slurm" (its
                 live jobs), "ended", "squeue", "log" and "log_new" (the
-                run.log lines about it or the whole run) and "now".
+                run.log lines about it or the whole run), "now" and
+                "work_dir" (the run's).
 
         Returns:
             dict
                 The shared values and the section's "label", "state",
                 "counts", "records", "attempts", "finished", "running",
-                "names", "points" and "cloudy_dir".
+                "names", "points", "cloudy_dir" and "directory" (its
+                own).
         """
         return {
             **shared,
@@ -459,6 +466,7 @@ class _SectionReader:
             "names": self._names,
             "points": self._points(state.get("cloudy_dir")),
             "cloudy_dir": state.get("cloudy_dir"),
+            "directory": self.directory,
         }
 
     def _path(self, *names):
@@ -772,7 +780,8 @@ def _badge(state, counts=None):
         (str, str)
             Its label, e.g. "ROUND 3 RUNNING", and style.
     """
-    stage = state.get("next", "?")
+    # A section with no state yet waits for its run's start job to set it up
+    stage = state.get("next", "start")
     label, style = STAGE_BADGES.get(stage, (stage.upper(), "bold reverse"))
     if stage == "finish" and state.get("perturbing"):
         label, style = PERTURB_BADGE
@@ -1441,6 +1450,250 @@ def _squeue_rows(snapshot):
     return rows, title
 
 
+#: How many of a file's last lines a details overlay shows
+TAIL_LINES = 40
+
+
+def _tail(path, lines=TAIL_LINES, size=65536):
+    """A file's last lines (from its last 64 KB), or None if unreadable."""
+    try:
+        with open(path, "rb") as file:
+            file.seek(0, os.SEEK_END)
+            file.seek(max(0, file.tell() - size))
+            text = file.read().decode(errors="replace")
+    except OSError:
+        return None
+    return text.splitlines()[-lines:]
+
+
+def _part(title, body):
+    """A titled part of a details overlay.
+
+    Args:
+        title (str)
+            Its title.
+        body
+            A Rich renderable, a list of lines (shown as they are, cropped
+            rather than wrapped), or None (shown as "nothing to show").
+    """
+    if body is None or body == []:
+        body = Text("nothing to show", style="dim italic")
+    elif isinstance(body, list):
+        body = Text("\n".join(body), no_wrap=True, overflow="crop")
+    return Group(
+        Text(""), Rule(Text(f" {title} ", style="bold"), align="left"), body
+    )
+
+
+def _pairs(pairs):
+    """Names and their values, a pair per line (those with no value left
+    out)."""
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="dim", no_wrap=True)
+    table.add_column()
+    for name, value in pairs:
+        if value not in (None, ""):
+            table.add_row(
+                name, value if isinstance(value, Text) else str(value)
+            )
+    return table
+
+
+def _rows_table(headers, rows, right=()):
+    """A plain table of rows (None without rows)."""
+    if not rows:
+        return None
+    table = Table(box=box.SIMPLE_HEAD, pad_edge=False)
+    for i, header in enumerate(headers):
+        table.add_column(header, justify="right" if i in right else "left")
+    for row in rows:
+        table.add_row(*(c if isinstance(c, Text) else str(c) for c in row))
+    return table
+
+
+def _job_details(snapshot, job):
+    """What there is to know about one of the run's jobs.
+
+    Its entry in the state file, its tasks (from sacct), the run.log lines
+    it wrote, the end of its Slurm output (an array's newest task's) and
+    its script. Reads files and asks sacct, so runs off the main thread.
+
+    Args:
+        snapshot (dict)
+            The snapshot of a section the job is one of.
+        job (str)
+            The job's ID.
+
+    Returns:
+        Group
+    """
+    entry = next(e for e in snapshot["jobs"] if str(e.get("job")) == job)
+    name = entry.get("name", entry.get("stage", ""))
+    work_dir = snapshot["work_dir"]
+    about = _pairs(
+        [
+            ("name", name),
+            ("status", _job_status(snapshot, entry)),
+            ("stage", entry.get("stage")),
+            *(
+                (key, value)
+                for key, value in entry.items()
+                if key not in ("job", "name", "stage", "script")
+            ),
+        ]
+    )
+
+    # Its lines in run.log, tagged e.g. "[C1 finish 123]" or "[work 123_4]"
+    tag = re.compile(rf"\[[^\]]*\b{re.escape(job)}(_\d+)?\]")
+    try:
+        with open(os.path.join(work_dir, "run.log"), errors="replace") as f:
+            lines = [line.rstrip("\n") for line in f if tag.search(line)]
+    except OSError:
+        lines = []
+    log = Text("\n").join(_log_text(line) for line in lines[-200:])
+
+    # Its Slurm output: an array's tasks each have their own
+    outputs = sorted(
+        glob.glob(os.path.join(work_dir, "logs", f"{name}-{job}.out"))
+        + glob.glob(os.path.join(work_dir, "logs", f"{name}-{job}_*.out")),
+        key=os.path.getmtime,
+    )
+    output_title = "Slurm output"
+    if len(outputs) > 1:
+        task = outputs[-1].rpartition("_")[2].removesuffix(".out")
+        output_title += f" (task {task}, the newest of {len(outputs)})"
+    output = _tail(outputs[-1]) if outputs else None
+
+    tasks = None
+    if shutil.which("sacct") is not None:
+        columns = ["task", "state", "exit code", "elapsed", "node"]
+        try:
+            result = subprocess.run(
+                [
+                    "sacct",
+                    "-n",
+                    "-X",
+                    "-P",
+                    "-j",
+                    job,
+                    "-o",
+                    "JobID,State,ExitCode,Elapsed,NodeList",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            rows = [line.split("|") for line in result.stdout.splitlines()]
+            tasks = _rows_table(columns, rows)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    script = entry.get("script", f"jobs/{name}.sh")
+    return Group(
+        about,
+        _part(f"Its lines in run.log ({len(lines)})", log if lines else None),
+        _part(output_title, output),
+        _part("Its tasks (sacct)", tasks),
+        _part(f"Its script ({script})", _tail(os.path.join(work_dir, script))),
+    )
+
+
+def _other_job(job):
+    """What Slurm says about a job that isn't the run's (scontrol)."""
+    try:
+        result = subprocess.run(
+            ["scontrol", "show", "job", job],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return Text("scontrol isn't here, or didn't answer", style="dim")
+    return Text(result.stdout.strip() or result.stderr.strip())
+
+
+def _model_details(snapshot, model):
+    """What there is to know about a model.
+
+    Its grid point, its attempts (gathered into models.json, and this
+    round's) and the end of its Cloudy output. Reads files, so runs off the
+    main thread.
+
+    Args:
+        snapshot (dict)
+            The snapshot of its section.
+        model (str)
+            The model, e.g. "3_12".
+
+    Returns:
+        Group
+    """
+    cloudy_dir = snapshot["cloudy_dir"]
+    columns = _point_columns(snapshot["points"])
+    point = _point(snapshot["points"], model, columns)
+    running = {m: (owner, t) for m, owner, t in snapshot["running"]}
+    if model in running:
+        owner, seconds = running[model]
+        status = Text(f"running on {owner} for {_duration(seconds)}", "cyan")
+    elif model in _failures(snapshot):
+        status = Text("failed", style="red")
+    else:
+        status = Text("", style="")
+    u = _ionisation_parameter(cloudy_dir, model) if cloudy_dir else None
+    about = _pairs(
+        [
+            ("status", status),
+            (
+                "run around",
+                "grid point " + model.partition("p")[0]
+                if is_perturbed(model)
+                else None,
+            ),
+            *((label, value) for (label, *_), value in zip(columns, point)),
+            ("log U", _format(u, True) if u else None),
+            (
+                "files",
+                model_path(cloudy_dir, model) + ".*" if cloudy_dir else None,
+            ),
+        ]
+    )
+
+    try:
+        with open(os.path.join(snapshot["directory"], "models.json")) as f:
+            attempts = json.load(f).get(model, {}).get("attempts", [])
+    except (OSError, json.JSONDecodeError):
+        attempts = []
+    attempts += [r for r in snapshot["records"] if r["model"] == model]
+    colours = {"done": "green", "failed": "red", "stopped": "yellow"}
+    rows = [
+        [
+            str(n),
+            Text(a["result"], style=colours.get(a["result"], "red")),
+            a.get("owner", ""),
+            (a.get("started") or a.get("found") or "")[:19].replace("T", " "),
+            _duration(a["seconds"]) if "seconds" in a else "",
+            str(a.get("iterations") or ""),
+            a.get("reason") or "",
+        ]
+        for n, a in enumerate(attempts, 1)
+    ]
+    out = model_path(cloudy_dir, model) + ".out" if cloudy_dir else None
+    return Group(
+        about,
+        _part(
+            f"Its attempts ({len(rows)})",
+            _rows_table(
+                ["#", "result", "worker", "started", "took", "iter", "why"],
+                rows,
+                right=[0, 4, 5],
+            ),
+        ),
+        _part(
+            "The end of its Cloudy output (.out)", _tail(out) if out else None
+        ),
+    )
+
+
 #: The colour of each stage's tag in run.log
 STAGE_COLOURS = {
     "run": "magenta",
@@ -1551,14 +1804,40 @@ def _fill(table, headers, rows, right=(), stretch="even"):
     table.scroll_to(y=scroll, animate=False)
 
 
-def _table(name):
+def _table(name, enter=None):
     """A table panel, by its name (its class, e.g. "jobs").
 
     The cursor row shows only while the table is focused (see WatchApp).
+
+    Args:
+        name (str)
+            Its name.
+        enter (str)
+            What Enter does on a row, shown in the footer while the table
+            is focused (e.g. "Job details"); None for a table that isn't
+            focused.
     """
-    return DataTable(
+    table = (DataTable if enter is None else _enter_table(enter))(
         classes=name, zebra_stripes=True, cursor_type="row", show_cursor=False
     )
+    table.can_focus = enter is not None
+    return table
+
+
+@functools.cache
+def _enter_table(enter):
+    """A DataTable whose footer says what Enter does on a row."""
+    return type(
+        "DataTable",
+        (DataTable,),
+        {"BINDINGS": [Binding("enter", "select_cursor", enter)]},
+    )
+
+
+class _Log(RichLog):
+    """run.log's panel, which Enter shows full screen (or back again)."""
+
+    BINDINGS = [Binding("enter", "app.toggle_max('log')", "Full screen")]
 
 
 class _SlurmQueue(Screen):
@@ -1573,7 +1852,7 @@ class _SlurmQueue(Screen):
     def compose(self) -> ComposeResult:
         """The run's header and the queue."""
         yield Static(id="header")
-        yield _table("view")
+        yield _table("view", "Job details")
         yield Footer()
 
     def on_mount(self):
@@ -1598,8 +1877,59 @@ class _SlurmQueue(Screen):
         header.update(_header(view, header.content_size.width or 118))
         table = self.query_one(".view", DataTable)
         rows, title = _squeue_rows(view["sections"][0])
-        table.border_title = title
+        table.border_title = title + " · Enter shows a job"
         _fill(table, list(SQUEUE_COLUMNS), rows, right=[4, 5, 6])
+        self.jobs = {key: cells[0].plain for key, cells in rows}
+
+    def on_data_table_row_selected(self, event):
+        """Show the job picked (an array's, for one of its tasks)."""
+        job = self.jobs.get(event.row_key.value, "")
+        self.app.show_job(job.split("_")[0])
+
+
+class _Details(ModalScreen):
+    """A job's or a model's details, over the page; Esc or Enter closes.
+
+    They are read once, off the main thread, as they open.
+    """
+
+    BINDINGS = [
+        ("escape", "app.pop_screen", "Close"),
+        ("enter", "app.pop_screen", "Close"),
+        ("q", "app.quit", "Quit"),
+    ]
+
+    def __init__(self, title, build):
+        """Details to show.
+
+        Args:
+            title (str)
+                Their title.
+            build (callable)
+                Takes nothing and returns them (a Rich renderable).
+        """
+        super().__init__()
+        self.heading, self.build = title, build
+
+    def compose(self) -> ComposeResult:
+        """A scrolling box, then the keys."""
+        with VerticalScroll(id="details"):
+            yield Static(Text("Reading...", style="dim italic"))
+        yield Footer()
+
+    def on_mount(self):
+        """Title the box and read the details."""
+        self.query_one("#details").border_title = self.heading
+        self.fill()
+
+    @work(thread=True)
+    def fill(self):
+        """Read the details and show them."""
+        try:
+            details = self.build()
+        except Exception as error:  # e.g. a file mid-write
+            details = Text(f"Couldn't read them: {error}", style="red")
+        self.app.call_from_thread(self.query_one(Static).update, details)
 
 
 #: The all grids page's columns (the names last, as they may not fit)
@@ -1645,7 +1975,7 @@ def _grid_row(snapshot):
     )
     name = f"{label} {state.get('name', '')}" if label else ""
     run = snapshot["run"].get("name", "?")
-    next_stage = state.get("next") if label else None
+    next_stage = state.get("next", "start") if label else None
     cells = [
         Text(stage.lower(), style=style.split(" on ")[-1]),
         _bar(done / max(total, 1), 20) if total else Text(""),
@@ -1693,7 +2023,7 @@ class _AllGrids(Screen):
         """The title bar, the overview and the grids."""
         yield Static(id="title")
         yield Static(id="overview")
-        yield _table("view")
+        yield _table("view", "Show grid")
         yield Footer()
 
     def on_mount(self):
@@ -1758,7 +2088,11 @@ class _AllGrids(Screen):
 
 
 class _SectionView(Vertical):
-    """One Cloudy section's panels (the body of its tab)."""
+    """One Cloudy section's panels.
+
+    Tab moves between the panels with more to show: Enter on a job or a
+    model shows its details, and on the log shows it full screen.
+    """
 
     #: Each panel's title
     TITLES = {
@@ -1778,13 +2112,15 @@ class _SectionView(Vertical):
         with Horizontal(classes="top"):
             yield Static(classes="queue")
             yield Static(classes="round")
-            yield _table("jobs")
+            yield _table("jobs", "Job details")
+        # Each round's row says all there is, so it isn't focused (but
+        # scrolls)
         yield _table("rounds")
         with Horizontal(classes="bottom"):
-            yield RichLog(classes="log", wrap=True, max_lines=20000)
+            yield _Log(classes="log", wrap=True, max_lines=20000)
             with Vertical(classes="right"):
-                yield _table("failed")
-                yield _table("running")
+                yield _table("failed", "Model details")
+                yield _table("running", "Model details")
 
     def on_mount(self):
         """Title the panels."""
@@ -1802,6 +2138,7 @@ class _SectionView(Vertical):
             snapshot (dict)
                 The section's snapshot (see ``_SectionReader.read``).
         """
+        self.snapshot = snapshot
         counts = snapshot["counts"]
         card = self.panel("card")
         card.update(_card(snapshot, card.content_size.width or 118))
@@ -1842,6 +2179,20 @@ class _SectionView(Vertical):
         for line in snapshot["log_new"]:
             log.write(_log_text(line), scroll_end=following)
 
+    def on_data_table_row_selected(self, event):
+        """Show the details of the job or model picked."""
+        key, table = event.row_key.value, event.data_table
+        if table.has_class("jobs"):
+            self.app.show_job(key)
+        elif table.has_class("failed") or table.has_class("running"):
+            model = key.partition("@")[0]
+            self.app.push_screen(
+                _Details(
+                    f"Model {model}",
+                    functools.partial(_model_details, self.snapshot, model),
+                )
+            )
+
 
 class WatchApp(App):
     """The live view of a run."""
@@ -1867,6 +2218,18 @@ class WatchApp(App):
         padding: 0 1;
     }
     ContentSwitcher, _SectionView { height: 1fr; }
+    /* A job's or a model's details, over the dimmed page */
+    _Details { align: center middle; background: $background 60%; }
+    #details {
+        width: 90%;
+        height: 85%;
+        border: round $accent;
+        border-title-align: left;
+        border-title-color: $accent;
+        border-title-style: bold;
+        background: $surface;
+        padding: 0 1;
+    }
     .top { height: 9; }
     /* Every panel in a row fills it, so their borders line up */
     .top > *, .bottom > * { height: 100%; }
@@ -1933,6 +2296,7 @@ class WatchApp(App):
         ("q", "quit", "Quit"),
         ("l", "toggle_max('log')", "Log"),
         ("r", "toggle_max('running')", "Running"),
+        ("f", "toggle_max('failed')", "Failed"),
         ("s", "squeue", "Slurm queue"),
         ("g", "grids", "All grids"),
         *(
@@ -2171,9 +2535,11 @@ class WatchApp(App):
             event.widget.show_cursor = False
 
     def check_action(self, action, parameters):
-        """Hide the main page's keys while another page is open, the grid
-        keys with one grid (or none), and the Slurm queue's key with no
-        run."""
+        """Hide the main page's keys while another page is open (all but
+        quit and back under details), the grid keys with one grid (or none),
+        and the Slurm queue's key with no run."""
+        if isinstance(self.screen, _Details):
+            return action in ("quit", "pop_screen")
         if isinstance(self.screen, (_SlurmQueue, _AllGrids)):
             return action not in ("toggle_max", "pick", "grids")
         if action in ("pick", "grids"):
@@ -2203,6 +2569,29 @@ class WatchApp(App):
         """
         if number <= len(self._order):
             self.select(self._order[number - 1])
+
+    def show_job(self, job):
+        """Show a job's details: the run's (with its logs), or what Slurm
+        says about another.
+
+        Args:
+            job (str)
+                The job's ID.
+        """
+        sections = self.view["sections"] if self.view is not None else []
+        snapshot = next(
+            (
+                s
+                for s in sections
+                if any(str(e.get("job")) == job for e in s["jobs"])
+            ),
+            None,
+        )
+        if snapshot is not None:
+            build = functools.partial(_job_details, snapshot, job)
+        else:
+            build = functools.partial(_other_job, job)
+        self.push_screen(_Details(f"Job {job}", build))
 
     def action_squeue(self):
         """Open the Slurm queue."""

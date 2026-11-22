@@ -627,6 +627,7 @@ def check_watch(work_dir):
     from syncretize.runner.watch import (
         WatchApp,
         Watcher,
+        _Details,
         _squeue_rows,
         summary,
     )
@@ -674,7 +675,28 @@ def check_watch(work_dir):
             await pilot.pause(0.2)
             assert app.screen.maximized is section.panel("log")
             await pilot.press("l")
-            await pilot.press("q")
+            # Enter on a failed model shows its details over the page, and
+            # on the log shows it full screen; rounds aren't focused
+            assert not section.panel("rounds").can_focus
+            section.panel("failed").focus()
+            await pilot.pause(0.1)
+            enter = app.screen.active_bindings["enter"].binding
+            assert enter.description == "Model details"
+            await pilot.press("enter")
+            await pilot.pause(0.5)
+            assert isinstance(app.screen, _Details)
+            console = Console(record=True, width=120)
+            console.print(app.screen.build())
+            details = console.export_text()
+            assert "Its attempts (" in details and "failed" in details
+            await pilot.press("escape")
+            await pilot.pause(0.2)
+            assert not isinstance(app.screen, _Details)
+            section.panel("log").focus()
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert app.screen.maximized is section.panel("log")
+            await pilot.press("enter", "q")
 
     asyncio.run(drive())
 
