@@ -225,8 +225,10 @@ incident model's parameters and the Cloudy parameters (fixed, and varied with
 the number of photoionisation models) of each Cloudy section. Each stage
 then adds what it did: the
 incident grid and Cloudy inputs made, each round's workers and time limit, a
-table of the rounds so far after each round (done, errors, retried, stopped,
-lost, failed, left), Cloudy run times, the models that failed with why, and
+table of the rounds so far after each round (done; errored, the runs that
+failed, hit the time limit or were lost with their job; timed out, those that
+hit the time limit; retried, those put back to run again; failed, those given
+up on; and left), Cloudy run times, the models that failed with why, and
 finally the grid and the run's totals. A job that fails says so, with the
 ``resume`` command to carry on.
 

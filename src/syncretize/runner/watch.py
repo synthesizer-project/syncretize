@@ -1096,21 +1096,23 @@ def _round_table(snapshot):
             (f"  {_rate(records):.1f}/min" if records else "", "dim"),
         ),
     )
-    retried = sum(
-        r["result"] == "failed" and r.get("requeued") for r in records
-    )
-    errors = results.count("failed")
+    # Runs that errored or hit the time limit (and how many did), those put
+    # back to run again, and those given up on
+    errored = len(records) - results.count("done")
+    timed_out = results.count("stopped")
+    failed = sum(_given_up(r) for r in records)
     table.add_row(
-        "errors",
+        "errored",
         Text.assemble(
-            (f"{errors}", "bold red" if errors else "dim"),
-            (f"  {retried} retried" if errors else "", "dim"),
+            (f"{errored}", "bold red" if errored else "dim"),
+            (
+                f"  {timed_out} timed out · {errored - failed} retried"
+                f" · {failed} failed"
+                if errored
+                else "",
+                "dim",
+            ),
         ),
-    )
-    stopped = results.count("stopped")
-    table.add_row(
-        "stopped",
-        Text(f"{stopped}", style="bold yellow" if stopped else "dim"),
     )
     times = [
         r["seconds"] for r in records if r["result"] in ("done", "failed")
@@ -1142,9 +1144,6 @@ def _rounds(state, records, counts):
         live["workers"] = submitted.get("workers", "here")
         for result in ("done", "failed", "stopped", "lost"):
             live[result] = sum(r["result"] == result for r in records)
-        live["retried"] = sum(
-            r["result"] == "failed" and r.get("requeued") for r in records
-        )
         live["given_up"] = sum(_given_up(r) for r in records)
         rounds.append(live)
     return rounds
@@ -1247,13 +1246,17 @@ ROUND_COLUMNS = (
     "limit",
     "workers",
     "done",
-    "errors",
+    "errored",
+    "timed out",
     "retried",
-    "stopped",
-    "lost",
     "failed",
     "left",
 )
+
+
+def _errored(r):
+    """A round's runs that errored, hit the time limit or were lost."""
+    return r.get("failed", 0) + r.get("stopped", 0) + r.get("lost", 0)
 
 
 def _round_rows(rounds):
@@ -1270,10 +1273,9 @@ def _round_rows(rounds):
                     r.get("walltime", ""),
                     r.get("workers", "here"),
                     r.get("done", 0),
-                    r.get("failed", 0),
-                    r.get("retried", 0),
+                    _errored(r),
                     r.get("stopped", 0),
-                    r.get("lost", 0),
+                    max(_errored(r) - r.get("given_up", 0), 0),
                     r.get("given_up", 0),
                     r["queue"]["todo"],
                 )
