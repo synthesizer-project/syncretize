@@ -660,10 +660,16 @@ def check_watch(work_dir):
             assert section.panel("failed").row_count == 3
             assert section.panel("rounds").row_count == 1
             assert len(section.panel("log").lines) > 10
-            # The Slurm queue opens and closes
+            # The Slurm queue opens, Enter shows a job, and it closes
+            app.watcher._all_jobs = lambda: jobs
             await pilot.press("s")
             await pilot.pause(0.5)
             assert app.watcher.show_squeue
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert isinstance(app.screen, _Details)
+            await pilot.press("escape")
+            await pilot.pause(0.2)
             await pilot.press("s")
             await pilot.pause(0.2)
             assert not app.watcher.show_squeue

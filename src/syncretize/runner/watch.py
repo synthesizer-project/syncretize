@@ -59,7 +59,6 @@ from rich.progress_bar import ProgressBar
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
-from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -1879,6 +1878,20 @@ def _enter_table(enter):
     )
 
 
+def _background(method):
+    """Run a method in a daemon thread, which quitting doesn't wait for.
+
+    A thread worker's would hold q up until it finished: a read on a slow
+    Lustre, or squeue and sacct, can take many seconds.
+    """
+
+    @functools.wraps(method)
+    def start(self):
+        threading.Thread(target=method, args=(self,), daemon=True).start()
+
+    return start
+
+
 class _Log(RichLog):
     """run.log's panel, which Enter shows full screen (or back again)."""
 
@@ -1901,8 +1914,10 @@ class _SlurmQueue(Screen):
         yield Footer()
 
     def on_mount(self):
-        """Ask for the queue while shown, and now rather than next redraw."""
+        """Ask for the queue while shown, and now rather than next redraw,
+        and pick with the keys."""
         self.app.watcher.show_squeue = True
+        self.query_one(".view", DataTable).focus()
         self.app.read()
         if self.app.view is not None:
             self.show(self.app.view)
@@ -1967,7 +1982,7 @@ class _Details(ModalScreen):
         self.query_one("#details").border_title = self.heading
         self.fill()
 
-    @work(thread=True)
+    @_background
     def fill(self):
         """Read the details and show them."""
         try:
@@ -2432,7 +2447,7 @@ class WatchApp(App):
             return self.shown
         return next(iter(self.watchers), None)
 
-    @work(thread=True)
+    @_background
     def read(self):
         """Read the runs' files (away from the screen, which stays live): the
         shown run's in full, the others' state files and queues only.
