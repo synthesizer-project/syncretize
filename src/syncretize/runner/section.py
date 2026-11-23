@@ -396,8 +396,10 @@ class Section(Stages):
         failed = [
             model for model, state in states.items() if state == "failed"
         ]
+        cloudy_dir = self._load_state()["cloudy_dir"]
+        planned = set(perturb.load(cloudy_dir))
         runs = perturb.advance(
-            self._load_state()["cloudy_dir"],
+            cloudy_dir,
             failed,
             states,
             self.cloudy["perturb"],
@@ -426,6 +428,17 @@ class Section(Stages):
                     f"Retrying {_count(len(runs) - len(new), 'perturbed run')}"
                     " that failed, twice as far out"
                 )
+        # Those not perturbed, as every point next to them failed too
+        left = [
+            model
+            for model, parameters in perturb.load(cloudy_dir).items()
+            if not parameters and model not in planned
+        ]
+        if left:
+            log.info(
+                f"Leaving {_count(len(left), 'failed model')} failed without "
+                "perturbing them: every point next to them failed too"
+            )
         return runs
 
     def assemble(self):

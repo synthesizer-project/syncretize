@@ -176,7 +176,11 @@ axes. The two sides are ``Cloudy.perturb.step`` (default 0.1) of the gap to
 the neighbouring grid value on that side, or ``log_step`` (default 0.05) dex
 for the ionisation parameter; a side that fails is tried again twice as far
 out, up to ``max_steps`` times in all (default 3). Only pairs with
-both sides run are used: a model with none stays failed. Interpolated models
+both sides run are used: a model with none stays failed. A model whose
+every neighbour on the grid of Cloudy axes failed too isn't perturbed at
+all (it's most likely where Cloudy can't run), and stays failed, unless a
+round of perturbed runs makes one of its neighbours interpolable, when it is
+perturbed after all. Interpolated models
 are marked ``1`` in the final grid's ``interpolated`` dataset, and the plan
 and every run are kept in ``perturb.json`` beside the Cloudy inputs. These
 rounds are the section's perturbation phase: their workers are named

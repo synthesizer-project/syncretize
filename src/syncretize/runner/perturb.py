@@ -7,7 +7,11 @@ Cloudy axes, along its ionisation parameter), and queues them. A side that
 fails is tried again twice as far out, up to ``max_steps`` times. The
 assembly then interpolates each pair of successful sides back to the model's
 own parameters (``syncretize.cloudy.create_synthesizer_grid``); a model with
-no successful pair stays failed.
+no successful pair stays failed. A model whose every neighbour on the grid
+of Cloudy axes failed too isn't perturbed: it is most likely in a region
+where Cloudy can't run at all, so it stays failed (with no parameters in
+the plan). Once one of those neighbours can be interpolated (after a round
+of perturbed runs), it is perturbed after all.
 
 The plan and each side's latest run are kept in ``perturb.json`` beside the
 Cloudy inputs:
@@ -80,6 +84,40 @@ def _save(cloudy_dir, plan):
     with open(path + ".tmp", "w") as file:
         json.dump(plan, file, indent=1)
     os.replace(path + ".tmp", path)
+
+
+def _neighbours(cloudy_dir):
+    """Each photoionisation point's neighbours on the grid of Cloudy axes.
+
+    Args:
+        cloudy_dir (str)
+            The grid's Cloudy directory.
+
+    Returns:
+        dict
+            Each photoionisation index's neighbours: the indices one grid
+            value away along one axis (empty with no Cloudy axes known).
+    """
+    try:
+        with open(os.path.join(cloudy_dir, "grid_points.json")) as file:
+            points = json.load(file)["photoionisation"]
+    except FileNotFoundError:
+        return {}
+    values = points["values"]
+    grids = [
+        sorted({v[n] for v in values}) for n in range(len(points["axes"]))
+    ]
+    places = [tuple(g.index(x) for g, x in zip(grids, v)) for v in values]
+    where = {place: j for j, place in enumerate(places)}
+    neighbours = {}
+    for j, place in enumerate(places):
+        neighbours[j] = []
+        for n in range(len(place)):
+            for step in (-1, 1):
+                other = place[:n] + (place[n] + step,) + place[n + 1 :]
+                if other in where:
+                    neighbours[j].append(where[other])
+    return neighbours
 
 
 def _axes(cloudy_dir, model):
@@ -213,6 +251,7 @@ def advance(cloudy_dir, failed, states, settings, write_input):
     """
     plan = load(cloudy_dir)
     queue = []
+    neighbours = _neighbours(cloudy_dir)
 
     def start(model, position, name, parameter, side, level):
         """Write a side's input, note it in the plan and queue it.
@@ -238,9 +277,36 @@ def advance(cloudy_dir, failed, states, settings, write_input):
         parameter[side] = run
         queue.append(f"{model.partition('_')[0]}_{run['name']}")
 
-    # Grid points that have just failed every attempt
+    # The failed models that can now be interpolated: both sides of one of
+    # their parameters ran
+    filled = {
+        model
+        for model, parameters in plan.items()
+        if any(
+            all(
+                states.get(f"{model.partition('_')[0]}_{p[side]['name']}")
+                == "done"
+                for side in ("minus", "plus")
+            )
+            for p in parameters.values()
+        )
+    }
+
+    # Grid points that have just failed every attempt, and those left
+    # surrounded before
     for model in sorted(failed):
-        if is_perturbed(model) or model in plan:
+        if is_perturbed(model) or plan.get(model):
+            continue
+        # Surrounded by failures (none of them interpolated yet), there's
+        # nothing it could be interpolated back from, so it's left failed
+        # until one is
+        incident_index, j = model.split("_")
+        around = [f"{incident_index}_{n}" for n in neighbours.get(int(j), [])]
+        if around and all(
+            states.get(other) == "failed" and other not in filled
+            for other in around
+        ):
+            plan[model] = {}
             continue
         plan[model] = _axes(cloudy_dir, model)
         for position, (name, parameter) in enumerate(plan[model].items()):

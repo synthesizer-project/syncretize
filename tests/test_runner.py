@@ -1216,6 +1216,74 @@ def test_perturb_queues_planned_sides_never_queued(tmp_path):
     assert perturb.advance(str(tmp_path), [], states, settings, None) == []
 
 
+def test_perturb_leaves_models_surrounded_by_failures(tmp_path):
+    """A model whose every neighbour failed isn't perturbed."""
+    from syncretize.runner import perturb
+
+    # A 3 x 2 grid of (nH, U): j = 2 * nH index + U index
+    values = [[nh, u] for nh in (1, 10, 100) for u in (0.01, 0.1)]
+    (tmp_path / "grid_points.json").write_text(
+        json.dumps(
+            {
+                "photoionisation": {
+                    "axes": ["hydrogen_density", "ionisation_parameter"],
+                    "values": values,
+                }
+            }
+        )
+    )
+    written = []
+    settings = {"step": 0.1, "log_step": 0.05, "max_steps": 3}
+    # 0_5's neighbours (0_3 and 0_4) both failed; 0_0 has 0_2 done
+    states = dict.fromkeys(["0_0", "0_1", "0_3", "0_4", "0_5"], "failed")
+    states["0_2"] = "done"
+    runs = perturb.advance(
+        str(tmp_path),
+        ["0_0", "0_5"],
+        states,
+        settings,
+        lambda *args: written.append(args[2]),
+    )
+    assert {run.partition("p")[0] for run in runs} == {"0_0"}
+    assert len(runs) == 4  # either side along both axes
+    plan = perturb.load(str(tmp_path))
+    assert plan["0_5"] == {} and set(plan["0_0"]) == {
+        "hydrogen_density",
+        "ionisation_parameter",
+    }
+
+    # Still surrounded while its neighbours' runs are under way
+    states.update(dict.fromkeys(runs, "todo"))
+    assert (
+        perturb.advance(str(tmp_path), ["0_0", "0_5"], states, settings, None)
+        == []
+    )
+
+    # Once 0_3 can be interpolated, 0_5 is perturbed after all
+    states.update(dict.fromkeys(runs, "failed"))
+    states["0_3"] = "failed"
+    plan["0_3"] = {
+        "ionisation_parameter": {
+            "log": True,
+            "x": -1.0,
+            "minus": {"level": 1, "name": "3p1-1", "x": -1.1},
+            "plus": {"level": 1, "name": "3p1+1", "x": -0.9},
+        }
+    }
+    (tmp_path / perturb.PLAN).write_text(json.dumps(plan))
+    states.update({"0_3p1-1": "done", "0_3p1+1": "done"})
+    settings["max_steps"] = 1  # 0_0's failed sides aren't tried further out
+    runs = perturb.advance(
+        str(tmp_path),
+        ["0_0", "0_5"],
+        states,
+        settings,
+        lambda *args: written.append(args[2]),
+    )
+    assert {run.partition("p")[0] for run in runs} == {"0_5"}
+    assert perturb.load(str(tmp_path))["0_5"]
+
+
 def test_queue_claims_from_a_kept_listing(tmp_path, monkeypatch):
     """A claimer lists todo/ again only once its listing is used up.
 
