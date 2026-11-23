@@ -8,6 +8,7 @@ shared by both.
 """
 
 import os
+import socket
 import time
 from datetime import datetime, timezone
 
@@ -31,6 +32,13 @@ PERTURB_KIND = "PerturbCloudy"
 
 #: Time limit of the finish jobs, which only tidy the queue and submit jobs
 FINISH_WALLTIME = "01:00:00"
+
+
+#: libyaml's (safe) loader and dumper where PyYAML has them, ten times
+#: faster than its own: a section's state file holds every model given up
+#: on, and is loaded and saved many times by each finish job
+YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+YAML_DUMPER = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
 
 
 class Stages:
@@ -204,8 +212,16 @@ class Stages:
         )
 
     def _load_state(self):
-        """The state file, <directory>/state.yaml, as a dict."""
-        return _load(self._path("state.yaml"), yaml.safe_load)
+        """The state file, <directory>/state.yaml, as a dict.
+
+        Returns:
+            dict
+                What it holds (empty when there's none).
+        """
+        return _load(
+            self._path("state.yaml"),
+            lambda file: yaml.load(file, Loader=YAML_LOADER),
+        )
 
     def _save_state(self, **values):
         """Add values to the state file, <directory>/state.yaml.
@@ -217,16 +233,36 @@ class Stages:
         state = self._load_state() | values | {"updated": _now()}
         _save(
             self._path("state.yaml"),
-            lambda file: yaml.safe_dump(state, file, sort_keys=False),
+            lambda file: yaml.dump(
+                state, file, Dumper=YAML_DUMPER, sort_keys=False
+            ),
         )
 
     def _path(self, *names):
-        """A path in this part of the run's directory."""
+        """A path in this part of the run's directory.
+
+        Args:
+            *names
+                The path's parts under ``self.directory``.
+
+        Returns:
+            str
+                The path.
+        """
         return os.path.join(self.directory, *names)
 
 
 def _shape(grid):
-    """A grid's axes and their sizes, e.g. "221 ages x 7 metallicities"."""
+    """A grid's axes and their sizes, e.g. "221 ages x 7 metallicities".
+
+    Args:
+        grid (str)
+            The grid's HDF5 file.
+
+    Returns:
+        str
+            Each axis's size and name, joined by " x ".
+    """
     with h5py.File(grid, "r") as hdf:
         return " x ".join(
             f"{len(hdf['axes'][axis])} {axis}" for axis in hdf.attrs["axes"]
@@ -234,7 +270,16 @@ def _shape(grid):
 
 
 def _clock(when):
-    """A ``time.monotonic()`` as the time of day (UTC)."""
+    """A ``time.monotonic()`` as the time of day (UTC).
+
+    Args:
+        when (float)
+            The ``time.monotonic()``.
+
+    Returns:
+        str
+            It as "HH:MM:SS".
+    """
     wall = time.time() + when - time.monotonic()
     return time.strftime("%H:%M:%S", time.gmtime(wall))
 
@@ -254,6 +299,16 @@ def _dump(values, indent=2):
     """
 
     def plain(value):
+        """A value with numpy arrays as lists and keys as strings.
+
+        Args:
+            value (object)
+                The value (a dict's values are converted too).
+
+        Returns:
+            object
+                The value, as plain YAML can write it.
+        """
         if isinstance(value, dict):
             return {str(k): plain(v) for k, v in value.items()}
         if hasattr(value, "tolist"):
@@ -279,17 +334,44 @@ _Dumper.add_representer(
 
 
 def _count(n, thing, things=None):
-    """E.g. "1 round" or "3 rounds"."""
+    """A count and a noun, e.g. "1 round" or "3 rounds".
+
+    Args:
+        n (int)
+            The count.
+        thing (str)
+            The noun, singular.
+        things (str)
+            Its plural, if not ``thing`` + "s".
+
+    Returns:
+        str
+            The count and the noun.
+    """
     return f"{n} {thing if n == 1 else things or thing + 's'}"
 
 
 def _now():
-    """The time now (UTC), to the second."""
+    """The time now (UTC), to the second.
+
+    Returns:
+        str
+            It in ISO format, e.g. "2025-01-02T03:04:05+00:00".
+    """
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _elapsed(since):
-    """The time since an ISO time (from ``_now``), in seconds."""
+    """The time since an ISO time (from ``_now``), in seconds.
+
+    Args:
+        since (str)
+            The ISO time.
+
+    Returns:
+        float
+            The seconds since.
+    """
     began = datetime.fromisoformat(since)
     return (datetime.now(timezone.utc) - began).total_seconds()
 
@@ -323,6 +405,9 @@ def _save(path, write):
             Writes to the open file.
     """
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path + ".tmp", "w") as file:
+    # Each writer has its own temporary, as two sections' jobs can save the
+    # run's state at once
+    temporary = f"{path}.{socket.gethostname()}.{os.getpid()}.tmp"
+    with open(temporary, "w") as file:
         write(file)
-    os.replace(path + ".tmp", path)
+    os.replace(temporary, path)

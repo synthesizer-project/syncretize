@@ -37,7 +37,19 @@ BLACKBODY = (
 
 
 def write_run(tmp_path, **sections):
-    """Write a run config with a blackbody incident stage."""
+    """Write a run config with a blackbody incident stage.
+
+    Args:
+        tmp_path (pathlib.Path)
+            The directory to write run.yaml in.
+        **sections
+            Sections to add to the config, or to replace its Run and
+            Incident sections with, each a dict of its values.
+
+    Returns:
+        pathlib.Path
+            The path of the run.yaml written.
+    """
     config = {
         "Run": {"name": "test", "work_dir": "work", "grid_dir": "grids"},
         "Incident": {
@@ -53,6 +65,7 @@ def write_run(tmp_path, **sections):
 
 
 def test_template_loads():
+    """The shipped run template loads, with its defaults."""
     config = load_run(TEMPLATE)
     assert config.run["cloudy"]["walltime_growth"] == 1.5
     assert config.sections == {}
@@ -62,6 +75,7 @@ def test_template_loads():
 
 
 def test_defaults_and_relative_paths(tmp_path):
+    """Defaults are filled in and paths are made relative to the config."""
     config = load_run(write_run(tmp_path))
     assert config.run["incident"]["cores"] == 1
     assert config.run["cloudy"]["max_retries"] == 2
@@ -148,11 +162,13 @@ def test_defaults_and_relative_paths(tmp_path):
     ],
 )
 def test_bad_configs(tmp_path, sections, message):
+    """Each bad run config is refused, with a message saying why."""
     with pytest.raises(ValueError, match=message):
         load_run(write_run(tmp_path, **sections))
 
 
 def test_seconds():
+    """Walltimes convert to seconds and back to Slurm's format."""
     assert seconds("00:15:00") == 900
     assert seconds("3-00:00:00") == 3 * 86400
     assert seconds(43200) == 43200  # YAML's reading of 12:00:00
@@ -160,6 +176,7 @@ def test_seconds():
 
 
 def test_local_incident_run(tmp_path):
+    """A local run makes the incident grid, with its run config."""
     path = write_run(
         tmp_path,
         Run={
@@ -186,7 +203,16 @@ def test_local_incident_run(tmp_path):
 
 
 def fake_incident_grid(grid_dir):
-    """Write a 2 x 2 (age, metallicity) incident grid."""
+    """Write a 2 x 2 (age, metallicity) incident grid.
+
+    Args:
+        grid_dir (str or pathlib.Path)
+            The directory to write the grid in.
+
+    Returns:
+        str
+            The path of the grid written.
+    """
     lam = np.geomspace(10, 1e6, 2000)
     ages, metallicities = np.array([1e6, 1e7]), np.array([0.001, 0.02])
     spectra = np.array(
@@ -216,6 +242,7 @@ def fake_incident_grid(grid_dir):
 
 
 def test_cloudy_setup_fills_the_queue(tmp_path):
+    """Cloudy setup writes the inputs and queues every model, kept on redo."""
     grid = fake_incident_grid(tmp_path)
     runner = Runner(
         write_run(
@@ -258,6 +285,7 @@ def test_cloudy_setup_fills_the_queue(tmp_path):
 
 
 def test_cloudy_build_must_match_the_config(tmp_path):
+    """A Cloudy build named for another version than the config's fails."""
     with pytest.raises(ValueError, match="is Cloudy c25 but"):
         load_run(
             write_run(
@@ -276,6 +304,7 @@ def test_cloudy_build_must_match_the_config(tmp_path):
 
 
 def test_unknown_cloudy_config(tmp_path):
+    """A Cloudy config that isn't shipped is refused."""
     with pytest.raises(ValueError, match="shipped Cloudy config"):
         load_run(
             write_run(
@@ -344,13 +373,33 @@ def cloudy_run(
     more=None,
     **cloudy,
 ):
-    """A run's Cloudy section set up to run the fake Cloudy on the fake
-    incident grid, and its queue.
+    """A run's Cloudy section that runs the fake Cloudy, and its queue.
 
-    extra holds Cloudy parameters to add, as an extra_config; perturb is
-    Cloudy.perturb (by default none, so failed models aren't perturbed);
-    more holds more Cloudy sections (e.g. {"Cloudy2": {...}}), whose
-    executable is the fake Cloudy.
+    The run's incident grid is the fake one, written to tmp_path; nothing
+    is set up or run yet.
+
+    Args:
+        tmp_path (pathlib.Path)
+            The directory to put the fake Cloudy, the grid and the run in.
+        monkeypatch (pytest.MonkeyPatch)
+            Sets $FAKE_CLOUDY for the fake Cloudy.
+        behaviours (dict)
+            What the fake Cloudy does for each model or pattern (see
+            FAKE_CLOUDY), e.g. {"1_3": "fail"}.
+        extra (dict)
+            Cloudy parameters to add, written as an extra_config, or None.
+        perturb (dict)
+            The Cloudy section's perturb settings, or None (the default),
+            so failed models aren't perturbed.
+        more (dict)
+            More Cloudy sections (e.g. {"Cloudy2": {...}}), whose
+            executable is the fake Cloudy, or None.
+        **cloudy
+            The run's cloudy settings (Run.cloudy), e.g. max_retries=0.
+
+    Returns:
+        (Section, Queue)
+            The run's first Cloudy section, and its queue.
     """
     exe = tmp_path / "cloudy" / "source" / "cloudy.exe"
     exe.parent.mkdir(parents=True)
@@ -385,10 +434,11 @@ def cloudy_run(
         )
     )
     section = runner.sections[0]
-    return section, Queue(section.queue.root)
+    return section, section.queue
 
 
 def test_local_workers_run_every_model(tmp_path, monkeypatch):
+    """A local run runs, records and assembles every model, failures too."""
     section, queue = cloudy_run(
         tmp_path,
         monkeypatch,
@@ -470,13 +520,21 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
     assert loaded.shape[:2] == (2, 2)
     assert np.prod(loaded.shape[:-1]) == 4 * 48  # the last is wavelength
     assert len(loaded.line_ids) > 0
-    assert loaded.spectra["nebular"].max() > 0
+    assert np.nanmax(loaded.spectra["nebular"]) > 0
     with h5py.File(grid, "r") as hdf:
         failures = hdf["failures"][()]
         assert failures.sum() == 3
         # One each at incident points 1, 2 and 3 (the photoionisation index
         # isn't in C order, so isn't checked)
         assert list(failures.reshape(4, 48).sum(axis=1)) == [0, 1, 1, 1]
+        # The failed points have no spectra or lines, rather than zeros
+        failed = failures.astype(bool)
+        nebular = hdf["spectra/nebular"][()]
+        lines = hdf["lines/luminosity"][()]
+        assert np.isnan(nebular[failed]).all()
+        assert np.isnan(lines[failed]).all()
+        assert np.isfinite(nebular[~failed]).all()
+        assert np.isfinite(lines[~failed]).all()
         assert hdf["RunConfig/Cloudy"].attrs["include_spectra"]
         # How it was made: the Cloudy build, the Cloudy config verbatim and
         # the incident grid's provenance (with its source data)
@@ -494,8 +552,19 @@ def test_local_workers_run_every_model(tmp_path, monkeypatch):
         assert "fake-sps" in hdf["RunConfig/contents"][()].decode()
 
 
-def run_worker(section, deadline, stop_at, can_grow=True, max_retries=2):
-    """Run one worker of 2 loops with deadlines in seconds from now."""
+def run_worker(section, deadline, stop_at, max_retries=2):
+    """Run one worker of 2 loops with deadlines in seconds from now.
+
+    Args:
+        section (Section)
+            The set up Cloudy section whose queue the worker runs.
+        deadline (float)
+            Seconds from now after which no model is claimed.
+        stop_at (float)
+            Seconds from now at which running models are stopped.
+        max_retries (int)
+            How many times a failed model is run again.
+    """
     now = time.monotonic()
     work(
         section.queue.root,
@@ -509,11 +578,11 @@ def run_worker(section, deadline, stop_at, can_grow=True, max_retries=2):
         record_file=section._path("state", "1.jsonl"),
         deadline=now + deadline,
         stop_at=now + stop_at,
-        can_grow=can_grow,
     )
 
 
 def test_workers_stop_claiming_at_their_deadline(tmp_path, monkeypatch):
+    """Workers claim no models after their deadline."""
     section, queue = cloudy_run(tmp_path, monkeypatch, {"*": "sleep"})
     section.setup(section.config.incident["grid"])
     start = time.monotonic()
@@ -528,6 +597,7 @@ def test_workers_stop_claiming_at_their_deadline(tmp_path, monkeypatch):
 
 
 def test_workers_claim_only_models_with_time_to_finish(tmp_path, monkeypatch):
+    """Workers don't claim models they likely haven't time to finish."""
     section, queue = cloudy_run(tmp_path, monkeypatch, {"*": "sleep"})
     section.setup(section.config.incident["grid"])
     run_worker(section, deadline=10, stop_at=0.9)
@@ -541,6 +611,7 @@ def test_workers_claim_only_models_with_time_to_finish(tmp_path, monkeypatch):
 def test_workers_stop_their_cloudy_runs_at_the_time_limit(
     tmp_path, monkeypatch
 ):
+    """Workers stop Cloudy runs at the time limit and put them back."""
     section, queue = cloudy_run(tmp_path, monkeypatch, {"*": "hang"})
     section.setup(section.config.incident["grid"])
     start = time.monotonic()
@@ -565,14 +636,16 @@ def test_workers_stop_their_cloudy_runs_at_the_time_limit(
     assert len(stopped) == 2
     assert stopped[0]["result"] == "stopped" and stopped[0]["requeued"]
 
-    # When the limit can't grow, a stopped run counts as failed
-    run_worker(section, deadline=0.5, stop_at=1, can_grow=False, max_retries=0)
-    assert queue.counts()["failed"] == 2
+    # Even when the limit can't grow: running out of time isn't a failure
+    section._save_state(walltime="3-00:00:00")
+    run_worker(section, deadline=0.5, stop_at=1, max_retries=0)
+    assert queue.counts()["failed"] == 0
 
 
 def test_finish_requeues_stopped_workers_models_with_a_longer_limit(
     tmp_path, monkeypatch
 ):
+    """Finish requeues lost claims with a longer time limit, up to the most."""
     section, queue = cloudy_run(tmp_path, monkeypatch, {}, max_retries=0)
     section.setup(section.config.incident["grid"])
     queue.claim("7_1.0", n=2)
@@ -591,18 +664,22 @@ def test_finish_requeues_stopped_workers_models_with_a_longer_limit(
     assert len(lost) == 3
     assert all(attempts[0]["result"] == "lost" for attempts in lost)
 
-    # Up to max_walltime, and then a stopped model counts as failed
+    # Up to max_walltime, where the section stops (rather than failing
+    # them) until max_walltime is raised
     queue.claim("8_1.0")
     section.finish(lambda owner: False)
     assert section._load_state()["walltime"] == "1-03:00:00"
     section._save_state(walltime="3-00:00:00")
-    (model,) = queue.claim("9_1.0")
-    section.finish(lambda owner: False)
-    assert os.listdir(Path(queue.root) / "failed") == [model]
-    assert section._load_state()["walltime"] == "3-00:00:00"
+    queue.claim("9_1.0")
+    assert section.finish(lambda owner: False) == "walltime"
+    assert queue.counts()["failed"] == 0
+    assert queue.counts()["todo"] == 4 * 48
+    state = section._load_state()
+    assert (state["next"], state["walltime"]) == ("walltime", "3-00:00:00")
 
 
 def test_finish_moves_on_when_the_queue_is_empty(tmp_path, monkeypatch):
+    """Finish moves on to assembly once every model is done."""
     section, queue = cloudy_run(tmp_path, monkeypatch, {})
     section.setup(section.config.incident["grid"])
     for model in queue.claim("1.0", n=4 * 48):
@@ -611,6 +688,7 @@ def test_finish_moves_on_when_the_queue_is_empty(tmp_path, monkeypatch):
 
 
 def test_finish_refuses_while_workers_run(tmp_path, monkeypatch):
+    """Finish refuses while a running worker still holds a claim."""
     section, queue = cloudy_run(tmp_path, monkeypatch, {})
     section.setup(section.config.incident["grid"])
     queue.claim("1.0")
@@ -619,7 +697,12 @@ def test_finish_refuses_while_workers_run(tmp_path, monkeypatch):
 
 
 def check_watch(work_dir):
-    """syncretize watch shows a finished local run, in every view."""
+    """Check syncretize watch shows a finished local run, in every view.
+
+    Args:
+        work_dir (str)
+            The finished run's work directory.
+    """
     import asyncio
 
     from rich.console import Console
@@ -653,6 +736,7 @@ def check_watch(work_dir):
     assert len(rows) == 1 and "1 running" in title
 
     async def drive():
+        """Press through the watch app's views and panels of the run."""
         app = WatchApp(work_dir, interval=0.5)
         async with app.run_test(size=(140, 45)) as pilot:
             await pilot.pause(1.5)
@@ -708,6 +792,7 @@ def check_watch(work_dir):
 
 
 def test_points_below_the_ionising_threshold_arent_run(tmp_path, monkeypatch):
+    """Points below the ionising threshold aren't run; light passes through."""
     # A threshold between the fake grid's lowest and highest log10 Q(HI)
     (tmp_path / "probe").mkdir()
     grid = fake_incident_grid(tmp_path / "probe")
@@ -750,6 +835,7 @@ def test_points_below_the_ionising_threshold_arent_run(tmp_path, monkeypatch):
 def test_failed_models_are_interpolated_from_perturbed_runs(
     tmp_path, monkeypatch
 ):
+    """Failed models are interpolated from perturbed runs where they can be."""
     section, queue = cloudy_run(
         tmp_path,
         monkeypatch,
@@ -811,6 +897,7 @@ def test_failed_models_are_interpolated_from_perturbed_runs(
 def test_several_cloudy_sections_share_the_incident_grid(
     tmp_path, monkeypatch
 ):
+    """Several Cloudy sections share the incident grid, each making a grid."""
     density = tmp_path / "density.yaml"
     density.write_text(yaml.safe_dump({"hydrogen_density": 100.0}))
     first, _ = cloudy_run(
@@ -859,6 +946,7 @@ def test_several_cloudy_sections_share_the_incident_grid(
     assert not any("[C1 " in line for line in view["sections"][1]["log"])
 
     async def drive():
+        """Switch between the sections and pick one on the all grids page."""
         app = WatchApp(str(tmp_path / "work"), interval=0.5)
         async with app.run_test(size=(140, 45)) as pilot:
             await pilot.pause(1.5)
@@ -919,6 +1007,7 @@ def test_several_cloudy_sections_share_the_incident_grid(
     )
 
     async def drive_directory():
+        """Check a directory of runs shows a tab per section, and the pick."""
         app = WatchApp(interval=0.5, directory=str(runs))
         async with app.run_test(size=(140, 45)) as pilot:
             await pilot.pause(1.5)
@@ -934,3 +1023,222 @@ def test_several_cloudy_sections_share_the_incident_grid(
             await pilot.press("q")
 
     asyncio.run(drive_directory())
+
+
+def test_watch_reads_state_again_only_once_changed(tmp_path):
+    """A state file is parsed again only once it has been replaced."""
+    from syncretize.runner.watch import _read_yaml
+
+    path = tmp_path / "state.yaml"
+    path.write_text("next: finish\n")
+    first = _read_yaml(str(path))
+    assert first == {"next": "finish"} and _read_yaml(str(path)) is first
+    # Saved as the Runner does, by replacing the file
+    (tmp_path / "state.yaml.tmp").write_text("next: assemble\n")
+    os.replace(tmp_path / "state.yaml.tmp", path)
+    assert _read_yaml(str(path)) == {"next": "assemble"}
+    assert _read_yaml(str(tmp_path / "missing.yaml")) == {}
+
+
+def test_watch_keeps_only_ended_jobs_from_sacct(monkeypatch):
+    """An array with a task still going isn't recorded as ended."""
+    from syncretize.runner import watch
+
+    out = "1_0|COMPLETED\n1_1|SUSPENDED\n2|CANCELLED by 5\n2_1|TIMEOUT\n"
+    monkeypatch.setattr(
+        watch.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, out, ""),
+    )
+    assert watch._sacct(["1", "2"]) == {"2": {"CANCELLED": 1, "TIMEOUT": 1}}
+
+
+def test_watch_failures_leave_out_perturbed_runs():
+    """Perturbed runs given up on aren't listed as failed models.
+
+    They're interpolated past, so aren't failures of the grid.
+    """
+    from syncretize.runner.watch import _failures
+
+    records = [
+        {"model": "3_1", "attempt": 3, "requeued": False, "reason": "x"},
+        {"model": "3_1p0+1", "attempt": 3, "requeued": False, "reason": "y"},
+        {"model": "4_2", "attempt": 1, "requeued": True, "reason": "z"},
+    ]
+    snapshot = {"state": {"failures": {"1_1": "w"}}, "records": records}
+    assert _failures(snapshot) == {"1_1": "w", "3_1": "x"}
+
+
+def test_worker_puts_back_a_claim_it_has_no_time_for(tmp_path):
+    """Models claimed together don't start after the claiming deadline."""
+    exe = tmp_path / "cloudy" / "source" / "cloudy.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("#!/bin/sh\nsleep 3\n")
+    exe.chmod(0o755)
+    (tmp_path / "inputs" / "0").mkdir(parents=True)
+    queue = Queue(str(tmp_path / "queue"))
+    queue.add(["0_0", "0_1", "0_2"])
+    now = time.monotonic()
+    records = work(
+        queue.root,
+        str(tmp_path / "inputs"),
+        str(exe.parents[1]),
+        "1_0",
+        slots=1,
+        claim=3,
+        extensions=["cont"],
+        max_retries=0,
+        record_file=str(tmp_path / "state" / "1_0.jsonl"),
+        deadline=now + 0.5,
+        stop_at=now + 1.0,
+    )
+    # The first was stopped at the time limit; the other two never ran
+    assert [r["result"] for r in records] == ["stopped"]
+    assert queue.counts() == {"todo": 3, "claimed": 0, "done": 0, "failed": 0}
+
+
+def test_worker_records_a_model_it_cannot_run(tmp_path):
+    """A model whose run raises fails rather than staying claimed.
+
+    The failure counts as an attempt.
+    """
+    queue = Queue(str(tmp_path / "queue"))
+    queue.add(["0_0"])
+    records = work(
+        queue.root,
+        str(tmp_path / "inputs"),  # no 0/ to run it in
+        str(tmp_path / "cloudy"),
+        "1_0",
+        slots=1,
+        claim=1,
+        extensions=[],
+        max_retries=0,
+        record_file=str(tmp_path / "state" / "1_0.jsonl"),
+    )
+    assert [r["result"] for r in records] == ["failed"]
+    assert "couldn't run it" in records[0]["reason"]
+    assert queue.counts()["failed"] == 1 and queue.counts()["claimed"] == 0
+
+
+def test_queue_failure_counts_grow(tmp_path):
+    """Each failure rewrites the claim's count, past one digit."""
+    queue = Queue(str(tmp_path / "queue"))
+    queue.add(["0_0"])
+    for attempt in range(1, 12):
+        assert queue.claim("w.0") == ["0_0"]
+        assert queue.fail("0_0", "w.0", max_retries=20) == attempt
+
+
+def test_finish_keeps_lost_claims_and_counts_given_up(tmp_path, monkeypatch):
+    """Finish keeps count of lost claims and models given up on.
+
+    Lost claims found by a finish that stops early are still counted, and
+    requeuing old failures doesn't make given-up negative.
+    """
+    section, queue = cloudy_run(tmp_path, monkeypatch, {}, max_retries=0)
+    section.setup(section.config.incident["grid"])
+    queue.claim("7_1.0", n=2)
+    queue.claim("7_2.0")
+    with pytest.raises(RuntimeError, match="still claimed"):
+        section.finish(lambda owner: owner == "7_2.0")
+    section.finish(lambda owner: False)
+    (summary,) = section._load_state()["rounds"]
+    assert summary["lost"] == 3 and summary["given_up"] == 0
+
+    # A model given up on, as a worker records it
+    (model,) = queue.claim("8_1.0")
+    attempt = queue.fail(model, "8_1.0")
+    record = {"model": model, "result": "failed", "reason": "x", "seconds": 1}
+    Path(section._path("state", "8_1.jsonl")).write_text(
+        json.dumps({**record, "attempt": attempt, "requeued": False}) + "\n"
+    )
+    section.finish(lambda owner: False)
+    assert section._load_state()["rounds"][-1]["given_up"] == 1
+    # A larger max_retries puts it back, which gives up on nothing
+    section.config.run["cloudy"]["max_retries"] = 2
+    section.finish(lambda owner: False)
+    assert section._load_state()["rounds"][-1]["given_up"] == 0
+    assert not os.listdir(section._path("state"))
+
+
+def test_walltime_is_at_most_max_walltime(tmp_path, monkeypatch):
+    """A round's time limit is at most max_walltime."""
+    section, _ = cloudy_run(tmp_path, monkeypatch, {})
+    section._save_state(walltime="3-00:00:00")
+    section.config.run["cloudy"]["max_walltime"] = "1-00:00:00"
+    assert section._walltime() == 86400
+
+
+def test_resume_submits_a_round_its_job_did_not(tmp_path, monkeypatch):
+    """Resume carries on a round or an assembly its job didn't finish.
+
+    A finish that died between starting a round and submitting it, and an
+    assembly that died before marking the run done, are carried on.
+    """
+    section, _ = cloudy_run(tmp_path, monkeypatch, {})
+    runner = section.runner
+    runner._save_state(next="cloudy")
+    section._save_state(
+        next="finish", round=2, rounds=[{"round": 1, "array_job": "5"}]
+    )
+    submitted = []
+    monkeypatch.setattr(
+        section, "submit_round", lambda: submitted.append(1) or "9"
+    )
+    assert runner.resume() == ["9"] and submitted == [1]
+
+    section._save_state(next="done", grid="g.hdf5")
+    assert runner.resume() == [None]
+    assert runner._load_state()["next"] == "done"
+
+
+def test_perturb_queues_planned_sides_never_queued(tmp_path):
+    """Sides a finish job planned but died before queuing are queued."""
+    from syncretize.runner import perturb
+
+    side = {"level": 1, "x": 0.0}
+    plan = {
+        "0_1": {
+            "ionisation_parameter": {
+                "log": True,
+                "x": 0.0,
+                "minus": {**side, "name": "1p0-1"},
+                "plus": {**side, "name": "1p0+1"},
+            }
+        }
+    }
+    (tmp_path / perturb.PLAN).write_text(json.dumps(plan))
+    settings = {"step": 0.1, "log_step": 0.05, "max_steps": 3}
+    runs = perturb.advance(str(tmp_path), [], {}, settings, None)
+    assert runs == ["0_1p0-1", "0_1p0+1"]
+    # Once queued, they aren't again
+    states = dict.fromkeys(runs, "todo")
+    assert perturb.advance(str(tmp_path), [], states, settings, None) == []
+
+
+def test_queue_claims_from_a_kept_listing(tmp_path, monkeypatch):
+    """A claimer lists todo/ again only once its listing is used up.
+
+    It lists again once its listing runs out or goes stale, and still finds
+    models put back since.
+    """
+    queue = Queue(str(tmp_path / "queue"))
+    queue.add([f"0_{j}" for j in range(50)])
+    listings = []
+    names = queue.names
+    monkeypatch.setattr(
+        queue, "names", lambda state: listings.append(state) or names(state)
+    )
+    claimed = [queue.claim("w.0")[0] for _ in range(10)]
+    assert listings == ["todo"] and len(set(claimed)) == 10
+
+    # Another worker takes the rest, so the kept listing has gone stale
+    other = Queue(queue.root)
+    taken = []
+    while models := other.claim("v.0"):
+        taken += models
+    assert len(taken) == 40
+    assert queue.claim("w.0") == []
+    # A model put back since is found by listing again
+    other.release(taken[0], "v.0")
+    assert queue.claim("w.0") == [taken[0]]

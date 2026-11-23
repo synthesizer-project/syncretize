@@ -7,6 +7,20 @@ importing synthesizer.
 
 
 def __getattr__(name):
+    """Import the Runner the first time it is asked for.
+
+    Args:
+        name (str)
+            The attribute asked for.
+
+    Returns:
+        type
+            The Runner class, when ``name`` is "Runner".
+
+    Raises:
+        AttributeError
+            For any other name.
+    """
     if name == "Runner":
         from syncretize.runner.runner import Runner
 

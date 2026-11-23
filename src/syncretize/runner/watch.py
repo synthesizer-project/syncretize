@@ -20,8 +20,8 @@ One grid (Cloudy section) is shown at a time: a card with its run, name,
 stage and progress, then its panels, whose log shows the run.log lines about
 that section and the run as a whole. g opens the all grids page (progress
 across every grid, then a row per grid; Enter shows one), and 1-9 and 0
-show the grid at that place. Every
-panel scrolls with the mouse; run.log follows new lines unless scrolled up.
+show the grid at that place. Every panel scrolls with the mouse; run.log
+follows new lines unless scrolled up.
 Tab moves between the panels with more to show: Enter shows a job's or a
 model's details over the page (Esc closes them), or run.log full screen.
 Keys: l run.log, r the running and f the failed models full screen (again to
@@ -71,15 +71,33 @@ from textual.widgets import (
     Static,
 )
 
-from syncretize.runner.cloudy import iteration, model_path
+from syncretize.runner.cloudy import (
+    YAML_LOADER,
+    ionisation_parameter,
+    iteration,
+    model_path,
+    read_tail,
+)
+from syncretize.runner.log import ROUND_COLUMNS, round_row
 from syncretize.runner.perturb import is_perturbed
 from syncretize.runner.queue import STATES
+from syncretize.runner.slurm import RUNNING_STATES
 
 #: How many run.log lines each grid's log panel holds
 LOG_LINES = 20000
 
 #: How often squeue is asked about the run's jobs (s)
 SLURM_EVERY = 30
+
+#: How often a directory of runs is searched for new ones (s)
+FIND_EVERY = 30
+
+#: The width text is laid out to before its panel has a size
+WIDTH = 118
+
+#: How many of the longest running models have their .out read for their
+#: iteration each refresh
+ITERATIONS_READ = 50
 
 #: How often the Slurm queue view asks squeue for all your jobs (s)
 SQUEUE_EVERY = 10
@@ -96,6 +114,14 @@ SQUEUE_COLUMNS = (
     "nodelist (reason)",
 )
 SQUEUE_FORMAT = "%i|%P|%j|%T|%M|%l|%D|%R"
+
+#: How long sacct is left before being asked again about a job it hasn't
+#: heard of (one just submitted, or purged) (s)
+SACCT_AGAIN = 300
+
+#: How many of the longest running models the running table shows (the
+#: title gives them all)
+RUNNING_ROWS = 200
 
 #: Above this many models, the queue is counted every QUEUE_EVERY seconds
 #: rather than every redraw (listing big directories is slow on Lustre)
@@ -137,8 +163,9 @@ def find_work_dir(path=None):
 def find_runs(directory):
     """The runs under a directory, by where they are.
 
-    A run is a directory holding a run.yaml; the directories inside a run
-    aren't searched (they hold its work, not more runs).
+    A run is a directory holding a run.yaml; the directories inside a run,
+    and work directories, aren't searched (they hold its work, not more
+    runs).
 
     Args:
         directory (str)
@@ -153,6 +180,10 @@ def find_runs(directory):
     for root, dirs, files in os.walk(directory):
         dirs.sort()
         if "run.yaml" not in files:
+            # A work directory away from its run.yaml holds no more runs,
+            # just its queue and Cloudy's files (thousands of them)
+            if "state.yaml" in files:
+                dirs.clear()
             continue
         dirs.clear()
         try:
@@ -180,18 +211,23 @@ class Watcher:
             view is open).
     """
 
-    def __init__(self, work_dir):
+    def __init__(self, work_dir, log_tail=False):
         """Watch a run.
 
         Args:
             work_dir (str)
                 The run's work directory.
+            log_tail (bool)
+                Whether each read holds run.log's last lines ("log", for
+                ``summary``); the app reads only the new ones.
         """
         self.work_dir = work_dir
+        self.log_tail = log_tail
         self.show_squeue = False
         self._sections = {}  # each Cloudy section's reader, by its label
         self._jobs, self._asked = {}, 0.0
         self._ended = {}  # job ID: how its tasks ended, from sacct
+        self._sacct_at = {}  # job ID: when sacct was last asked about it
         self._log_offset = None  # how much of run.log has been read
         self._squeue, self._squeue_at = None, 0.0
         self._brief, self._briefed_at = None, -math.inf
@@ -217,7 +253,8 @@ class Watcher:
                 jobs += state.get("jobs", [])
         slurm = self._slurm(run, jobs)
         squeue = self._all_jobs() if self.show_squeue else None
-        log, log_new = self._log_tail(), self._log_new()
+        log = self._log_tail() if self.log_tail else []
+        log_new = self._log_new()
         now = datetime.now(timezone.utc)
 
         sections = []
@@ -245,9 +282,10 @@ class Watcher:
         return {"run": run, "sections": sections, "squeue": squeue, "now": now}
 
     def brief(self):
-        """Only the run's state, and each section's with its queue's counts
-        (enough for its tab and the overview). Read again only every
-        QUEUE_EVERY seconds, as many runs are briefed at once.
+        """Only the run's state, and each section's with its queue's counts.
+
+        That is enough for its row on the all grids page. It is read again
+        only every QUEUE_EVERY seconds, as many runs are briefed at once.
 
         Returns:
             dict
@@ -277,6 +315,12 @@ class Watcher:
         Args:
             run (dict)
                 The run's state.
+
+        Returns:
+            list of _SectionReader
+                A reader for each section in the run's state (kept from one
+                call to the next), or a single one of the work directory,
+                labelled None, when it has no sections yet.
         """
         for label, name in (run.get("sections") or {}).items():
             if label not in self._sections:
@@ -288,21 +332,49 @@ class Watcher:
         ]
 
     def _path(self, *names):
-        """A path in the run's work directory."""
+        """A path in the run's work directory.
+
+        Args:
+            *names
+                The path's parts below the work directory.
+
+        Returns:
+            str
+                The joined path.
+        """
         return os.path.join(self.work_dir, *names)
 
     def _log_tail(self, size=65536):
-        """run.log's last lines (its last 64 KB)."""
+        """run.log's last lines (by default, those in its last 64 KB).
+
+        Args:
+            size (int)
+                How much of its end to read (bytes).
+
+        Returns:
+            list of str
+                Its last lines, less the first (which may be cut short); empty
+                if there is no run.log yet.
+        """
         try:
-            with open(self._path("run.log"), "rb") as file:
-                file.seek(0, os.SEEK_END)
-                file.seek(max(0, file.tell() - size))
-                return file.read().decode(errors="replace").splitlines()[1:]
+            data = read_tail(self._path("run.log"), size)
         except FileNotFoundError:
             return []
+        return data.decode(errors="replace").splitlines()[1:]
 
     def _log_new(self, first=65536):
-        """run.log's lines since the last read (at first, its last 64 KB)."""
+        """run.log's lines since the last read (at first, its last 64 KB).
+
+        Args:
+            first (int)
+                How much of its end to read the first time (bytes), or if it
+                has shrunk since the last read.
+
+        Returns:
+            list of str
+                The whole lines written since the last read (a partly written
+                last line waits for the next); empty if there is no run.log.
+        """
         partial = False
         try:
             with open(self._path("run.log"), "rb") as file:
@@ -322,19 +394,22 @@ class Watcher:
         return lines[1:] if partial else lines
 
     def _all_jobs(self):
-        """All your jobs in squeue (SQUEUE_COLUMNS), or None without it."""
+        """All your jobs in squeue (SQUEUE_COLUMNS), or None without it.
+
+        Returns:
+            list of list of str
+                Each job's SQUEUE_COLUMNS, asked again only every SQUEUE_EVERY
+                seconds (the last answer is kept if squeue fails); None if
+                there is no squeue.
+        """
         if shutil.which("squeue") is None:
             return None
         if time.monotonic() - self._squeue_at < SQUEUE_EVERY:
             return self._squeue
-        try:
-            result = subprocess.run(
-                ["squeue", "-u", getpass.getuser(), "-h", "-o", SQUEUE_FORMAT],
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
-        except (OSError, subprocess.TimeoutExpired):
+        result = _ask(
+            ["squeue", "-u", getpass.getuser(), "-h", "-o", SQUEUE_FORMAT]
+        )
+        if result is None or result.returncode != 0:
             return self._squeue
         self._squeue_at = time.monotonic()
         width = len(SQUEUE_COLUMNS)
@@ -367,14 +442,12 @@ class Watcher:
         if time.monotonic() - self._asked < SLURM_EVERY:
             return self._jobs
         self._asked = time.monotonic()
-        try:
-            result = subprocess.run(
-                ["squeue", "-u", getpass.getuser(), "-h", "-o", "%i|%j|%T|%M"],
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
-        except (OSError, subprocess.TimeoutExpired):
+        result = _ask(
+            ["squeue", "-u", getpass.getuser(), "-h", "-o", "%i|%j|%T|%M"]
+        )
+        # squeue failing (slurmctld busy) prints nothing, which isn't the
+        # same as no jobs: keep the last answer rather than end them all
+        if result is None or result.returncode != 0:
             return self._jobs
         live = {}
         for line in result.stdout.splitlines():
@@ -393,13 +466,19 @@ class Watcher:
                 entry["pending"] += tasks
         self._jobs = live
 
+        # A job sacct hasn't heard of yet is asked about again, but not
+        # every time
+        now = time.monotonic()
         ask = [
             str(entry["job"])
             for entry in jobs
             if str(entry["job"]) not in live
             and str(entry["job"]) not in self._ended
+            and now - self._sacct_at.get(str(entry["job"]), -math.inf)
+            >= SACCT_AGAIN
         ]
         if ask and shutil.which("sacct") is not None:
+            self._sacct_at |= dict.fromkeys(ask, now)
             self._ended |= _sacct(ask)
         return live
 
@@ -429,13 +508,19 @@ class _SectionReader:
         self._records = {}  # worker record file: (offset, records)
         self._counts, self._counted = None, 0.0
         self._running_cache, self._running_at = [], 0.0
+        self._started = {}  # each claimed file's name: when it was claimed
         self._models, self._models_mtime = {}, None
         self._finished = []  # every finished run's time, from models.json
         self._names = {state: [] for state in STATES}  # the queue's models
         self._grid_points = None
 
     def state(self):
-        """The section's state file."""
+        """The section's state file.
+
+        Returns:
+            dict
+                Its state.yaml (empty if there is none yet).
+        """
         return _read_yaml(self._path("state.yaml"))
 
     def read(self, state, shared):
@@ -478,11 +563,28 @@ class _SectionReader:
         }
 
     def _path(self, *names):
-        """A path in the section's directory."""
+        """A path in the section's directory.
+
+        Args:
+            *names
+                The path's parts below the section's directory.
+
+        Returns:
+            str
+                The joined path.
+        """
         return os.path.join(self.directory, *names)
 
     def _queue_counts(self):
-        """How many models are in each queue state (and which models)."""
+        """How many models are in each queue state (and which models).
+
+        A big queue is listed again only every QUEUE_EVERY seconds. The
+        models in each state are kept in ``self._names``.
+
+        Returns:
+            dict
+                Each queue state's count of models.
+        """
         total = sum(self._counts.values()) if self._counts else 0
         if (
             total > BIG_QUEUE
@@ -501,7 +603,17 @@ class _SectionReader:
         return counts
 
     def _points(self, cloudy_dir):
-        """Each model's grid point (grid_points.json, from the setup)."""
+        """Each model's grid point (grid_points.json, from the setup).
+
+        Args:
+            cloudy_dir (str)
+                The section's Cloudy directory (None before its setup).
+
+        Returns:
+            dict
+                grid_points.json, read once and kept; None before the setup
+                or if it can't be read.
+        """
         if self._grid_points is None and cloudy_dir is not None:
             try:
                 with open(
@@ -513,15 +625,21 @@ class _SectionReader:
         return self._grid_points
 
     def _running(self, cloudy_dir):
-        """The claimed models and how long they've run, longest first, with
-        each one's log U and the longest running's Cloudy iterations.
+        """The claimed models and how long they've run, longest first.
+
+        Each comes with its log U and, for the first ITERATIONS_READ, its
+        Cloudy iteration. A claim is a rename into queue/claimed, which sets
+        the file's ctime, so that is when the model started.
 
         Args:
             cloudy_dir (str)
                 The section's Cloudy directory (None before its setup).
 
-        A claim is a rename into queue/claimed, which sets the file's ctime,
-        so that is when the model started.
+        Returns:
+            list of (str, str, float, float, tuple)
+                Each model, its worker, how long it has run (s), its
+                ionisation parameter (None if unknown or an axis) and its
+                iteration (see ``iteration``; None if not read).
         """
         directory = self._path("queue", "claimed")
         busy = len(self._running_cache) > BIG_QUEUE // 10
@@ -532,23 +650,36 @@ class _SectionReader:
             names = os.listdir(directory)
         except FileNotFoundError:
             names = []
+        # A claim doesn't move until it ends, so only new ones are looked at
+        # (thousands of stats every refresh are slow on Lustre)
+        self._started = {
+            name: self._started[name]
+            for name in names
+            if name in self._started
+        }
         for name in names:
-            try:
-                started = os.stat(os.path.join(directory, name)).st_ctime
-            except FileNotFoundError:
-                continue  # finished since the listing
+            if name not in self._started:
+                try:
+                    self._started[name] = os.stat(
+                        os.path.join(directory, name)
+                    ).st_ctime
+                except FileNotFoundError:
+                    continue  # finished since the listing
             model, _, owner = name.rpartition("@")
-            running.append((model, owner, now - started))
+            running.append((model, owner, now - self._started[name]))
         running.sort(key=lambda item: -item[2])
-        # Each one's log U and, for the longest running, its iteration (read
-        # here, off the screen's thread, as they are files on Lustre)
+        # Each one's log U (unless U is one of the grid's axes) and, for the
+        # longest running, its iteration (read here, off the screen's
+        # thread, as they are files on Lustre)
+        points = self._points(cloudy_dir)
+        show_u = "log U" not in [c[0] for c in _point_columns(points)]
         running = [
             (
                 model,
                 owner,
                 seconds,
                 _ionisation_parameter(cloudy_dir, model)
-                if cloudy_dir
+                if cloudy_dir and show_u
                 else None,
                 iteration(model_path(cloudy_dir, model))
                 if cloudy_dir and n < ITERATIONS_READ
@@ -560,7 +691,15 @@ class _SectionReader:
         return running
 
     def _round_records(self):
-        """The workers' records not yet gathered by a finish job."""
+        """The workers' records not yet gathered by a finish job.
+
+        Each worker's .jsonl file is read on from where the last read
+        stopped, so only new records are parsed.
+
+        Returns:
+            list of dict
+                Every record in the section's state/*.jsonl files.
+        """
         directory = self._path("state")
         try:
             names = [n for n in os.listdir(directory) if n.endswith(".jsonl")]
@@ -587,7 +726,16 @@ class _SectionReader:
         return [r for _, records in self._records.values() for r in records]
 
     def _attempts(self):
-        """How many times each model has run, from models.json."""
+        """How many attempts each model has had, from models.json.
+
+        models.json is read again only once it has changed; each finished
+        run's time is kept in ``self._finished`` as it is read.
+
+        Returns:
+            dict
+                Each model's highest attempt number (0 if none counted); empty
+                before the first finish job writes models.json.
+        """
         try:
             mtime = os.path.getmtime(self._path("models.json"))
         except FileNotFoundError:
@@ -598,7 +746,14 @@ class _SectionReader:
                     models = json.load(file)
             except (OSError, json.JSONDecodeError):
                 return self._models
-            self._models = {m: len(e["attempts"]) for m, e in models.items()}
+            # A run stopped to be given longer, or lost, isn't an attempt;
+            # the queue's count is in each record that is
+            self._models = {
+                m: max(
+                    (a.get("attempt") or 0 for a in e["attempts"]), default=0
+                )
+                for m, e in models.items()
+            }
             self._finished = [
                 attempt.get("seconds", 0)
                 for entry in models.values()
@@ -609,13 +764,37 @@ class _SectionReader:
         return self._models
 
 
+#: Each YAML file read: its (inode, mtime, size) and contents
+_YAML_READ = {}
+
+
 def _read_yaml(path):
-    """A YAML file's contents (empty if it is missing or half written)."""
+    """A YAML file's contents (empty if it is missing or half written).
+
+    State files are read every refresh but change only when a job saves
+    them, so one is parsed again only once it has changed. A save replaces
+    the file, so its inode changes even within the mtime's resolution.
+
+    Args:
+        path (str)
+            The file.
+
+    Returns:
+        dict
+            Its contents (shared between reads, so not to be changed).
+    """
     try:
+        stat = os.stat(path)
+        key = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+        cached = _YAML_READ.get(path)
+        if cached is not None and cached[0] == key:
+            return cached[1]
         with open(path) as file:
-            return yaml.safe_load(file) or {}
+            contents = yaml.load(file, Loader=YAML_LOADER) or {}
     except (FileNotFoundError, yaml.YAMLError):
         return {}
+    _YAML_READ[path] = (key, contents)
+    return contents
 
 
 #: A Cloudy section's label, e.g. C2
@@ -633,6 +812,8 @@ def _about(job_name, label):
 
     Returns:
         bool
+            True if its name has no section's label (the start job) or has
+            this one.
     """
     parts = job_name.split("-")
     labels = [part for part in parts if SECTION_LABEL.fullmatch(part)]
@@ -653,6 +834,8 @@ def _about_line(line, label):
 
     Returns:
         bool
+            True if its tag doesn't start with a section's label (it is about
+            the whole run) or starts with this one.
     """
     match = re.match(r"\S+ \S+ \[(\S+)", line)
     if match is None or not SECTION_LABEL.fullmatch(match.group(1)):
@@ -660,39 +843,69 @@ def _about_line(line, label):
     return match.group(1) == label
 
 
-def _sacct(jobs):
-    """How the tasks of ended jobs ended, e.g. {"12": {"COMPLETED": 249}}."""
+def _ask(command):
+    """Run a Slurm command, giving up after 20 s (slurmctld can hang).
+
+    Args:
+        command (list of str)
+            The command.
+
+    Returns:
+        subprocess.CompletedProcess
+            What it printed, or None if it isn't here or didn't answer.
+    """
     try:
-        result = subprocess.run(
-            [
-                "sacct",
-                "-n",
-                "-X",
-                "-P",
-                "-o",
-                "JobID,State",
-                "-j",
-                ",".join(jobs),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=20,
+        return subprocess.run(
+            command, capture_output=True, text=True, timeout=20
         )
     except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _sacct(jobs):
+    """How the tasks of ended jobs ended.
+
+    Args:
+        jobs (list of str)
+            The job IDs to ask about.
+
+    Returns:
+        dict
+            Each ended job's count of tasks by how they ended, e.g.
+            {"12": {"COMPLETED": 249}}; jobs with a task still going, or
+            that sacct hasn't heard of, are left out.
+    """
+    result = _ask(
+        ["sacct", "-n", "-X", "-P", "-o", "JobID,State", "-j", ",".join(jobs)]
+    )
+    if result is None:
         return {}
-    ended = {}
+    ended, going = {}, set()
     for line in result.stdout.splitlines():
         job, _, status = line.partition("|")
         status = status.split(" ")[0]  # e.g. "CANCELLED by 123"
-        if status in ("PENDING", "RUNNING", "REQUEUED", "COMPLETING"):
+        if status in RUNNING_STATES:
+            going.add(job.split("_")[0])
             continue
         tasks = ended.setdefault(job.split("_")[0], {})
         tasks[status] = tasks.get(status, 0) + _count_tasks(job)
-    return ended
+    # How an array ended is kept for good, so one with a task still going
+    # (squeue missed it) waits until they all have
+    return {job: tasks for job, tasks in ended.items() if job not in going}
 
 
 def _count_tasks(job):
-    """How many array tasks a squeue job ID stands for, e.g. 1_[0-9,12]."""
+    """How many array tasks a squeue job ID stands for, e.g. 1_[0-9,12].
+
+    Args:
+        job (str)
+            The job ID, as squeue or sacct gives it (any "%" limit on how
+            many run at once is ignored).
+
+    Returns:
+        int
+            How many tasks it stands for (1 for a single task or job).
+    """
     if "[" not in job:
         return 1
     spec = job.split("[", 1)[1].rstrip("]").split("%")[0]
@@ -704,6 +917,18 @@ def _count_tasks(job):
 
 
 def _duration(seconds):
+    """A short duration for a table cell, e.g. "45s", "1.5m" or "2.3h".
+
+    Shorter than ``log.duration``'s ("1.5 min"), as columns are narrow.
+
+    Args:
+        seconds (float)
+            The duration.
+
+    Returns:
+        str
+            The duration in seconds, minutes or hours, whichever fits.
+    """
     if seconds < 60:
         return f"{seconds:.0f}s"
     if seconds < 3600:
@@ -748,6 +973,8 @@ STAGE_BADGES = {
     "finish": ("ROUND {round} RUNNING", "bold black on bright_cyan"),
     "assemble": ("ASSEMBLING", "bold black on yellow"),
     "done": ("DONE", "bold black on green"),
+    # Models ran out of time at max_walltime: it waits for a longer one
+    "walltime": ("NEEDS LONGER MAX_WALLTIME", "bold white on red"),
 }
 
 #: The badge while failed models' perturbed runs are under way
@@ -824,7 +1051,16 @@ def _badge(state, counts=None):
 
 
 def _section_details(state):
-    """A section's round, its workers' time limit and its next job."""
+    """A section's round, its workers' time limit and its next job.
+
+    Args:
+        state (dict)
+            The section's state file.
+
+    Returns:
+        list of (str, object)
+            Each detail's name and value ("-" when not yet known).
+    """
     return [
         ("round", state.get("round", "-")),
         ("limit", _limit(state)),
@@ -833,7 +1069,16 @@ def _section_details(state):
 
 
 def _details(details):
-    """Name-value pairs as one line, e.g. "round 3 · limit 2:00:00"."""
+    """Name-value pairs as one line, e.g. "round 3 · limit 2:00:00".
+
+    Args:
+        details (list of (str, object))
+            Each pair's name and value.
+
+    Returns:
+        Text
+            The pairs, each name dim, separated by dots.
+    """
     text = Text()
     for n, (name, value) in enumerate(details):
         if n:
@@ -844,8 +1089,18 @@ def _details(details):
 
 
 def _counts(counts):
-    """Counts as one line, each before what it counts, e.g. "10 runs under
-    way · 18 done"."""
+    """Counts as one line, each before what it counts.
+
+    For example "10 runs under way · 18 done".
+
+    Args:
+        counts (list of (int, str))
+            Each count and what it counts.
+
+    Returns:
+        Text
+            The counts, each in bold, separated by dots.
+    """
     text = Text()
     for n, (count, what) in enumerate(counts):
         if n:
@@ -856,12 +1111,39 @@ def _counts(counts):
 
 
 def _spread(left, right, width):
-    """Two texts on one line of the given width, at its two ends."""
+    """Two texts on one line of the given width, at its two ends.
+
+    Args:
+        left (Text)
+            The text at the start of the line.
+        right (Text)
+            The text at the end of the line.
+        width (int)
+            The line's width (at least one space is kept between them, even
+            if that makes it wider).
+
+    Returns:
+        Text
+            The line.
+    """
     return left + " " * max(width - left.cell_len - right.cell_len, 1) + right
 
 
 def _bar(fraction, width, style="green"):
-    """A progress bar of the given width, filled to a fraction."""
+    """A progress bar of the given width, filled to a fraction.
+
+    Args:
+        fraction (float)
+            How full it is (clamped to 0 to 1).
+        width (int)
+            Its width in characters (none if negative).
+        style (str)
+            The filled part's style.
+
+    Returns:
+        Text
+            The bar, its unfilled part grey.
+    """
     filled = round(max(width, 0) * min(max(fraction, 0.0), 1.0))
     return Text("━" * filled, style=style) + Text(
         "━" * (max(width, 0) - filled), style="grey30"
@@ -879,7 +1161,8 @@ def _progress(snapshots, width):
 
     Returns:
         Text
-            One line, e.g. "━━━━━━━  656/657 grid points (99.8%) · 1 failed".
+            One line, e.g.
+            "━━━━━━━  656/657 grid points (99.8%) · 1 failed".
     """
     done = failed = total = interpolated = left_to_run = 0
     rate = 0.0
@@ -912,7 +1195,7 @@ def _progress(snapshots, width):
 
 
 def _card(snapshot, width=118):
-    """A grid's card, atop its tab: its run, name and stage, then progress.
+    """A grid's card, atop its view: its run, name and stage, then progress.
 
     Args:
         snapshot (dict)
@@ -1005,8 +1288,8 @@ def _overview(views, found, width=118):
     )
 
 
-def _tab_title(snapshot):
-    """A section's tab title: its label and name, and where it is.
+def _grid_title(snapshot):
+    """A section's title: its label and name, and where it is.
 
     Args:
         snapshot (dict)
@@ -1022,7 +1305,18 @@ def _tab_title(snapshot):
 
 
 def _where(state):
-    """Where a section is, from its state, e.g. "▸ R3" or "✓"."""
+    """Where a section is, from its state, e.g. "▸ R3" or "✓".
+
+    Args:
+        state (dict)
+            The section's state file.
+
+    Returns:
+        str
+            "✓" when done, its round (and whether it is perturbing) while
+            running, "▸ assembling", "✗ out of time" when its models ran
+            out of time at max_walltime, or "…" before its first round.
+    """
     stage = state.get("next")
     if stage == "done":
         return "✓"
@@ -1031,11 +1325,22 @@ def _where(state):
         return where + (" perturb" if state.get("perturbing") else "")
     if stage == "assemble":
         return "▸ assembling"
+    if stage == "walltime":
+        return "✗ out of time"
     return "…"
 
 
 def _limit(state):
-    """The current round's worker time limit."""
+    """The current round's worker time limit.
+
+    Args:
+        state (dict)
+            The section's state file.
+
+    Returns:
+        str
+            Its walltime, else its last round's, else "-".
+    """
     rounds = state.get("rounds") or [{}]
     return state.get("walltime") or rounds[-1].get("walltime", "-")
 
@@ -1045,6 +1350,18 @@ def _rate(records, window=600):
 
     Early in a round the rate is taken over the time since its first model
     started, so it isn't diluted by minutes before anything ran.
+
+    Args:
+        records (list of dict)
+            The workers' records this round (each with when its model
+            "started" and how many "seconds" it ran).
+        window (float)
+            The longest time to take the rate over (s).
+
+    Returns:
+        float
+            Models finished per minute (over at least a minute), or 0 with
+            no records.
     """
     now = datetime.now(timezone.utc)
     ages = []  # how long ago each model started and ended (s)
@@ -1057,13 +1374,23 @@ def _rate(records, window=600):
         ages.append((started, started - record.get("seconds", 0)))
     if not ages:
         return 0.0
-    span = min(window, max(started for started, _ in ages))
+    span = min(window, max(age for age, _ in ages))
     recent = sum(ended <= span for _, ended in ages)
     return recent / max(span / 60, 1)
 
 
 def _queue_table(snapshot):
-    """The grid points in each state, with their share of the grid."""
+    """The grid points in each state, with their share of the grid.
+
+    Args:
+        snapshot (dict)
+            The section's snapshot (see ``_SectionReader.read``).
+
+    Returns:
+        Table
+            A row for each state (and the interpolated points, if any): its
+            count, percentage and a bar, then the perturbed runs if any.
+    """
     points, interpolated, perturbed = snapshot["grid_points"]
     total = max(sum(points.values()) + interpolated, 1)
     table = Table.grid(padding=(0, 1), expand=True)
@@ -1102,7 +1429,18 @@ def _queue_table(snapshot):
 
 
 def _round_table(snapshot):
-    """The round under way: its workers and the models they've run."""
+    """The round under way: its workers and the models they've run.
+
+    Args:
+        snapshot (dict)
+            The section's snapshot (see ``_SectionReader.read``).
+
+    Returns:
+        Table
+            The workers running and queued, how many models finished and
+            how fast, errored, run times and CPU time; between rounds, the
+            Cloudy runs and CPU time so far.
+    """
     records = snapshot["records"]
     results = [r["result"] for r in records]
     table = Table.grid(padding=(0, 2))
@@ -1173,7 +1511,23 @@ def _round_table(snapshot):
 
 
 def _rounds(state, records, counts):
-    """The finished rounds, and the one under way from its workers' records."""
+    """The finished rounds, and the one under way from its workers' records.
+
+    Args:
+        state (dict)
+            The section's state file.
+        records (list of dict)
+            The workers' records this round.
+        counts (dict)
+            How many models are in each queue state, the round under way's
+            queue.
+
+    Returns:
+        list of dict
+            Each round's entry from the state file that has its queue
+            counts, then, while a round runs, one for it counted from the
+            records (its "round" marked with ▸).
+    """
     rounds = [r for r in state.get("rounds", []) if "queue" in r]
     current = state.get("round")
     if state.get("next") == "finish" and current is not None:
@@ -1192,20 +1546,66 @@ def _rounds(state, records, counts):
 
 
 def _given_up(record):
-    """Whether a worker's record gave up on its model."""
+    """Whether a worker's record gave up on its model.
+
+    Args:
+        record (dict)
+            A worker's record.
+
+    Returns:
+        bool
+            True if it counted an attempt and didn't put the model back in
+            the queue.
+    """
     return record.get("attempt") is not None and not record.get("requeued")
 
 
 def _failures(snapshot):
     """The models that failed every attempt, with why the last failed.
 
-    Those a finish job has gathered, and those failed since.
+    Those a finish job has gathered, then those failed since, in the order
+    they were given up (so each new one ends the table, which can then just
+    add it rather than refill thousands of rows).
+
+    Args:
+        snapshot (dict)
+            The section's snapshot (see ``_SectionReader.read``).
+
+    Returns:
+        dict
+            Why each model last failed, by model.
     """
     failures = dict(snapshot["state"].get("failures") or {})
-    for record in snapshot["records"]:
-        if _given_up(record):
-            failures[record["model"]] = record.get("reason")
+    # A finish job keeps the perturbed runs that failed out (they are
+    # interpolated past), so they are left out here too
+    given_up = [
+        record
+        for record in snapshot["records"]
+        if _given_up(record) and not is_perturbed(record["model"])
+    ]
+    given_up.sort(key=_ended)
+    for record in given_up:
+        failures[record["model"]] = record.get("reason")
     return failures
+
+
+def _ended(record):
+    """When a worker's record ended, as a UNIX time (0 if it doesn't say).
+
+    Args:
+        record (dict)
+            The record.
+
+    Returns:
+        float
+            When its model started plus how long it ran (s), or 0 if it
+            doesn't say when it started.
+    """
+    try:
+        started = datetime.fromisoformat(record["started"]).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+    return started + record.get("seconds", 0)
 
 
 #: How grid axes are shown: their label, and whether on a log scale
@@ -1226,8 +1626,16 @@ AXIS_LABELS = {
 def _point_columns(points):
     """The grid's axes, incident then photoionisation, as columns.
 
+    Args:
+        points (dict)
+            The section's grid points (grid_points.json), or None before its
+            setup.
+
     Returns:
-        list of (label, log, part, position)
+        list of (str, bool, str, int)
+            Each axis's label, whether it is shown as a log, its part of the
+            grid ("incident" or "photoionisation") and its position among
+            that part's axes; empty without the grid points.
     """
     if points is None:
         return []
@@ -1240,6 +1648,19 @@ def _point_columns(points):
 
 
 def _format(value, log):
+    """A grid value as text for a table cell.
+
+    Args:
+        value (float)
+            The value.
+        log (bool)
+            Whether to show its log10 (only if it is positive).
+
+    Returns:
+        str
+            The value (or its log) to two decimals or three significant
+            figures.
+    """
     if log and value > 0:
         return f"{math.log10(value):.2f}"
     return f"{value:.3g}"
@@ -1249,6 +1670,18 @@ def _point(points, model, columns):
     """A model's grid point, as text for each column.
 
     A perturbed run ("<i>_<j>p...") shows the grid point it was run around.
+
+    Args:
+        points (dict)
+            The section's grid points (grid_points.json).
+        model (str)
+            The model, "<i>_<j>" (incident and photoionisation indices).
+        columns (list of tuple)
+            The grid's columns (see ``_point_columns``).
+
+    Returns:
+        list of str
+            The model's value on each column ("?" where it can't be found).
     """
     i, _, j = model.partition("_")
     i, j = int(i), int(j.partition("p")[0])
@@ -1262,19 +1695,25 @@ def _point(points, model, columns):
     return out
 
 
-@functools.lru_cache(maxsize=4096)
-def _ionisation_parameter(cloudy_dir, model):
-    """A model's ionisation parameter, as written into its input."""
-    try:
-        with open(model_path(cloudy_dir, model) + ".yaml") as file:
-            value = (yaml.safe_load(file) or {}).get("ionisation_parameter")
-        return None if value is None else float(value)
-    except (OSError, yaml.YAMLError, TypeError, ValueError):
-        return None
+#: Each model's ionisation parameter (see ``cloudy.ionisation_parameter``),
+#: kept for every model asked about (a float each), as running tables of
+#: thousands come round every refresh
+_ionisation_parameter = functools.cache(ionisation_parameter)
 
 
 def _iteration_text(reached):
-    """A running model's iteration, e.g. "2/10" (from ``iteration``)."""
+    """A running model's iteration, e.g. "2/10" (from ``iteration``).
+
+    Args:
+        reached (tuple)
+            The iteration and the most it may take (see ``iteration``), or
+            None if it wasn't read.
+
+    Returns:
+        str or Text
+            "" if not read, a yellow dash before its first iteration, else
+            the iteration (out of the most, if known).
+    """
     if reached is None:
         return ""
     now, most = reached
@@ -1283,53 +1722,38 @@ def _iteration_text(reached):
     return f"{now}/{most}" if most else str(now)
 
 
-#: The columns of the rounds table
-ROUND_COLUMNS = (
-    "round",
-    "limit",
-    "workers",
-    "done",
-    "errored",
-    "timed out",
-    "retried",
-    "failed",
-    "left",
-)
-
-
-def _errored(r):
-    """A round's runs that errored, hit the time limit or were lost."""
-    return r.get("failed", 0) + r.get("stopped", 0) + r.get("lost", 0)
-
-
 def _round_rows(rounds):
-    """The rounds table's rows, newest first."""
+    """The rounds table's rows, newest first.
+
+    Args:
+        rounds (list of dict)
+            Each round's summary (see ``_rounds``).
+
+    Returns:
+        list of (str, list of str)
+            Each round's key (its number) and cells.
+    """
     return [
-        (
-            str(r["round"]),
-            [
-                str(v)
-                for v in (
-                    f"{r['round']} perturb"
-                    if r.get("perturb")
-                    else r["round"],
-                    r.get("walltime", ""),
-                    r.get("workers", "here"),
-                    r.get("done", 0),
-                    _errored(r),
-                    r.get("stopped", 0),
-                    max(_errored(r) - r.get("given_up", 0), 0),
-                    r.get("given_up", 0),
-                    r["queue"]["todo"],
-                )
-            ],
-        )
+        (str(r["round"]), [str(cell) for cell in round_row(r)])
         for r in reversed(rounds)
     ]
 
 
 def _job_status(snapshot, entry):
-    """How a job is doing: live from squeue, else how it ended."""
+    """How a job is doing: live from squeue, else how it ended.
+
+    Args:
+        snapshot (dict)
+            The section's snapshot (see ``_SectionReader.read``).
+        entry (dict)
+            The job's entry in a state file.
+
+    Returns:
+        Text
+            Its tasks running and queued, else how they ended (from sacct),
+            else its recorded outcome, else "submitted"; coloured by how it
+            is doing.
+    """
     job, live = str(entry.get("job")), snapshot["slurm"]
     if job in live:
         now = live[job]
@@ -1360,8 +1784,18 @@ def _job_status(snapshot, entry):
 
 
 def _job_rows(snapshot):
-    """The jobs table's rows, newest first, each job named without its run's
-    name (e.g. "R3 C1 Cloudy")."""
+    """The jobs table's rows, newest first.
+
+    Each job is named without its run's name (e.g. "R3 C1 Cloudy").
+
+    Args:
+        snapshot (dict)
+            The section's snapshot (see ``_SectionReader.read``).
+
+    Returns:
+        list of (str, list)
+            Each job's key (its ID) and cells: name, ID and status.
+    """
     run = f"-{snapshot['run'].get('name')}-"
     return [
         (
@@ -1379,7 +1813,17 @@ def _job_rows(snapshot):
 
 
 def _failure_rows(snapshot):
-    """The failed models table's rows."""
+    """The failed models table's rows.
+
+    Args:
+        snapshot (dict)
+            The section's snapshot (see ``_SectionReader.read``).
+
+    Returns:
+        list of (str, list)
+            Each failed model's key (the model) and cells: the model, its
+            attempts and why it last failed.
+    """
     attempts = snapshot["attempts"]
     return [
         (
@@ -1397,10 +1841,17 @@ def _failure_rows(snapshot):
 def _model_columns(snapshot, extra):
     """The columns of a table of models: model, grid point, log U, extra.
 
+    Args:
+        snapshot (dict)
+            The section's snapshot (see ``_SectionReader.read``).
+        extra (list of str)
+            The headers of the columns after those.
+
     Returns:
-        (list of str, list, bool): the headers, the grid's columns, and
-        whether a "log U" column (the reference model's U, not an axis) is
-        shown.
+        (list of str, list of tuple, bool)
+            The headers, the grid's columns (see ``_point_columns``), and
+            whether a "log U" column (the reference model's U, not an axis)
+            is shown.
     """
     columns = _point_columns(snapshot["points"])
     show_u = "log U" not in [c[0] for c in columns]
@@ -1409,19 +1860,20 @@ def _model_columns(snapshot, extra):
     return headers + list(extra), columns, show_u
 
 
-#: How many of the longest running models have their .out read for their
-#: iteration each refresh
-ITERATIONS_READ = 50
-
-
 def _running_rows(snapshot):
     """The running models, longest first: grid point, iteration, worker, time.
 
     Those running more than twice this round's median are yellow, to spot
     one that hangs.
 
+    Args:
+        snapshot (dict)
+            The section's snapshot (see ``_SectionReader.read``).
+
     Returns:
-        (headers, rows, title)
+        (list of str, list of (str, list), str)
+            The headers, the rows (the longest RUNNING_ROWS, each keyed by
+            its claim, "<model>@<worker>") and the table's title.
     """
     running = snapshot["running"]
     times = [
@@ -1434,7 +1886,7 @@ def _running_rows(snapshot):
         snapshot, ["iter", "worker", "time"]
     )
     rows = []
-    for model, owner, seconds, u, reached in running:
+    for model, owner, seconds, u, reached in running[:RUNNING_ROWS]:
         rows.append(
             (
                 f"{model}@{owner}",
@@ -1452,6 +1904,8 @@ def _running_rows(snapshot):
             )
         )
     title = f"Running now ({len(running)}"
+    if len(running) > RUNNING_ROWS:
+        title += f", the longest {RUNNING_ROWS} shown"
     title += f", yellow > 2 x median {_duration(slow / 2)})" if slow else ")"
     return headers, rows, title
 
@@ -1459,8 +1913,14 @@ def _running_rows(snapshot):
 def _squeue_rows(snapshot):
     """The Slurm queue view's rows: this run's jobs bold, states coloured.
 
+    Args:
+        snapshot (dict)
+            The section's snapshot (see ``_SectionReader.read``).
+
     Returns:
-        (rows, title)
+        (list of (str, list of Text), str)
+            The rows (each keyed by its place in the queue) and the table's
+            title; no rows without squeue.
     """
     jobs = snapshot["squeue"]
     if jobs is None:
@@ -1486,12 +1946,22 @@ TAIL_LINES = 40
 
 
 def _tail(path, lines=TAIL_LINES, size=65536):
-    """A file's last lines (from its last 64 KB), or None if unreadable."""
+    """A file's last lines (from its last 64 KB), or None if unreadable.
+
+    Args:
+        path (str)
+            The file.
+        lines (int)
+            How many of its last lines to give.
+        size (int)
+            How much of its end to read (bytes).
+
+    Returns:
+        list of str
+            Its last lines, or None if it can't be read.
+    """
     try:
-        with open(path, "rb") as file:
-            file.seek(0, os.SEEK_END)
-            file.seek(max(0, file.tell() - size))
-            text = file.read().decode(errors="replace")
+        text = read_tail(path, size).decode(errors="replace")
     except OSError:
         return None
     return text.splitlines()[-lines:]
@@ -1503,9 +1973,13 @@ def _part(title, body):
     Args:
         title (str)
             Its title.
-        body
+        body (renderable or list of str)
             A Rich renderable, a list of lines (shown as they are, cropped
             rather than wrapped), or None (shown as "nothing to show").
+
+    Returns:
+        Group
+            A blank line, a rule with the title, then the body.
     """
     if body is None or body == []:
         body = Text("nothing to show", style="dim italic")
@@ -1517,8 +1991,18 @@ def _part(title, body):
 
 
 def _pairs(pairs):
-    """Names and their values, a pair per line (those with no value left
-    out)."""
+    """Names and their values, a pair per line.
+
+    Those with no value (None or "") are left out.
+
+    Args:
+        pairs (list of (str, object))
+            Each name and its value.
+
+    Returns:
+        Table
+            A grid of the names (dim) and their values.
+    """
     table = Table.grid(padding=(0, 2))
     table.add_column(style="dim", no_wrap=True)
     table.add_column()
@@ -1531,7 +2015,20 @@ def _pairs(pairs):
 
 
 def _rows_table(headers, rows, right=()):
-    """A plain table of rows (None without rows)."""
+    """A plain table of rows (None without rows).
+
+    Args:
+        headers (list of str)
+            The columns' headers.
+        rows (list of list)
+            Each row's cells (Text, or anything shown as a string).
+        right (tuple of int)
+            The columns to right-justify, by position.
+
+    Returns:
+        Table
+            The table, or None if there are no rows.
+    """
     if not rows:
         return None
     table = Table(box=box.SIMPLE_HEAD, pad_edge=False)
@@ -1557,6 +2054,7 @@ def _job_details(snapshot, job):
 
     Returns:
         Group
+            Its details, one titled part after another.
     """
     entry = next(e for e in snapshot["jobs"] if str(e.get("job")) == job)
     name = entry.get("name", entry.get("stage", ""))
@@ -1574,7 +2072,7 @@ def _job_details(snapshot, job):
         ]
     )
 
-    # Its lines in run.log, tagged e.g. "[C1 finish 123]" or "[work 123_4]"
+    # Its lines in run.log, tagged e.g. "[C1 finish 123]"
     tag = re.compile(rf"\[[^\]]*\b{re.escape(job)}(_\d+)?\]")
     try:
         with open(os.path.join(work_dir, "run.log"), errors="replace") as f:
@@ -1598,26 +2096,13 @@ def _job_details(snapshot, job):
     tasks = None
     if shutil.which("sacct") is not None:
         columns = ["task", "state", "exit code", "elapsed", "node"]
-        try:
-            result = subprocess.run(
-                [
-                    "sacct",
-                    "-n",
-                    "-X",
-                    "-P",
-                    "-j",
-                    job,
-                    "-o",
-                    "JobID,State,ExitCode,Elapsed,NodeList",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
+        result = _ask(
+            ["sacct", "-n", "-X", "-P", "-j", job, "-o"]
+            + ["JobID,State,ExitCode,Elapsed,NodeList"]
+        )
+        if result is not None:
             rows = [line.split("|") for line in result.stdout.splitlines()]
             tasks = _rows_table(columns, rows)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
 
     script = entry.get("script", f"jobs/{name}.sh")
     return Group(
@@ -1630,15 +2115,19 @@ def _job_details(snapshot, job):
 
 
 def _other_job(job):
-    """What Slurm says about a job that isn't the run's (scontrol)."""
-    try:
-        result = subprocess.run(
-            ["scontrol", "show", "job", job],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    """What Slurm says about a job that isn't the run's (scontrol).
+
+    Args:
+        job (str)
+            The job's ID.
+
+    Returns:
+        Text
+            scontrol's description of it (or its error), or a note that
+            scontrol isn't here or didn't answer.
+    """
+    result = _ask(["scontrol", "show", "job", job])
+    if result is None:
         return Text("scontrol isn't here, or didn't answer", style="dim")
     return Text(result.stdout.strip() or result.stderr.strip())
 
@@ -1658,6 +2147,7 @@ def _model_details(snapshot, model):
 
     Returns:
         Group
+            Its details, one titled part after another.
     """
     cloudy_dir = snapshot["cloudy_dir"]
     columns = _point_columns(snapshot["points"])
@@ -1669,7 +2159,7 @@ def _model_details(snapshot, model):
     elif model in _failures(snapshot):
         status = Text("failed", style="red")
     else:
-        status = Text("", style="")
+        status = None
     u = _ionisation_parameter(cloudy_dir, model) if cloudy_dir else None
     about = _pairs(
         [
@@ -1738,7 +2228,18 @@ STAGE_COLOURS = {
 
 
 def _log_text(line):
-    """A run.log line for the log panel: time dim, stage tag coloured."""
+    """A run.log line for the log panel: time dim, stage tag coloured.
+
+    Args:
+        line (str)
+            The line, as run.log has it (its date is dropped).
+
+    Returns:
+        Text
+            The line, its message red for an error and yellow for a warning,
+            cropped rather than wrapped if it is part of a table; the line
+            as it is if it isn't in run.log's format.
+    """
     # The date is today's; the time is enough
     if len(line) > 20 and line[4] == "-" and line[10] == " ":
         line = line[11:]
@@ -1767,6 +2268,16 @@ def _log_text(line):
 
 
 def _plain(cell):
+    """A table cell's text, without its style.
+
+    Args:
+        cell (Text or object)
+            The cell.
+
+    Returns:
+        str
+            Its plain text.
+    """
     return cell.plain if isinstance(cell, Text) else str(cell)
 
 
@@ -1779,6 +2290,8 @@ def _fill(table, headers, rows, right=(), stretch="even"):
     given) give it up, down to 8 characters, cropping what they hold.
 
     Args:
+        table (DataTable)
+            The table.
         headers (list of str)
             The column titles.
         rows (list of (key, cells))
@@ -1816,9 +2329,19 @@ def _fill(table, headers, rows, right=(), stretch="even"):
             for key, cells in rows
         ],
     )
-    if getattr(table, "drawn", None) == drawn:
+    old = getattr(table, "drawn", None)
+    if old == drawn:
         return
     table.drawn = drawn
+    # Rows only added at the end (models given up one by one, below
+    # thousands of others) are added alone, without refilling the rest
+    if (
+        old is not None
+        and old[:2] == drawn[:2]
+        and drawn[2][: len(old[2])] == old[2]
+    ):
+        _add_rows(table, rows[len(old[2]) :], right)
+        return
     columns = list(table.columns.values())
     if [str(c.label) for c in columns] != list(headers) or [
         c.width for c in columns
@@ -1831,6 +2354,23 @@ def _fill(table, headers, rows, right=(), stretch="even"):
             )
     cursor, scroll = table.cursor_row, table.scroll_y
     table.clear()
+    _add_rows(table, rows, right)
+    if rows:
+        table.move_cursor(row=min(cursor, len(rows) - 1), scroll=False)
+    table.scroll_to(y=scroll, animate=False)
+
+
+def _add_rows(table, rows, right):
+    """Add rows to a DataTable, right aligning some columns.
+
+    Args:
+        table (DataTable)
+            The table.
+        rows (list of (key, cells))
+            The rows.
+        right (set of int)
+            The columns to right align.
+    """
     for key, cells in rows:
         cells = [
             Text(
@@ -1843,9 +2383,6 @@ def _fill(table, headers, rows, right=(), stretch="even"):
             for i, c in enumerate(cells)
         ]
         table.add_row(*cells, key=key)
-    if rows:
-        table.move_cursor(row=min(cursor, len(rows) - 1), scroll=False)
-    table.scroll_to(y=scroll, animate=False)
 
 
 def _table(name, enter=None):
@@ -1860,6 +2397,11 @@ def _table(name, enter=None):
             What Enter does on a row, shown in the footer while the table
             is focused (e.g. "Job details"); None for a table that isn't
             focused.
+
+    Returns:
+        DataTable
+            The table, with row cursor and zebra stripes, focusable only if
+            Enter does something.
     """
     table = (DataTable if enter is None else _enter_table(enter))(
         classes=name, zebra_stripes=True, cursor_type="row", show_cursor=False
@@ -1870,7 +2412,20 @@ def _table(name, enter=None):
 
 @functools.cache
 def _enter_table(enter):
-    """A DataTable whose footer says what Enter does on a row."""
+    """A DataTable whose footer says what Enter does on a row.
+
+    Its bindings are its class's, so each wording is its own subclass (made
+    once). It keeps DataTable's name, so the CSS for DataTable still
+    matches it.
+
+    Args:
+        enter (str)
+            What Enter does, e.g. "Job details".
+
+    Returns:
+        type
+            The DataTable subclass.
+    """
     return type(
         "DataTable",
         (DataTable,),
@@ -1883,10 +2438,19 @@ def _background(method):
 
     A thread worker's would hold q up until it finished: a read on a slow
     Lustre, or squeue and sacct, can take many seconds.
+
+    Args:
+        method (callable)
+            The method, taking only self.
+
+    Returns:
+        callable
+            A method that starts it in a daemon thread and returns at once.
     """
 
     @functools.wraps(method)
     def start(self):
+        """Start the method in a daemon thread."""
         threading.Thread(target=method, args=(self,), daemon=True).start()
 
     return start
@@ -1899,7 +2463,14 @@ class _Log(RichLog):
 
 
 class _SlurmQueue(Screen):
-    """Your Slurm queue, full screen; s or Esc goes back."""
+    """Your Slurm queue, full screen; s or Esc goes back.
+
+    Attributes:
+        jobs (dict)
+            Each row's job ID, by its key (filled as the queue is drawn).
+    """
+
+    jobs = {}
 
     BINDINGS = [
         ("escape", "app.pop_screen", "Back"),
@@ -1908,14 +2479,21 @@ class _SlurmQueue(Screen):
     ]
 
     def compose(self) -> ComposeResult:
-        """The run's header and the queue."""
+        """The run's header and the queue.
+
+        Yields:
+            Widget
+                The header, the queue's table and the footer.
+        """
         yield Static(id="header")
         yield _table("view", "Job details")
         yield Footer()
 
     def on_mount(self):
-        """Ask for the queue while shown, and now rather than next redraw,
-        and pick with the keys."""
+        """Ask for the queue while shown, now, and pick with the keys.
+
+        The queue is read and drawn now rather than at the next redraw.
+        """
         self.app.watcher.show_squeue = True
         self.query_one(".view", DataTable).focus()
         self.app.read()
@@ -1934,7 +2512,7 @@ class _SlurmQueue(Screen):
                 What ``Watcher.read`` returns.
         """
         header = self.query_one("#header", Static)
-        header.update(_header(view, header.content_size.width or 118))
+        header.update(_header(view, header.content_size.width or WIDTH))
         table = self.query_one(".view", DataTable)
         rows, title = _squeue_rows(view["sections"][0])
         table.border_title = title + " · Enter shows a job"
@@ -1942,7 +2520,12 @@ class _SlurmQueue(Screen):
         self.jobs = {key: cells[0].plain for key, cells in rows}
 
     def on_data_table_row_selected(self, event):
-        """Show the job picked (an array's, for one of its tasks)."""
+        """Show the job picked (an array's, for one of its tasks).
+
+        Args:
+            event (DataTable.RowSelected)
+                The row picked, keyed by its place in the queue.
+        """
         job = self.jobs.get(event.row_key.value, "")
         self.app.show_job(job.split("_")[0])
 
@@ -1972,7 +2555,13 @@ class _Details(ModalScreen):
         self.heading, self.build = title, build
 
     def compose(self) -> ComposeResult:
-        """A scrolling box, then the keys."""
+        """A scrolling box, then the keys.
+
+        Yields:
+            Widget
+                The box (saying "Reading..." until the details are read),
+                then the footer.
+        """
         with VerticalScroll(id="details"):
             yield Static(Text("Reading...", style="dim italic"))
         yield Footer()
@@ -2006,15 +2595,16 @@ GRID_COLUMNS = (
 
 
 #: The order of a section's stages, to sort the all grids page by stage
-STAGE_ORDER = ("start", "finish", "assemble", "done")
+STAGE_ORDER = ("start", "walltime", "finish", "assemble", "done")
 
 #: The columns the all grids page sorts by most first (the rest A to Z)
 MOST_FIRST = ("progress", "done", "running", "failed")
 
 
 def _grid_row(snapshot):
-    """A grid's cells in the all grids page (after its place), and what
-    each sorts by.
+    """A grid's cells in the all grids page (after its place).
+
+    Also what each of them sorts by.
 
     Args:
         snapshot (dict)
@@ -2061,9 +2651,12 @@ def _grid_row(snapshot):
 
 
 class _AllGrids(Screen):
-    """Every grid being run, full screen: the overview, then a row per grid,
-    sorted by any column (o picks the next, O reverses, or click a column's
-    title). Enter shows the grid; g or Esc goes back."""
+    """Every grid being run, full screen.
+
+    The overview, then a row per grid, sorted by any column (o picks the
+    next, O reverses, or click a column's title). Enter shows the grid; g or
+    Esc goes back.
+    """
 
     BINDINGS = [
         ("escape", "app.pop_screen", "Back"),
@@ -2080,7 +2673,13 @@ class _AllGrids(Screen):
         self.reverse = False  # whether the sort is reversed
 
     def compose(self) -> ComposeResult:
-        """The title bar, the overview and the grids."""
+        """The title bar, the overview and the grids.
+
+        Yields:
+            Widget
+                The title bar, the overview, the grids' table and the
+                footer.
+        """
         yield Static(id="title")
         yield Static(id="overview")
         yield _table("view", "Show grid")
@@ -2094,9 +2693,11 @@ class _AllGrids(Screen):
     def show(self):
         """Draw the title, the overview and every grid's row, sorted."""
         title = self.query_one("#title", Static)
-        title.update(self.app.title_bar(title.content_size.width or 118))
+        title.update(self.app.title_bar(title.content_size.width or WIDTH))
         overview = self.query_one("#overview", Static)
-        overview.update(self.app.overview(overview.content_size.width or 116))
+        overview.update(
+            self.app.overview(overview.content_size.width or WIDTH - 2)
+        )
         rows = self.app.grid_rows()
         column = GRID_COLUMNS[self.sort]
         rows.sort(
@@ -2134,7 +2735,12 @@ class _AllGrids(Screen):
         self.show()
 
     def on_data_table_header_selected(self, event):
-        """Sort by the column whose title was clicked (again to reverse)."""
+        """Sort by the column whose title was clicked (again to reverse).
+
+        Args:
+            event (DataTable.HeaderSelected)
+                The column whose title was clicked.
+        """
         if event.column_index == self.sort:
             self.reverse = not self.reverse
         else:
@@ -2142,7 +2748,13 @@ class _AllGrids(Screen):
         self.show()
 
     def on_data_table_row_selected(self, event):
-        """Show the grid picked."""
+        """Show the grid picked.
+
+        Args:
+            event (DataTable.RowSelected)
+                The row picked, keyed by its grid's key (see
+                ``WatchApp.select``).
+        """
         self.app.pop_screen()
         self.app.select(event.row_key.value)
 
@@ -2166,7 +2778,12 @@ class _SectionView(Vertical):
     }
 
     def __init__(self, **kwargs):
-        """A section's view, empty until its first snapshot."""
+        """A section's view, empty until its first snapshot.
+
+        Args:
+            **kwargs
+                Passed on to Vertical (e.g. its id).
+        """
         super().__init__(**kwargs)
         self.snapshot = None  # the snapshot last drawn
         self.latest = None  # the latest snapshot, drawn once shown
@@ -2184,8 +2801,15 @@ class _SectionView(Vertical):
         self.unwritten.extend(snapshot["log_new"])
 
     def compose(self) -> ComposeResult:
-        """The section's card, then its panels: its queue, round and jobs,
-        its rounds, then its log, failed and running models."""
+        """The section's card, then its panels.
+
+        Its queue, round and jobs, its rounds, then its log, failed and
+        running models.
+
+        Yields:
+            Widget
+                The card, then the panels in their rows.
+        """
         yield Static(classes="card")
         with Horizontal(classes="top"):
             yield Static(classes="queue")
@@ -2206,7 +2830,16 @@ class _SectionView(Vertical):
             self.panel(name).border_title = title
 
     def panel(self, name):
-        """One of the section's panels, by its name (e.g. "log")."""
+        """One of the section's panels, by its name (e.g. "log").
+
+        Args:
+            name (str)
+                The panel's name (its class).
+
+        Returns:
+            Widget
+                The panel.
+        """
         return self.query_one(f".{name}")
 
     def show(self, snapshot):
@@ -2219,7 +2852,7 @@ class _SectionView(Vertical):
         self.snapshot = snapshot
         counts = snapshot["counts"]
         card = self.panel("card")
-        card.update(_card(snapshot, card.content_size.width or 118))
+        card.update(_card(snapshot, card.content_size.width or WIDTH))
         self.panel("queue").update(_queue_table(snapshot))
         self.panel("round").update(_round_table(snapshot))
         _fill(
@@ -2260,7 +2893,13 @@ class _SectionView(Vertical):
             )
 
     def on_data_table_row_selected(self, event):
-        """Show the details of the job or model picked."""
+        """Show the details of the job or model picked.
+
+        Args:
+            event (DataTable.RowSelected)
+                The row picked: in the jobs table keyed by its job's ID, in
+                the failed and running tables by its model (and worker).
+        """
         key, table = event.row_key.value, event.data_table
         if table.has_class("jobs"):
             self.app.show_job(key)
@@ -2281,7 +2920,7 @@ class WatchApp(App):
     # No panel is focused (and so shows a cursor row) until clicked
     AUTO_FOCUS = None
     CSS = """
-    /* The title bar, then the tabs, then the overview */
+    /* The title bar, then the all grids page's overview */
     #title {
         height: 1;
         padding: 0 1;
@@ -2417,14 +3056,23 @@ class WatchApp(App):
         self.sub_title = directory or work_dir
 
     def compose(self) -> ComposeResult:
-        """The title bar, the shown grid's view, and the keys."""
+        """The title bar, the shown grid's view, and the keys.
+
+        Yields:
+            Widget
+                The title bar, the switcher holding each grid's view and the
+                footer.
+        """
         yield Static(id="title")
         yield ContentSwitcher(id="sections")
         yield Footer()
 
     def on_mount(self):
-        """Keep the main page's widgets (other pages open over it), then read
-        the runs now and every interval."""
+        """Keep the main page's widgets, then read the runs.
+
+        The widgets are kept as other pages open over the main page; the
+        runs are read now and every interval.
+        """
         self._title = self.query_one("#title", Static)
         self._switcher = self.query_one("#sections", ContentSwitcher)
         self.read()
@@ -2432,25 +3080,44 @@ class WatchApp(App):
 
     @property
     def watcher(self):
-        """The shown run's watcher (None while no run is under way)."""
+        """The shown run's watcher (None while no run is under way).
+
+        Returns:
+            Watcher
+                The watcher, or None.
+        """
         return self.watchers.get(self._shown())
 
     @property
     def view(self):
-        """The shown run's last full read (None before the first)."""
+        """The shown run's last full read (None before the first).
+
+        Returns:
+            dict
+                What ``Watcher.read`` last returned for it, or None (also
+                while only its brief has been read).
+        """
         view = self.views.get(self._shown())
+        # Only a full read (``Watcher.read``) has "now"; a brief hasn't
         return view if view is not None and "now" in view else None
 
     def _shown(self):
-        """The shown run's work directory (the first run's, at first)."""
+        """The shown run's work directory (the first run's, at first).
+
+        Returns:
+            str
+                The work directory, or None while no run is under way.
+        """
         if self.shown in self.watchers:
             return self.shown
         return next(iter(self.watchers), None)
 
     @_background
     def read(self):
-        """Read the runs' files (away from the screen, which stays live): the
-        shown run's in full, the others' state files and queues only.
+        """Read the runs' files, away from the screen, which stays live.
+
+        The shown run's are read in full, the others' state files and queues
+        only.
 
         A read asked for while one is under way (Lustre can take seconds to
         list a queue) is skipped, so reads don't pile up on each other or
@@ -2469,7 +3136,7 @@ class WatchApp(App):
         """Read the runs' files and draw them (see ``read``)."""
         if (
             self.directory is not None
-            and time.monotonic() - self._found_at >= SLURM_EVERY
+            and time.monotonic() - self._found_at >= FIND_EVERY
         ):
             self.found = find_runs(self.directory)
             self._found_at = time.monotonic()
@@ -2478,15 +3145,26 @@ class WatchApp(App):
                 for work_dir in self.found["active"]
             }
         shown = self._shown()
+        full = self.watchers[shown].read() if shown is not None else None
+        # The other runs' briefs can take seconds on Lustre when due, so the
+        # grid looked at is drawn first rather than held up by them
+        due = any(
+            time.monotonic() - watcher._briefed_at >= QUEUE_EVERY
+            for work_dir, watcher in self.watchers.items()
+            if work_dir != shown
+        )
+        if due and shown in self.views:
+            self.call_from_thread(self.show, {**self.views, shown: full})
         views = {
-            work_dir: watcher.read() if work_dir == shown else watcher.brief()
+            work_dir: full if work_dir == shown else watcher.brief()
             for work_dir, watcher in self.watchers.items()
         }
         self.call_from_thread(self.show, views)
 
     async def show(self, views):
-        """Draw what was read: the title, then the shown grid's view (and the
-        page open over it).
+        """Draw what was read: the title, then the shown grid's view.
+
+        The page open over it, if any, is drawn too.
 
         Args:
             views (dict)
@@ -2503,7 +3181,12 @@ class WatchApp(App):
             self._drawing = False
 
     async def _draw(self, views):
-        """Draw what was read (see ``show``)."""
+        """Draw what was read (see ``show``).
+
+        Args:
+            views (dict)
+                Each run's read, by its work directory (see ``read``).
+        """
         self.views = views
 
         # Every run's sections, in order, each with a view (made as it
@@ -2526,7 +3209,7 @@ class WatchApp(App):
                 await self._switcher.add_content(
                     _SectionView(id=f"view-{self._made}")
                 )
-            if "now" in snapshot:
+            if "now" in snapshot:  # a full read, not a brief
                 # Drawing is slow, so only the grid shown is drawn
                 view_id = f"view-{self._pane_ids[key]}"
                 view = self._switcher.get_child_by_id(view_id)
@@ -2538,7 +3221,7 @@ class WatchApp(App):
             self.select(self._order[0])
 
         self._title.update(
-            self.title_bar(self._title.content_size.width or 118)
+            self.title_bar(self._title.content_size.width or WIDTH)
         )
         if isinstance(self.screen, _SlurmQueue) and self.view is not None:
             self.screen.show(self.view)
@@ -2555,6 +3238,7 @@ class WatchApp(App):
 
         Returns:
             Text
+                The title bar's line.
         """
         right = Text()
         if len(self._order) > 1 and self._switcher.current in self._order:
@@ -2581,6 +3265,8 @@ class WatchApp(App):
 
         Returns:
             Text
+                The overview of every grid, the run's header, or nothing
+                before the first read.
         """
         if self.directory is not None:
             return _overview(self.views, self.found, width)
@@ -2625,24 +3311,52 @@ class WatchApp(App):
         return rows
 
     def _current(self):
-        """The section view shown, or None before the first read."""
+        """The section view shown, or None before the first read.
+
+        Returns:
+            _SectionView
+                The view, or None.
+        """
         current = self._switcher.visible_content
         return current if isinstance(current, _SectionView) else None
 
     def on_descendant_focus(self, event):
-        """Show the cursor row only in the table being scrolled."""
+        """Show the cursor row only in the table being scrolled.
+
+        Args:
+            event (DescendantFocus)
+                The widget focused.
+        """
         if isinstance(event.widget, DataTable):
             event.widget.show_cursor = True
 
     def on_descendant_blur(self, event):
-        """Hide the cursor row of a table no longer being scrolled."""
+        """Hide the cursor row of a table no longer being scrolled.
+
+        Args:
+            event (DescendantBlur)
+                The widget no longer focused.
+        """
         if isinstance(event.widget, DataTable):
             event.widget.show_cursor = False
 
     def check_action(self, action, parameters):
-        """Hide the main page's keys while another page is open (all but
+        """Hide the keys that do nothing where they are.
+
+        The main page's keys are hidden while another page is open (all but
         quit and back under details), the grid keys with one grid (or none),
-        and the Slurm queue's key with no run."""
+        and the Slurm queue's key with no run.
+
+        Args:
+            action (str)
+                The action's name, e.g. "pick".
+            parameters (tuple)
+                The action's parameters (not used).
+
+        Returns:
+            bool
+                Whether the action's key is shown and works.
+        """
         if isinstance(self.screen, _Details):
             return action in ("quit", "pop_screen")
         if isinstance(self.screen, (_SlurmQueue, _AllGrids)):
@@ -2676,8 +3390,10 @@ class WatchApp(App):
             self.select(self._order[number - 1])
 
     def show_job(self, job):
-        """Show a job's details: the run's (with its logs), or what Slurm
-        says about another.
+        """Show a job's details.
+
+        One of the run's is shown with its logs; for another, what Slurm
+        says about it.
 
         Args:
             job (str)
@@ -2737,6 +3453,7 @@ def _section_summary(snapshot, log_lines):
 
     Returns:
         list of Panel
+            The section's panels, in the order they are shown.
     """
     counts = snapshot["counts"]
     rounds = Table(box=box.SIMPLE_HEAD)
@@ -2760,7 +3477,7 @@ def _section_summary(snapshot, log_lines):
     log = Text("\n").join(
         _log_text(line) for line in snapshot["log"][-log_lines:]
     )
-    name = _tab_title(snapshot) if snapshot["label"] else "run"
+    name = _grid_title(snapshot) if snapshot["label"] else "run"
     return [
         Columns(
             [
@@ -2797,6 +3514,6 @@ def watch(path=None, interval=2.0, once=False):
             [work_dir] if directory is None else find_runs(directory)["active"]
         )
         for run in runs:
-            Console().print(summary(Watcher(run).read()))
+            Console().print(summary(Watcher(run, log_tail=True).read()))
         return
     WatchApp(work_dir, interval, directory=directory).run()

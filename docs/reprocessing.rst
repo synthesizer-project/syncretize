@@ -172,7 +172,7 @@ Failures
 
 The collector treats a sufficiently large ``.emergent_elin`` file as a
 successful model. Failed models with readable output are marked ``1`` in the
-``failures`` dataset and their cells remain zero. Failed index pairs are also
+``failures`` dataset and their cells are NaN. Failed index pairs are also
 written to a ``.failures`` file for resubmission, including models missing
 ``.out``.
 

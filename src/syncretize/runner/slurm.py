@@ -107,7 +107,7 @@ def submit(
 def is_running():
     """A function saying whether a queue claim's owner is still running.
 
-    Owners are "<array job>_<task>.<slot>" (see ``Runner.submit_round``);
+    Owners are "<array job>_<task>.<slot>" (see ``Section.submit_round``);
     sacct is asked once per array job. Any other owner (e.g. "local.0") is
     taken to have stopped.
 
@@ -118,6 +118,16 @@ def is_running():
     running = {}
 
     def check(owner):
+        """Whether an owner's array task is still queued or running.
+
+        Args:
+            owner (str)
+                The claim's owner, e.g. "12_3.0".
+
+        Returns:
+            bool
+                True if its task may still be running.
+        """
         job = owner.rpartition(".")[0]
         array = job.partition("_")[0]
         if not array.isdigit():
@@ -130,12 +140,31 @@ def is_running():
 
 
 def job_running(job):
-    """Whether a job (or any task of an array job) is queued or running."""
+    """Whether a job (or any task of an array job) is queued or running.
+
+    Args:
+        job (str)
+            The job's ID.
+
+    Returns:
+        bool
+            True if sacct says any of its tasks may still be running.
+    """
     return bool(_running_tasks(job))
 
 
 def _running_tasks(array):
-    """The tasks of an array job that may still be running."""
+    """The tasks of an array job that may still be running.
+
+    Args:
+        array (str)
+            The (array) job's ID.
+
+    Returns:
+        set of str
+            The IDs (e.g. "12_3") of its tasks that sacct says are queued
+            or running.
+    """
     result = subprocess.run(
         ["sacct", "-n", "-X", "-P", "-o", "JobID,State", "-j", array],
         capture_output=True,

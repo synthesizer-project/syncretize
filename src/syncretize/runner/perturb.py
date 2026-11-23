@@ -19,8 +19,10 @@ Cloudy inputs:
         "plus":  {...}}}}
 
 A side at level k is ``step * 2**(k - 1)`` of the gap to the neighbouring
-grid value on that side (``log_step * 2**(k - 1)`` dex for a parameter that
-isn't an axis).
+grid value on that side; at the edge of an axis, of the gap on its other
+side. A parameter with no neighbouring values (the ionisation parameter when
+it isn't an axis, or an axis of one value) is perturbed by
+``log_step * 2**(k - 1)`` instead (dex, for a parameter in log10).
 """
 
 import json
@@ -34,12 +36,30 @@ PLAN = "perturb.json"
 
 
 def is_perturbed(model):
-    """Whether a model is a perturbed run (rather than a grid point)."""
+    """Whether a model is a perturbed run (rather than a grid point).
+
+    Args:
+        model (str)
+            The model, e.g. "3_12" (a grid point) or "3_12p0-1" (perturbed).
+
+    Returns:
+        bool
+            True if it is a perturbed run.
+    """
     return not model.partition("_")[2].isdigit()
 
 
 def load(cloudy_dir):
-    """The perturbation plan (empty if none)."""
+    """The perturbation plan (empty if none).
+
+    Args:
+        cloudy_dir (str)
+            The grid's Cloudy directory, holding ``perturb.json``.
+
+    Returns:
+        dict
+            The plan (see this module's docstring).
+    """
     try:
         with open(os.path.join(cloudy_dir, PLAN)) as file:
             return json.load(file)
@@ -48,6 +68,14 @@ def load(cloudy_dir):
 
 
 def _save(cloudy_dir, plan):
+    """Write the perturbation plan, replacing the old one in one step.
+
+    Args:
+        cloudy_dir (str)
+            The grid's Cloudy directory, to hold ``perturb.json``.
+        plan (dict)
+            The plan (see this module's docstring).
+    """
     path = os.path.join(cloudy_dir, PLAN)
     with open(path + ".tmp", "w") as file:
         json.dump(plan, file, indent=1)
@@ -56,6 +84,12 @@ def _save(cloudy_dir, plan):
 
 def _axes(cloudy_dir, model):
     """The parameters to perturb a model along, with their gaps.
+
+    Args:
+        cloudy_dir (str)
+            The grid's Cloudy directory.
+        model (str)
+            The model, e.g. "3_12".
 
     Returns:
         dict
@@ -104,7 +138,27 @@ def _axes(cloudy_dir, model):
 
 
 def _side(model, position, parameter, side, level, settings):
-    """Where a side at a level lies, and its run's name."""
+    """Where a side at a level lies, and its run's name.
+
+    Args:
+        model (str)
+            The model being perturbed, e.g. "3_12".
+        position (int)
+            The parameter's position among the model's, used in the name.
+        parameter (dict)
+            The parameter's plan: "log", "x" and "gaps" (see ``_axes``).
+        side (str)
+            "minus" or "plus".
+        level (int)
+            How far out the side is (1 is the first step).
+        settings (dict)
+            Cloudy.perturb: step, log_step, max_steps.
+
+    Returns:
+        dict
+            The side's "level", "name" (e.g. "12p0-1") and "x" (in the
+            interpolation's units).
+    """
     sign = -1 if side == "minus" else 1
     gaps = parameter["gaps"]
     gap = gaps[0] if side == "minus" else gaps[1]
@@ -123,6 +177,18 @@ def _side(model, position, parameter, side, level, settings):
 
 
 def _value(parameter, x):
+    """A value in the interpolation's units back in the parameter's own.
+
+    Args:
+        parameter (dict)
+            The parameter's plan (see ``_axes``).
+        x (float)
+            The value, in log10 when the parameter's "log" is set.
+
+    Returns:
+        float
+            The value of the parameter itself.
+    """
     return 10**x if parameter["log"] else x
 
 
@@ -149,6 +215,22 @@ def advance(cloudy_dir, failed, states, settings, write_input):
     queue = []
 
     def start(model, position, name, parameter, side, level):
+        """Write a side's input, note it in the plan and queue it.
+
+        Args:
+            model (str)
+                The model being perturbed, e.g. "3_12".
+            position (int)
+                The parameter's position among the model's.
+            name (str)
+                The parameter's name.
+            parameter (dict)
+                The parameter's plan, updated with the side's run.
+            side (str)
+                "minus" or "plus".
+            level (int)
+                How far out the side is (1 is the first step).
+        """
         run = _side(model, position, parameter, side, level, settings)
         write_input(
             cloudy_dir, model, run["name"], {name: _value(parameter, run["x"])}
@@ -165,14 +247,21 @@ def advance(cloudy_dir, failed, states, settings, write_input):
             for side in ("minus", "plus"):
                 start(model, position, name, parameter, side, 1)
 
-    # Sides that failed are tried again further out
+    # Sides that failed are tried again further out (and any planned but
+    # never queued are queued)
     for model, parameters in plan.items():
         incident_index = model.partition("_")[0]
         for position, (name, parameter) in enumerate(parameters.items()):
             for side in ("minus", "plus"):
                 run = parameter[side]
-                state = states.get(f"{incident_index}_{run['name']}")
-                if state == "failed" and run["level"] < settings["max_steps"]:
+                queued = f"{incident_index}_{run['name']}"
+                state = states.get(queued)
+                if state is None and queued not in queue:
+                    # Planned by a finish job that died before queuing it
+                    queue.append(queued)
+                elif (
+                    state == "failed" and run["level"] < settings["max_steps"]
+                ):
                     start(
                         model,
                         position,

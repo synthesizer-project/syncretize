@@ -153,12 +153,24 @@ def load_run(run_file):
                     f"{run_file}: Run.{group}.{key} must be a whole number "
                     f"of at least 1, got {value!r}"
                 )
+    retries = run["cloudy"]["max_retries"]
+    if (
+        not isinstance(retries, int)
+        or isinstance(retries, bool)
+        or retries < 0
+    ):
+        raise ValueError(
+            f"{run_file}: Run.cloudy.max_retries must be a whole number of at "
+            f"least 0, got {retries!r}"
+        )
     for group, keys in WALLTIMES.items():
         for key in keys:
             try:
                 seconds(run[group][key])
             except ValueError as error:
-                raise ValueError(f"{run_file}: Run.{group}.{key}: {error}")
+                raise ValueError(
+                    f"{run_file}: Run.{group}.{key}: {error}"
+                ) from None
     if seconds(run["cloudy"]["walltime"]) > seconds(
         run["cloudy"]["max_walltime"]
     ):
@@ -262,8 +274,9 @@ def section_name(cloudy):
 
 
 def _check_perturb(run_file, where, cloudy):
-    """Fill in a section's perturb defaults (``true`` takes them all) and
-    check it.
+    """Fill in a section's perturb defaults and check it.
+
+    ``true`` takes all the defaults.
 
     Args:
         run_file (str)
@@ -315,7 +328,9 @@ def incident_module(model):
         # dependency (e.g. fsps) should say so
         if not name.startswith(error.name or ""):
             raise
-        raise ValueError(f"Incident.model {model!r}: no module {name}")
+        raise ValueError(
+            f"Incident.model {model!r}: no module {name}"
+        ) from None
     if not hasattr(module, "setup") or not hasattr(module, "generate_point"):
         raise ValueError(
             f"Incident.model {model!r} has no setup and generate_point"
@@ -328,6 +343,18 @@ def seconds(walltime):
 
     YAML reads an unquoted 12:00:00 as the number 43200 (base 60), so a
     whole number is taken as seconds already.
+
+    Args:
+        walltime (str or int)
+            The time limit, e.g. "1-12:00:00", or a whole number of seconds.
+
+    Returns:
+        int
+            It in seconds.
+
+    Raises:
+        ValueError
+            If it isn't a time like [D-]HH:MM:SS.
     """
     if isinstance(walltime, int) and not isinstance(walltime, bool):
         return walltime
@@ -338,9 +365,18 @@ def seconds(walltime):
     return ((days * 24 + hours) * 60 + minutes) * 60 + secs
 
 
-def slurm_time(seconds):
-    """Seconds as a Slurm time limit, "D-HH:MM:SS"."""
-    minutes, secs = divmod(int(seconds), 60)
+def slurm_time(total):
+    """Seconds as a Slurm time limit.
+
+    Args:
+        total (float)
+            The time limit (s).
+
+    Returns:
+        str
+            It as "D-HH:MM:SS".
+    """
+    minutes, secs = divmod(int(total), 60)
     hours, minutes = divmod(minutes, 60)
     days, hours = divmod(hours, 24)
     return f"{days}-{hours:02}:{minutes:02}:{secs:02}"
@@ -378,7 +414,31 @@ def _check_cloudy_version(run_file, where, cloudy):
 
 
 def _fill(run_file, section, values, defaults, prefix=""):
-    """Check a section's keys and fill in its defaults."""
+    """Check a section's keys and fill in its defaults.
+
+    A default that is itself a mapping is a subsection, filled in the same
+    way.
+
+    Args:
+        run_file (str)
+            The run config, for errors.
+        section (str)
+            The section's key, for errors.
+        values (dict)
+            The section as given (None for none).
+        defaults (dict)
+            Each allowed key's default, or ``REQUIRED``.
+        prefix (str)
+            What comes before the section's key in errors, e.g. "Cloudy2.".
+
+    Returns:
+        dict
+            The section with every key, given or default.
+
+    Raises:
+        ValueError
+            If it isn't a mapping, has unknown keys or lacks a required one.
+    """
     values = values or {}
     where = f"{run_file}: {prefix}{section}"
     if not isinstance(values, dict):
@@ -405,7 +465,19 @@ def _fill(run_file, section, values, defaults, prefix=""):
 
 
 def _resolve(base, path):
-    """Make a relative path relative to base."""
+    """Make a relative path relative to base.
+
+    Args:
+        base (str)
+            The directory a relative path is relative to.
+        path (str)
+            The path (``~`` is expanded), or None.
+
+    Returns:
+        str
+            The normalised path (an absolute one is kept), or None if
+            ``path`` is None.
+    """
     if path is None:
         return None
     return os.path.normpath(os.path.join(base, os.path.expanduser(path)))

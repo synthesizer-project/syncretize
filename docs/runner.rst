@@ -29,7 +29,8 @@ Quick start
       python -m syncretize.runner run run.yaml --local
 
 The final grids are written to ``Run.grid_dir``. Leave out the ``Cloudy``
-section to make only the incident grid.
+section to make only the incident grid. ``syncretize`` takes the same
+commands, e.g. ``syncretize run run.yaml``.
 
 The run config
 --------------
@@ -94,14 +95,19 @@ run is a chain of jobs, each submitting the next:
 ``work``
    One worker of a round's job array. It runs ``Run.cloudy.cores_per_worker``
    Cloudy models at once, taking them from the queue until it is empty or the
-   worker is within ``Run.cloudy.margin`` of its time limit.
+   worker is within ``Run.cloudy.margin`` of its time limit (given with
+   ``--walltime``, which the round's jobs pass it).
 ``finish``
    Runs once every worker of the round has stopped, however they stopped. It
    puts failed and unfinished models back in the queue (see below) and
-   submits the next round, or the assembly job when no models are left.
+   submits the next round, or the assembly job when no models are left. Its
+   time limit is a fixed hour, as it only tidies the queue.
 ``assemble``
    Makes the section's final grid from its Cloudy outputs. The run is done
    once every section's is.
+``incident``
+   Only makes the incident grid, here (no Slurm, and not into ``run.log``),
+   e.g. to try an incident model before a run.
 
 The ``work``, ``finish`` and ``assemble`` stages each belong to one Cloudy
 section, named by ``--section <n>`` (1 for ``Cloudy``); the sections go their
@@ -123,25 +129,38 @@ grid stores intrinsic lines, and ``.refl`` for open geometries with spectra),
 each at least 100 bytes. The workers and the assembly use this same check.
 A model that fails goes straight back in the queue, to run again in the same
 round, until it has failed ``1 + Run.cloudy.max_retries`` times; then it has
-failed.
+failed. A model Cloudy couldn't even be started for (say, its directory is
+missing) fails the same way; a worker whose Cloudy build is missing stops
+before claiming any.
 
 A worker stops claiming models ``Run.cloudy.margin`` before its time limit,
 or earlier once the time left is under 1.5 times its longest Cloudy run so
-far (so it doesn't start models that likely won't finish), and stops the
+far (so it doesn't start models that likely won't finish; models claimed
+together with ``Run.cloudy.claim`` go back unrun then too), and stops the
 Cloudy runs still going 2 minutes before its time limit. A model stopped
 like this hasn't failed: it goes back in the queue without counting an
 attempt, and the next round's time limit is ``Run.cloudy.walltime_growth``
-times longer, up to ``Run.cloudy.max_walltime``. Once the limit can't grow, a
-model stopped by it counts as a failed attempt. A model whose worker died
-without stopping it (lost with its job, e.g. a node failure) is treated the
-same way by the finish job.
+times longer, up to ``Run.cloudy.max_walltime`` (lowering
+``max_walltime`` and resuming lowers a limit already grown past it). A model
+whose worker died without stopping it (lost with its job, e.g. a node
+failure) is treated the same way by the finish job. Running out of time is
+never a failure: it means the run's time limits are too short. So once the
+limit can't grow and models still run out of time, the section stops
+(``next: walltime`` in its ``state.yaml``, shown in red by watch) with those
+models back in the queue; raise ``Run.cloudy.max_walltime`` and resume the
+run to carry on with a longer limit. The finish job starts as
+the round's workers end, but Slurm's accounting can lag behind, so it asks
+``sacct`` again for up to about 7 minutes before taking a worker as still
+running.
 
 Models that failed every attempt (and couldn't be interpolated, see below)
-are marked ``1`` in the final grid's ``failures`` dataset, with zeros in
-their spectra and lines, listed with why they last failed under
+are marked ``1`` in the final grid's ``failures`` dataset, with NaN in
+their spectra and lines (they're most likely where the physics doesn't hold,
+so there's no honest value to give them), listed with why they last failed under
 ``failures`` in ``state.yaml``, and listed in
 ``<work_dir>/<section>/cloudy/<grid name>.failures``. Check this mask before using or
-publishing a grid.
+publishing a grid: interpolating over a grid with NaN points gives NaN for
+anything that touches them.
 
 Interpolating failed models
 ---------------------------
@@ -190,11 +209,13 @@ The work directory
      <section>/          each Cloudy section's own, named after its configs
        state.yaml        its next stage and job, Cloudy directory and final
                          grid, every job (submitted, started, ended,
-                         outcome), every round's totals, and the models that
-                         failed
+                         outcome), the round and its time limit, every
+                         round's totals, whether it is perturbing, and the
+                         models that failed (and, once assembled, those
+                         interpolated)
        models.json       every Cloudy model's state and attempts (worker,
                          result, why it failed, start time, run time)
-       queue/
+       queue/            (perturbed runs are <i>_<j>p<a>±<k>, see above)
          todo/<i>_<j>    waiting to run
          claimed/<i>_<j>@<worker>.<slot>
          done/<i>_<j>
@@ -202,6 +223,8 @@ The work directory
        state/<worker>.jsonl  each worker's records, until a finish job
                          gathers them into models.json
        cloudy/<grid name>/<i>/<j>.in, .out, ...
+       cloudy/<grid name>/grid_points.json   each model's grid point
+       cloudy/<grid name>/perturb.json       the perturbation plan, if any
 
 ``<i>`` and ``<j>`` are a model's incident and photoionisation indices.
 Jobs are named ``R<round>-<run name>[-C<k>]-<kind>``, so they sort by round
@@ -287,11 +310,10 @@ every run under way there, and the all grids page counts the runs under way,
 done and not yet submitted. Runs appear once submitted and drop off once done
 (the directory is searched every 30 seconds); only the shown grid's run is
 read in full, the others' state files and queues every 10 seconds.
-``--once`` prints a summary of each run under way. ``syncretize`` also takes the
-other stages, e.g. ``syncretize run run.yaml``, the same as
-``python -m syncretize.runner``.
+``--once`` prints a summary of each run under way.
 
-Without it, to see how a round is doing while its workers run:
+Without ``syncretize watch``, to see how a round is doing while its workers
+run:
 
 .. code-block:: console
 
@@ -312,11 +334,17 @@ went down), carry it on with
 which submits the start job again if the run hadn't got past it, or else
 each unfinished section's next stage (``next`` in its ``state.yaml``): the
 finish job of its current round (after its workers, if they are still
-running), or its assembly job. It does nothing for a job still queued or
-running, or when the run is done. With ``--local`` it runs the
+running), or its assembly job; a section whose models ran out of time at
+``max_walltime`` gets a round with a longer limit, once it's been raised; a
+round whose job died before submitting its
+workers has them submitted now, and a run whose sections are all done is
+marked done. It does nothing for a job still queued or running, or when the
+run is done. With ``--local`` it runs the
 remaining stages here. Every stage keeps what earlier attempts did: the
 incident grid isn't made again, setting up the Cloudy inputs again keeps each
 model's state, and the finish job puts back the models of workers that died.
+A finish job keeps the workers' records until it has saved the round, so one
+that dies part way counts the round in full when run again.
 
 ``run`` refuses a work directory that already holds a run; use ``resume``.
 

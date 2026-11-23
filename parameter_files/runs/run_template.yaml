@@ -40,7 +40,7 @@ Run:
     cores_per_worker: 4          # Cloudy runs per worker at once (Cloudy is single-threaded). Default: 4.
     walltime: "12:00:00"         # Time limit of the first round's workers. Default: 12:00:00.
     walltime_growth: 1.5         # A model stopped by the time limit is requeued, and the next round's limit is multiplied by this (at least 1). Default: 1.5.
-    max_walltime: "3-00:00:00"   # The longest time limit (the partition's). A model stopped at this limit counts as failed. Default: 3-00:00:00.
+    max_walltime: "3-00:00:00"   # The longest time limit (the partition's). Models stopped at this limit stop the grid until it is raised (and the run resumed). Default: 3-00:00:00.
     margin: "00:15:00"           # A worker stops taking models this long before its time limit, or earlier when 1.5 x its longest run so far wouldn't fit (and stops the Cloudy runs left 2 minutes before it, so this must be longer). Default: 00:15:00.
     claim: 1                     # Models a worker takes from the queue at a time. Default: 1.
     max_retries: 2               # Times a failed Cloudy model is rerun (straight away, in the same round) before it is given up. Default: 2.

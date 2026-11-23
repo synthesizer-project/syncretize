@@ -30,6 +30,7 @@ import yaml
 
 from syncretize.grid_io import write_run_config
 from syncretize.incident.builder import build_grid
+from syncretize.parser import YAMLLoader
 from syncretize.provenance import version
 from syncretize.runner import log as logs
 from syncretize.runner import slurm
@@ -172,6 +173,9 @@ class Runner(Stages):
             self.set_stage("resume", section)
             jobs.append(section.resume())
         self.set_stage("resume")
+        # Every section done but not the run: the last assembly died before
+        # it could mark it
+        self.section_done()
         return jobs
 
     def incident(self):
@@ -236,13 +240,17 @@ class Runner(Stages):
             return incident_grid
         for section in self.sections:
             self.set_stage("start", section)
-            # A section a crashed start job had already set up (and maybe
-            # submitted) is left as it is
+            # A section a crashed start job had already set up is left as
+            # it is, but its first round is submitted if it hadn't been
             if section._load_state().get("next") is None:
                 section.setup(incident_grid)
                 section._save_state(next="finish")
-                if submit:
-                    section.submit_round()
+            if (
+                submit
+                and section._load_state().get("next") == "finish"
+                and not section._round_submitted()
+            ):
+                section.submit_round()
         self.set_stage("start")
         self._save_state(next="cloudy")
         return incident_grid
@@ -327,7 +335,8 @@ class Runner(Stages):
         ]
         if config.incident["config"] is not None:
             with open(config.incident["config"]) as file:
-                params = yaml.safe_load(file)
+                # As the config was read, so e.g. 1e6 is a number
+                params = yaml.load(file, Loader=YAMLLoader)
             lines += [
                 f"Incident model parameters ({config.incident['config']}):",
                 _dump(params),
@@ -336,7 +345,12 @@ class Runner(Stages):
         return "\n".join(lines)
 
     def _setup_log(self, stage):
-        """Log to run.log too, unless the command line already set it up."""
+        """Log to run.log too, unless the command line already set it up.
+
+        Args:
+            stage (str)
+                The stage logging, e.g. "start".
+        """
         if not logging_to(self.config.run["work_dir"]):
             setup(self.config.run["work_dir"], stage)
 

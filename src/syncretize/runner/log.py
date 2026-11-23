@@ -89,7 +89,16 @@ def setup(work_dir, stage, job=None, run_log=True, section=None):
 
 
 def logging_to(work_dir):
-    """Whether the logs are set up for this work directory's run."""
+    """Whether the logs are set up for this work directory's run.
+
+    Args:
+        work_dir (str)
+            The run's work directory.
+
+    Returns:
+        bool
+            True if the logs have handlers, set up for ``work_dir``.
+    """
     return bool(log.handlers) and _context["work_dir"] == work_dir
 
 
@@ -109,17 +118,80 @@ def set_stage(stage, job=None, section=None):
 
 
 def took(start):
-    """The time since start (a ``time.monotonic()``), in sensible units."""
+    """The time since start (a ``time.monotonic()``), in sensible units.
+
+    Args:
+        start (float)
+            The ``time.monotonic()`` to count from.
+
+    Returns:
+        str
+            The time since, e.g. "2.5 min" (see ``duration``).
+    """
     return duration(time.monotonic() - start)
 
 
 def duration(seconds):
-    """A number of seconds in sensible units."""
+    """A number of seconds in sensible units.
+
+    Args:
+        seconds (float)
+            The time.
+
+    Returns:
+        str
+            e.g. "12.0 s", "2.5 min" or "1.25 h".
+    """
     if seconds < 60:
         return f"{seconds:.1f} s"
     if seconds < 3600:
         return f"{seconds / 60:.1f} min"
     return f"{seconds / 3600:.2f} h"
+
+
+#: The columns of a table of rounds (run.log's after each round, and watch's)
+ROUND_COLUMNS = (
+    "round",
+    "time limit",
+    "workers",
+    "done",
+    "errored",
+    "timed out",
+    "retried",
+    "failed",
+    "left",
+)
+
+
+def round_row(summary):
+    """A round's row of a table of rounds (see ROUND_COLUMNS).
+
+    Its runs that errored are those that failed, hit the time limit
+    (stopped) or were lost with their job; those not left failed were
+    retried, and those left failed ("given_up") have failed every attempt.
+
+    Args:
+        summary (dict)
+            The round's summary, as a finish job saves it in the state file.
+
+    Returns:
+        list
+            Its cells.
+    """
+    errored = sum(summary.get(key, 0) for key in ("failed", "stopped", "lost"))
+    given_up = summary.get("given_up", 0)
+    round_ = summary["round"]
+    return [
+        f"{round_} perturb" if summary.get("perturb") else round_,
+        summary.get("walltime", "-"),
+        summary.get("workers", "here"),
+        summary.get("done", 0),
+        errored,
+        summary.get("stopped", 0),
+        max(errored - given_up, 0),
+        given_up,
+        summary["queue"]["todo"],
+    ]
 
 
 def table(headers, rows):
@@ -142,6 +214,16 @@ def table(headers, rows):
     rule = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
 
     def line(values):
+        """One row of the table, its values right-aligned in their columns.
+
+        Args:
+            values (list)
+                The row's values.
+
+        Returns:
+            str
+                The row, between "|" borders.
+        """
         cells = (f" {str(v):>{w}} " for v, w in zip(values, widths))
         return "|" + "|".join(cells) + "|"
 
@@ -159,6 +241,10 @@ def quiet(path):
     Args:
         path (str)
             The file to add their output (stdout and stderr) to.
+
+    Yields:
+        None
+            The body runs with its output going to ``path``.
     """
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a") as file:
@@ -175,10 +261,30 @@ def quiet(path):
 
 
 def _elapsed(record):
+    """A job log line's prefix: the time since logging started.
+
+    Args:
+        record (logging.LogRecord)
+            The line's record.
+
+    Returns:
+        str
+            e.g. "[00012.34]:" (seconds).
+    """
     return f"[{record.relativeCreated / 1000:08.2f}]:"
 
 
 def _dated(record):
+    """A run.log line's prefix: when (UTC) and where it comes from.
+
+    Args:
+        record (logging.LogRecord)
+            The line's record.
+
+    Returns:
+        str
+            e.g. "2025-01-02 03:04:05 [C2 finish 123]" (see ``set_stage``).
+    """
     when = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(record.created))
     return f"{when} [{_context['tag']}]"
 
@@ -187,10 +293,29 @@ class _Formatter(logging.Formatter):
     """Prefix every line of a message (tables span several)."""
 
     def __init__(self, prefix):
+        """Make a formatter that starts every line with ``prefix(record)``.
+
+        Args:
+            prefix (callable)
+                Takes a ``logging.LogRecord`` and returns its prefix.
+        """
         super().__init__()
         self.prefix = prefix
 
     def format(self, record):
+        """Format a record, prefixing each of its lines.
+
+        Warnings and errors also get their level after the prefix, and an
+        exception's traceback follows the message.
+
+        Args:
+            record (logging.LogRecord)
+                The record.
+
+        Returns:
+            str
+                Its lines, each with the prefix.
+        """
         prefix = self.prefix(record)
         if record.levelno >= logging.WARNING:
             prefix += f" {record.levelname}:"

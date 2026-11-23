@@ -884,11 +884,12 @@ def add_spectra(
                             )
                 interpolated[indices] = 1
 
-            # If the model has failed save the spectra as an array of zeros
+            # A model that failed every attempt and couldn't be
+            # interpolated is likely somewhere the physics doesn't hold, so
+            # it has no spectra: NaN, rather than a zero that looks real
             elif failed:
-                # Set all the spectra to zero but with the correct shape
                 for spec_name in spec_names:
-                    spectra[spec_name][indices] = np.zeros(nlam)
+                    spectra[spec_name][indices] = np.nan
 
                 # Record failures in array
                 failures[indices] = 1
@@ -959,7 +960,8 @@ def add_spectra(
     new_grid.write_dataset(
         "failures",
         failures * dimensionless,
-        "array of model failures",
+        "1 where every Cloudy attempt failed and the model couldn't be "
+        "interpolated; its spectra and lines are NaN",
         False,
         verbose=False,
     )
@@ -1209,18 +1211,15 @@ def add_lines(
                             spectra_[continuum_quantity][indices],
                         )
 
-            # If the model has failed save the luminosities as an array of
-            # zeros
+            # A model that failed and couldn't be interpolated has no lines
+            # either (NaN, as its spectra)
             elif failed:
-                # Set the line luminosities to zero
-                lines["luminosity"][indices] = np.zeros(nlines)
+                lines["luminosity"][indices] = np.nan
                 if include_intrinsic:
-                    lines["luminosity_intrinsic"][indices] = np.zeros(nlines)
-
-                # Set the continuum luminosities to zero
+                    lines["luminosity_intrinsic"][indices] = np.nan
                 if calculate_continuum:
                     for continuum_quantity in continuum_quantities:
-                        lines[continuum_quantity][indices] = np.zeros(nlines)
+                        lines[continuum_quantity][indices] = np.nan
 
                 # Record failures in array
                 failures[indices] = 1
@@ -1346,7 +1345,8 @@ def add_lines(
         new_grid.write_dataset(
             "failures",
             failures * dimensionless,
-            "array of model failures",
+            "1 where every Cloudy attempt failed and the model couldn't be "
+            "interpolated; its spectra and lines are NaN",
             False,
             verbose=False,
         )
@@ -1577,8 +1577,8 @@ def create_synthesizer_grid(
     )
 
     # Even if a grid point has failed the code will now still create a grid,
-    # recording failures with zeros in the spectra and line quantities. The
-    # code will also save an array of failure flags.
+    # with NaN in the failed points' spectra and line quantities, and the
+    # failures flagged in the "failures" dataset.
 
     # Now add spectra.
     if include_spectra:

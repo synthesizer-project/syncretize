@@ -21,10 +21,12 @@ Only one stage of a section at a time writes its state.yaml and models.json
 run together, each write their own file in state/.
 """
 
+import functools
 import json
 import os
 import socket
 import statistics
+import subprocess
 import time
 
 import h5py
@@ -45,8 +47,16 @@ from syncretize.runner.config import (
     section_name,
     slurm_time,
 )
-from syncretize.runner.log import duration, log, quiet, table, took
-from syncretize.runner.queue import STATES, Queue
+from syncretize.runner.log import (
+    ROUND_COLUMNS,
+    duration,
+    log,
+    quiet,
+    round_row,
+    table,
+    took,
+)
+from syncretize.runner.queue import Queue
 from syncretize.runner.stages import (
     FINISH_WALLTIME,
     JOB_KINDS,
@@ -64,6 +74,13 @@ from syncretize.runner.stages import (
 
 #: The most given-up models run.log lists after a round or the assembly
 LIST_FAILURES = 20
+
+#: How long a finish job waits (s, before each look) for sacct to see the
+#: round's workers stop: it can lag the array ending under load
+SACCT_WAITS = (0, 30, 60, 120, 240)
+
+#: The file a finish job records lost claims in, beside the workers' own
+LOST_RECORDS = "lost.jsonl"
 
 
 class Section(Stages):
@@ -98,12 +115,22 @@ class Section(Stages):
 
     @property
     def label(self):
-        """The section's short label, e.g. "C2" (in job names and logs)."""
+        """The section's short label, e.g. "C2" (in job names and logs).
+
+        Returns:
+            str
+                "C" and the section's index.
+        """
         return f"C{self.index}"
 
-    @property
+    @functools.cached_property
     def queue(self):
-        """The section's model queue, in <directory>/queue."""
+        """The section's model queue, in <directory>/queue (made once).
+
+        Returns:
+            Queue
+                The queue.
+        """
         return Queue(self._path("queue"))
 
     def setup(self, incident_grid):
@@ -151,6 +178,7 @@ class Section(Stages):
         self._save_state(
             name=self.name,
             index=self.index,
+            # A plain int, as the count may be numpy's (which YAML can't save)
             below_threshold=int(len(below) * n_photoionisation),
             cloudy_dir=cloudy_dir,
             round=self._load_state().get("round", 1),
@@ -201,8 +229,20 @@ class Section(Stages):
             f"{_count(settings['claim'], 'model')} per claim, up to "
             f"{_count(settings['max_retries'], 'retry', 'retries')}"
         )
+        # A missing build would fail every model (and spend their attempts),
+        # so the worker stops before claiming any
+        cloudy_exe = os.path.join(
+            self.cloudy["executable"], "source", "cloudy.exe"
+        )
+        if not os.access(cloudy_exe, os.X_OK):
+            raise FileNotFoundError(f"There is no Cloudy to run: {cloudy_exe}")
         if walltime is not None:
             end = start + seconds(walltime)
+            # Slurm's end time counts the time Python took to start too
+            # (slow on Lustre with many workers starting at once)
+            job_end = os.environ.get("SLURM_JOB_END_TIME", "")
+            if job_end.isdigit():
+                end = min(end, start + int(job_end) - time.time())
             deadline = end - seconds(settings["margin"])
             stop_at = end - seconds(STOP_BEFORE)
             log.info(
@@ -222,7 +262,6 @@ class Section(Stages):
             record_file=self._path("state", f"{job}.jsonl"),
             deadline=deadline,
             stop_at=stop_at,
-            can_grow=self._longer_walltime() is not None,
         )
         results = [r["result"] for r in records]
         busy = sum(r["seconds"] for r in records)
@@ -244,8 +283,10 @@ class Section(Stages):
         without stopping them (lost) are put back without counting an
         attempt, like those the workers stopped at the time limit. When any
         were stopped or lost, the next round's time limit grows by
-        ``walltime_growth``, up to ``max_walltime``; when it can't grow,
-        lost models count as failed.
+        ``walltime_growth``, up to ``max_walltime``. Running out of time
+        isn't a failure (the run's time limits are too short), so when the
+        limit can't grow the section stops (``next`` is "walltime") until
+        ``max_walltime`` is raised and the run resumed.
 
         Args:
             is_running (callable)
@@ -255,11 +296,13 @@ class Section(Stages):
         Returns:
             str
                 "work" when models are left for another round, whose time
-                limit is ``walltime`` in the state file, or "assemble".
+                limit is ``walltime`` in the state file, "walltime" when
+                some ran out of time at ``max_walltime``, or "assemble".
         """
         state = self._load_state()
         longer = self._longer_walltime()
-        lost = self.queue.requeue_claims(is_running, fail=longer is None)
+        lost = self.queue.requeue_claims(is_running)
+        self._record_lost(lost)
         claimed = self.queue.counts()["claimed"]
         if claimed:
             raise RuntimeError(
@@ -268,7 +311,7 @@ class Section(Stages):
             )
         # Lost models that failed (and any a larger max_retries now allows)
         self.queue.requeue_failed(self.config.run["cloudy"]["max_retries"])
-        records = self._gather_records(lost)
+        records = self._gather_records()
 
         round_ = state.get("round", 1)
         counts = self.queue.counts()
@@ -281,14 +324,12 @@ class Section(Stages):
             summary["perturb"] = True
         for result in ("done", "failed", "stopped", "lost"):
             summary[result] = sum(r["result"] == result for r in records)
-        summary["retried"] = sum(
-            r["result"] == "failed" and r["requeued"] for r in records
-        )
-        rounds = state.get("rounds", [])
-        previous = [r for r in rounds if r["round"] < round_ and "queue" in r]
-        before = previous[-1]["queue"]["failed"] if previous else 0
-        summary["given_up"] = counts["failed"] - before
+        # The models this round ran that are left failed (not the change in
+        # failed/, which falls when a larger max_retries requeues some)
+        failed = set(self.queue.names("failed"))
+        summary["given_up"] = len({r["model"] for r in records} & failed)
         summary["queue"] = counts
+        rounds = state.get("rounds", [])
         if rounds and rounds[-1]["round"] == round_:
             rounds[-1].update(summary)
         else:
@@ -300,14 +341,29 @@ class Section(Stages):
             counts = self.queue.counts()
         if not counts["todo"]:
             self._save_state(rounds=rounds, models=counts, next="assemble")
+            self._remove_records()
             return "assemble"
         walltime = self._walltime()
-        if summary["stopped"] + summary["lost"] and longer is not None:
+        out_of_time = summary["stopped"] + summary["lost"]
+        if out_of_time and longer is None:
+            # Running them again at the same limit would only stop them
+            # again, so the run waits for a longer max_walltime
+            log.warning(
+                f"{_count(out_of_time, 'model')} ran out of time at the "
+                f"longest time limit (max_walltime, {slurm_time(walltime)}), "
+                "so this grid stops here: raise Run.cloudy.max_walltime "
+                "and resume the run"
+            )
+            self._save_state(
+                rounds=rounds, models=counts, round=round_ + 1, next="walltime"
+            )
+            self._remove_records()
+            return "walltime"
+        if out_of_time:
             walltime = longer
             log.info(
-                f"{_count(summary['stopped'] + summary['lost'], 'model')} "
-                "ran out of time, so the next round's time limit grows to "
-                f"{slurm_time(walltime)}"
+                f"{_count(out_of_time, 'model')} ran out of time, so the "
+                f"next round's time limit grows to {slurm_time(walltime)}"
             )
         self._save_state(
             rounds=rounds,
@@ -316,6 +372,7 @@ class Section(Stages):
             walltime=slurm_time(walltime),
             next="finish",
         )
+        self._remove_records()
         return "work"
 
     def _perturb(self):
@@ -335,10 +392,7 @@ class Section(Stages):
             write_perturbed_input,
         )
 
-        states = {}
-        for state in STATES:
-            for name in os.listdir(os.path.join(self.queue.root, state)):
-                states[name.partition("@")[0]] = state
+        states = self.queue.states()
         failed = [
             model for model, state in states.items() if state == "failed"
         ]
@@ -432,20 +486,24 @@ class Section(Stages):
             failures=failures,
             interpolated=interpolated,
         )
-        log.info(
-            f"Wrote {grid} ({_shape(grid)}, "
-            f"{os.path.getsize(grid) / 1e6:.0f} MB) in {took(start)}"
-        )
-        if interpolated:
+        # The section is done once saved, so the run is marked done even if
+        # its summary can't be logged (e.g. the grid locked on Lustre)
+        try:
             log.info(
-                f"Interpolated {_count(len(interpolated), 'failed model')} "
-                "from runs perturbed either side of them: "
-                + ", ".join(interpolated[:LIST_FAILURES])
-                + (" …" if len(interpolated) > LIST_FAILURES else "")
+                f"Wrote {grid} ({_shape(grid)}, "
+                f"{os.path.getsize(grid) / 1e6:.0f} MB) in {took(start)}"
             )
-        self._log_failures(failures)
-        self._log_done()
-        self.runner.section_done()
+            if interpolated:
+                log.info(
+                    f"Interpolated {_count(len(interpolated), 'failed model')}"
+                    " from runs perturbed either side of them: "
+                    + ", ".join(interpolated[:LIST_FAILURES])
+                    + (" …" if len(interpolated) > LIST_FAILURES else "")
+                )
+            self._log_failures(failures)
+            self._log_done()
+        finally:
+            self.runner.section_done()
         return grid
 
     def submit_round(self):
@@ -499,14 +557,19 @@ class Section(Stages):
         """Finish a round and submit what comes next.
 
         This is the finish job: another round when models are left, else
-        the assembly job.
+        the assembly job (or nothing, when models ran out of time at
+        ``max_walltime``).
 
         Returns:
             str
-                The ID of the next finish job or of the assembly job.
+                The ID of the next finish job or of the assembly job, or
+                None.
         """
-        if self.finish(slurm.is_running()) == "work":
+        what = self.finish(self._stopped_workers())
+        if what == "work":
             return self.submit_round()
+        if what == "walltime":
+            return None
         job = self._submit_next("assemble", self._resources("assemble"))
         log.info(f"Every model has run: submitted the assembly job {job}")
         return job
@@ -525,6 +588,24 @@ class Section(Stages):
         stage = state.get("next")
         if stage == "done":
             return None
+        # Models ran out of time at max_walltime: carry on once it's longer
+        if stage == "walltime":
+            longer = self._longer_walltime()
+            if longer is None:
+                log.warning(
+                    f"Not resuming {self.name}: its models ran out of time "
+                    f"at max_walltime ({slurm_time(self._walltime())}); "
+                    "raise Run.cloudy.max_walltime first"
+                )
+                return None
+            self._save_state(walltime=slurm_time(longer), next="finish")
+            new = self.submit_round()
+            log.info(
+                "Resuming with a longer time limit "
+                f"({slurm_time(longer)}): submitted the round's workers, "
+                f"then the finish job {new}"
+            )
+            return new
         job = state.get("next_job")
         if job is not None and slurm.job_running(job):
             log.info(
@@ -532,6 +613,15 @@ class Section(Stages):
                 "queued or running"
             )
             return None
+        # A job that died between starting a round and submitting its
+        # workers: submit them (and the finish after them) now
+        if stage == "finish" and not self._round_submitted():
+            new = self.submit_round()
+            log.info(
+                "Resuming the round its job hadn't submitted: submitted "
+                f"its workers, then the finish job {new}"
+            )
+            return new
         # A round whose workers are still going is finished after them
         after = None
         if stage == "finish" and state.get("rounds"):
@@ -556,6 +646,11 @@ class Section(Stages):
         """
         while True:
             stage = self._load_state()["next"]
+            # Here there's no time limit to run out of (lost claims of a
+            # local run that died count as out of time), so carry on
+            if stage == "walltime":
+                self._save_state(next="finish")
+                stage = "finish"
             if stage == "finish":
                 # Every local worker has stopped once work returns
                 if self.finish(lambda owner: False) == "work":
@@ -612,16 +707,13 @@ class Section(Stages):
             return self.config.run["assemble"]
         return {"walltime": FINISH_WALLTIME, "cores": 1}
 
-    def _gather_records(self, lost):
+    def _gather_records(self):
         """Add the workers' records (and lost claims) to models.json.
 
-        The workers' record files are removed once gathered, and the state
-        file's ``failures`` lists the models given up on with why they last
-        failed.
-
-        Args:
-            lost (dict)
-                Each dead worker's models, from ``Queue.requeue_claims``.
+        The state file's ``failures`` lists the models given up on with why
+        they last failed. The record files are left until the round's
+        totals are saved (``_remove_records``), so a finish job that dies
+        before then gathers them again.
 
         Returns:
             list of dict
@@ -644,18 +736,6 @@ class Section(Stages):
                         records.append(json.loads(line))
                     except json.JSONDecodeError:
                         pass
-        for owner, models in lost.items():
-            records += [
-                {
-                    "model": model,
-                    "owner": owner,
-                    "result": "lost",
-                    "reason": "its job ended without stopping it",
-                    "found": _now(),
-                }
-                for model in models
-            ]
-
         models = self._load_models()
         for record in records:
             entry = models.setdefault(
@@ -665,13 +745,9 @@ class Section(Stages):
             # same records again
             if record not in entry["attempts"]:
                 entry["attempts"].append(record)
-        for state in STATES:
-            for name in os.listdir(os.path.join(self.queue.root, state)):
-                model = name.partition("@")[0]
-                models.setdefault(model, {"attempts": []})["state"] = state
+        for model, state in self.queue.states().items():
+            models.setdefault(model, {"attempts": []})["state"] = state
         self._save_models(models)
-        for path in files:
-            os.remove(path)
 
         # The grid points that failed (perturbed runs that failed are in
         # models.json and perturb.json)
@@ -685,16 +761,108 @@ class Section(Stages):
         self._save_state(failures=failures)
         return records
 
+    def _record_lost(self, lost):
+        """Record lost claims beside the workers' records, as they're found.
+
+        Their claims are already back in the queue, so a finish job that
+        died before saving the round would otherwise forget them.
+
+        Args:
+            lost (dict)
+                Each dead worker's models, from ``Queue.requeue_claims``.
+        """
+        if not lost:
+            return
+        os.makedirs(self._path("state"), exist_ok=True)
+        found = _now()
+        with open(self._path("state", LOST_RECORDS), "a") as file:
+            for owner, models in lost.items():
+                for model in models:
+                    record = {
+                        "model": model,
+                        "owner": owner,
+                        "result": "lost",
+                        "reason": "its job ended without stopping it",
+                        "found": found,
+                    }
+                    file.write(json.dumps(record) + "\n")
+
+    def _remove_records(self):
+        """Remove the round's record files, once its totals are saved."""
+        records_dir = self._path("state")
+        if os.path.isdir(records_dir):
+            for name in os.listdir(records_dir):
+                if name.endswith(".jsonl"):
+                    os.remove(os.path.join(records_dir, name))
+
+    def _round_submitted(self):
+        """Whether this round's workers have been submitted.
+
+        Returns:
+            bool
+                False when a job died after starting the round (saving it
+                in the state file) but before submitting its workers.
+        """
+        state = self._load_state()
+        round_ = state.get("round", 1)
+        return any(
+            r["round"] == round_ and "array_job" in r
+            for r in state.get("rounds", [])
+        )
+
+    def _stopped_workers(self):
+        """``slurm.is_running``, once sacct sees every claim's worker stop.
+
+        The finish job starts as the round's array ends, but sacct can
+        still show its tasks running for a while under load, so it is asked
+        again (SACCT_WAITS) before the finish takes them as running.
+
+        Returns:
+            callable
+                Takes a claim's owner and returns whether it is running.
+        """
+        for n, wait in enumerate(SACCT_WAITS):
+            time.sleep(wait)
+            try:
+                is_running = slurm.is_running()
+                owners = {
+                    name.rpartition("@")[2]
+                    for name in self.queue.names("claimed")
+                }
+                if not any(map(is_running, owners)):
+                    return is_running
+            except subprocess.CalledProcessError as error:
+                if n == len(SACCT_WAITS) - 1:
+                    raise
+                log.info(
+                    f"sacct failed ({error.stderr.strip()}); asking again"
+                )
+                continue
+            log.info("sacct still shows workers running; asking again")
+        return is_running
+
     def _walltime(self):
-        """This round's worker time limit, in seconds."""
-        return seconds(
-            self._load_state().get(
-                "walltime", self.config.run["cloudy"]["walltime"]
-            )
+        """This round's worker time limit, in seconds.
+
+        Returns:
+            int
+                The state file's (grown) time limit, at most
+                ``max_walltime`` (which may have been lowered since).
+        """
+        settings = self.config.run["cloudy"]
+        return min(
+            seconds(self._load_state().get("walltime", settings["walltime"])),
+            seconds(settings["max_walltime"]),
         )
 
     def _longer_walltime(self):
-        """The next round's longer time limit (s), or None if it can't grow."""
+        """The next round's longer time limit (s), or None if it can't grow.
+
+        Returns:
+            int
+                This round's limit times ``walltime_growth``, at most
+                ``max_walltime``; None if that is no longer than this one.
+        """
         settings = self.config.run["cloudy"]
         walltime = self._walltime()
         longer = min(
@@ -704,7 +872,13 @@ class Section(Stages):
         return longer if longer > walltime else None
 
     def _cloudy_params(self):
-        """The Cloudy parameters: (fixed, varied), extra_config's winning."""
+        """The Cloudy parameters: (fixed, varied), extra_config's winning.
+
+        Returns:
+            (dict, dict)
+                The fixed and the varied parameters of config and
+                extra_config together.
+        """
         fixed, varied = {}, {}
         for key in ("config", "extra_config"):
             if self.cloudy[key] is not None:
@@ -716,7 +890,12 @@ class Section(Stages):
         return fixed, varied
 
     def _required_extensions(self):
-        """The Cloudy output files a model must write to succeed."""
+        """The Cloudy output files a model must write to succeed.
+
+        Returns:
+            list of str
+                Their extensions (see ``required_extensions``).
+        """
         return required_extensions(
             self.cloudy["include_spectra"],
             self.cloudy["include_intrinsic_lines"],
@@ -732,35 +911,10 @@ class Section(Stages):
             records (list of dict)
                 The round's worker records.
         """
-        headers = [
-            "round",
-            "time limit",
-            "workers",
-            "done",
-            "errored",
-            "timed out",
-            "retried",
-            "failed",
-            "left",
-        ]
-        rows = [
-            [
-                f"{r['round']} perturb" if r.get("perturb") else r["round"],
-                r.get("walltime", "-"),
-                r.get("workers", "here"),
-                r["done"],
-                r["failed"] + r["stopped"] + r["lost"],
-                r["stopped"],
-                max(r["failed"] + r["stopped"] + r["lost"] - r["given_up"], 0),
-                r["given_up"],
-                r["queue"]["todo"],
-            ]
-            for r in rounds
-            if "queue" in r
-        ]
+        rows = [round_row(r) for r in rounds if "queue" in r]
         log.info(
             f"Round {rounds[-1]['round']} has finished. The rounds so far:\n"
-            + table(headers, rows)
+            + table(ROUND_COLUMNS, rows)
         )
         runs = [r for r in records if r["result"] in ("done", "failed")]
         if runs:
@@ -841,7 +995,12 @@ class Section(Stages):
         )
 
     def _cpu_hours(self):
-        """The Cloudy run time recorded in models.json, in hours."""
+        """The Cloudy run time recorded in models.json, in hours.
+
+        Returns:
+            float
+                Every attempt's run time added up (h).
+        """
         return (
             sum(
                 attempt.get("seconds", 0)
@@ -875,7 +1034,12 @@ class Section(Stages):
         )
 
     def _load_models(self):
-        """Every Cloudy model's state and attempts, from models.json."""
+        """Every Cloudy model's state and attempts, from models.json.
+
+        Returns:
+            dict
+                Each model's entry (empty when there's no models.json).
+        """
         return _load(self._path("models.json"), json.load)
 
     def _save_models(self, models):
@@ -887,5 +1051,7 @@ class Section(Stages):
         """
         _save(
             self._path("models.json"),
-            lambda file: json.dump(models, file, indent=1),
+            # One line, as indenting takes the json module's slow encoder
+            # (five times slower, with 1e5 models)
+            lambda file: file.write(json.dumps(models)),
         )
