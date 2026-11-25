@@ -123,15 +123,23 @@ time limit.
 Failures and time limits
 ------------------------
 
-A Cloudy model counts as done when its ``.out`` file ends with ``Cloudy
-exited OK`` and it wrote ``.emergent_elin`` (and ``.intrinsic_elin`` when the
-grid stores intrinsic lines, and ``.refl`` for open geometries with spectra),
-each at least 100 bytes. The workers and the assembly use this same check.
+A Cloudy model counts as done when Cloudy finished its calculation (its
+``.out`` file ends with ``Cloudy ends: ...``) and it wrote ``.emergent_elin``
+(and ``.intrinsic_elin`` when the grid stores intrinsic lines, and ``.refl``
+for open geometries with spectra), each at least 100 bytes. Anything else
+crashed (a failed assertion, killed by a signal, no output) and has failed.
+The workers and the assembly use this same check. Each run's record in
+``models.json`` says how it went (``outcome``): ``clean``, ``warnings``
+(Cloudy finished with warnings, e.g. grains above their sublimation
+temperature), ``unintended`` (Cloudy finished but stopped for an unintended
+reason, e.g. the zone limit) or ``crashed``, with why (``reason``). The
+final grid's ``quality`` dataset flags each point (see `Quality flags`_).
 A model that fails goes straight back in the queue, to run again in the same
 round, until it has failed ``1 + Run.cloudy.max_retries`` times; then it has
-failed. A model Cloudy couldn't even be started for (say, its directory is
-missing) fails the same way; a worker whose Cloudy build is missing stops
-before claiming any.
+failed. Cloudy is deterministic, so retries only help with failures outside
+it (``max_retries: 0`` saves the time otherwise). A model Cloudy couldn't
+even be started for (say, its directory is missing) fails the same way; a
+worker whose Cloudy build is missing stops before claiming any.
 
 A worker stops claiming models ``Run.cloudy.margin`` before its time limit,
 or earlier once the time left is under 1.5 times its longest Cloudy run so
@@ -161,6 +169,76 @@ so there's no honest value to give them), listed with why they last failed under
 ``<work_dir>/<section>/cloudy/<grid name>.failures``. Check this mask before using or
 publishing a grid: interpolating over a grid with NaN points gives NaN for
 anything that touches them.
+
+Remedies
+--------
+
+Some crashes are numerical, not physical. After each round, the finish job
+runs every grid point that crashed again with the first of
+``Cloudy.remedies`` whose ``match`` (a regular expression) is found in why
+it crashed and which it hasn't tried: the same input, with the remedy's
+``changes`` to its Cloudy parameters (and those of any remedy it tried
+before). The first remedied run that works stands in for the grid point in
+the final grid, flagged in ``quality``; the remedies used are in the
+``quality`` dataset's ``remedies`` attribute, and every run tried in
+``remedies.json`` beside the Cloudy inputs, named ``<j>r<n>``. Only a grid
+point with no remedy left has failed (and is perturbed, below). Remedies
+should change only numerics, never the physics a grid point stands for.
+The default is one remedy, for Cloudy's assertion in grain quantum heating
+at low density:
+
+.. code-block:: yaml
+
+   remedies:
+     - match: grains_qheat
+       changes: {grain_qheat: false}
+
+``remedies: []`` turns them off.
+
+Reviews
+-------
+
+Many failures usually mean a set-up Cloudy can't run, not bad luck, and
+perturbing them only burns time. So after each round, once
+``Cloudy.review.min_models`` grid points have run (default 20; those
+waiting for a remedy left out), a section pauses (``next: review``, shown
+in red by watch) when ``review.fraction`` of them (default 0.1), or
+``review.slice_fraction`` (default 0.5) of those at any value of an axis
+(with at least ``min_models`` of them), failed with no remedy left. run.log
+says how many failed and at which axis values. Then fix what can be fixed
+numerically (add a remedy, or change the Cloudy config) and resume the run:
+it carries on with the failures (trying any new remedy first), perturbing
+and assembling as usual, and doesn't pause again. ``review: false`` never
+pauses. A ``--local`` run doesn't wait: it carries on at once.
+
+Rechecking a run
+----------------
+
+``python -m syncretize.runner recheck run.yaml`` sorts every failed run of
+every section again under the current rules, without running Cloudy:
+failed runs that Cloudy finished are done, and queued perturbed or
+remedied runs of grid points no longer failed are dropped. A section that
+changed then carries on as after a round (remedies, review, perturbation,
+assembly, even when it was done), once the run is resumed. Stop the run's
+jobs first. Use it on runs whose outputs were checked by older rules.
+
+Quality flags
+-------------
+
+Each point of the final grid's ``quality`` dataset holds bits:
+
+======  ===============================================================
+Bit     The point...
+======  ===============================================================
+1       Cloudy finished with warnings
+2       Cloudy stopped for an unintended reason (e.g. the zone limit)
+4       crashed, and was run again with a remedy
+8       crashed, and was interpolated from perturbed runs
+16      crashed and couldn't be filled: NaN (also in ``failures``)
+======  ===============================================================
+
+0 is a clean run (or below the ionising threshold). Mask with it, e.g.
+``quality & 2 == 0`` to drop zone-limited points.
 
 Interpolating failed models
 ---------------------------

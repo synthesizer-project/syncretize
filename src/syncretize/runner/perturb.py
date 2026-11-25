@@ -32,6 +32,7 @@ it isn't an axis, or an axis of one value) is perturbed by
 import json
 import math
 import os
+import re
 
 import yaml
 
@@ -50,7 +51,7 @@ def is_perturbed(model):
         bool
             True if it is a perturbed run.
     """
-    return not model.partition("_")[2].isdigit()
+    return re.fullmatch(r"\d+p\d+[-+]\d+", model.partition("_")[2]) is not None
 
 
 def load(cloudy_dir):
@@ -295,7 +296,8 @@ def advance(cloudy_dir, failed, states, settings, write_input):
     # Grid points that have just failed every attempt, and those left
     # surrounded before
     for model in sorted(failed):
-        if is_perturbed(model) or plan.get(model):
+        # Grid points only (not perturbed or remedied runs)
+        if not model.partition("_")[2].isdigit() or plan.get(model):
             continue
         # Surrounded by failures (none of them interpolated yet), there's
         # nothing it could be interpolated back from, so it's left failed

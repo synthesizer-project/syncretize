@@ -143,14 +143,15 @@ def work(
                 )
                 start = time.monotonic()
                 try:
-                    result, reason = run_model(
+                    result, outcome, reason = run_model(
                         cloudy_dir, model, executable, extensions, stop_at
                     )
                 except Exception as error:
                     # Recorded as a failure rather than ending this loop,
                     # which would leave the model claimed (and taken as
                     # lost, out of time, by the finish job)
-                    result, reason = "failed", f"couldn't run it: {error!r}"
+                    result, outcome = "failed", "crashed"
+                    reason = f"couldn't run it: {error!r}"
                 attempts, requeued = None, False
                 if result == "done":
                     queue.done(model, owner)
@@ -164,6 +165,7 @@ def work(
                     "model": model,
                     "owner": owner,
                     "result": result,
+                    "outcome": outcome,
                     "reason": reason,
                     "attempt": attempts,
                     "requeued": requeued,
@@ -310,9 +312,12 @@ def run_model(cloudy_dir, model, executable, extensions, stop_at=None):
             The ``time.monotonic()`` at which it is stopped, or None.
 
     Returns:
-        (str, str)
-            "done", "failed" or "stopped" (still running at ``stop_at``), and
-            why it didn't succeed (None when done).
+        (str, str, str)
+            "done", "failed" or "stopped" (still running at ``stop_at``);
+            how Cloudy's run went (see ``cloudy_outcome``: "crashed" when
+            failed, "clean", "warnings" or "unintended" when done, None when
+            stopped); and why (the crash, the unintended stop or the
+            warnings; None when clean).
     """
     directory, photoionisation_index = os.path.split(
         model_path(cloudy_dir, model)
@@ -333,15 +338,18 @@ def run_model(cloudy_dir, model, executable, extensions, stop_at=None):
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait()
-        return "stopped", "stopped at the time limit"
+        return "stopped", None, "stopped at the time limit"
     # Imported here: it imports synthesizer, which the watcher (using this
     # module's iteration) shouldn't wait for
-    from syncretize.cloudy.create_synthesizer_grid import check_if_failed
+    from syncretize.cloudy.create_synthesizer_grid import cloudy_outcome
 
-    reason = check_if_failed(
+    outcome, reason = cloudy_outcome(
         os.path.join(directory, photoionisation_index), extensions
     )
-    return ("failed", reason) if reason else ("done", None)
+    # Killed by a signal (e.g. out of memory), whatever it left behind
+    if process.returncode < 0:
+        outcome, reason = "crashed", f"killed by signal {-process.returncode}"
+    return ("failed" if outcome == "crashed" else "done"), outcome, reason
 
 
 def _describe(record):

@@ -7,13 +7,20 @@ import sys
 import pytest
 from test_runner import ROOT, cloudy_run, write_run
 
-from syncretize.runner import Runner
+from syncretize.runner import Runner, slurm
 
-# sbatch prints job IDs 1, 2, ... and keeps each script as <id>.sh; sacct -j
-# <id> prints the lines of $FAKE_SACCT for that job
+# sbatch prints job IDs 1, 2, ... and keeps each script as <id>.sh (but first
+# refuses as many submissions as <dir>/refuse says); sacct -j <id> prints the
+# lines of $FAKE_SACCT for that job
 SBATCH = f"""#!{sys.executable}
 import os, shutil, sys
 directory = os.environ["FAKE_SLURM_DIR"]
+refuse = os.path.join(directory, "refuse")
+if os.path.exists(refuse):
+    left = int(open(refuse).read())
+    if left:
+        open(refuse, "w").write(str(left - 1))
+        sys.exit("allocation failure: Unspecified error")
 job = len([name for name in os.listdir(directory) if name.endswith(".sh")])
 shutil.copy(sys.argv[-1], os.path.join(directory, f"{{job + 1}}.sh"))
 print(f"{{job + 1}};cosma")
@@ -297,3 +304,15 @@ def test_start_submits_a_round_for_each_section(tmp_path, monkeypatch, jobs):
     assert jobs(5)[-1].endswith(
         "finish " + str(tmp_path / "run.yaml") + " --section 2"
     )
+
+
+def test_submit_asks_again_when_slurm_refuses(tmp_path, monkeypatch, jobs):
+    """A submission Slurm refuses is asked again, then fails with why."""
+    monkeypatch.setattr("syncretize.runner.slurm.SUBMIT_WAITS", (0, 0, 0))
+    refuse = tmp_path / "submitted" / "refuse"
+    refuse.write_text("2")
+    run = {"work_dir": str(tmp_path), "slurm": SLURM, "environment": ""}
+    assert slurm.submit(run, "run.yaml", "finish", "x", "01:00:00") == "1"
+    refuse.write_text("3")
+    with pytest.raises(RuntimeError, match="allocation failure"):
+        slurm.submit(run, "run.yaml", "finish", "x", "01:00:00")

@@ -190,6 +190,9 @@ def create_cloudy_input(
         "metals": True,
         # include dust grains
         "grains": None,
+        # quantum heating of small grains; turning it off avoids Cloudy's
+        # grains_qheat.cpp assertion at low density (a runner remedy)
+        "grain_qheat": True,
         # the geometry
         "geometry": None,
         # constant density flag
@@ -339,10 +342,11 @@ def create_cloudy_input(
                 f_Si = 1.0
                 f_pah = 1.0
 
+            qheat = "" if params["grain_qheat"] else " no qheat"
             command = (
-                f"grains {params['grains']} graphite {f_graphite} \n"
-                f"grains {params['grains']} silicate {f_Si} \n"
-                f"grains PAH {f_pah}"
+                f"grains {params['grains']} graphite {f_graphite}{qheat} \n"
+                f"grains {params['grains']} silicate {f_Si}{qheat} \n"
+                f"grains PAH {f_pah}{qheat}"
             )
 
             cinput.append(command + "\n")

@@ -310,6 +310,10 @@ Keys
      - ``Orion``, ``ISM`` or blank for no grains. Grains are scaled to the
        depletion unless ``no_grain_scaling: true``, so grains need a
        depletion model.
+   * - ``grain_qheat``
+     - Quantum heating of small grains (default ``true``). ``false`` adds
+       ``no qheat`` to the grains commands, which avoids a Cloudy assertion
+       at low density; the Runner's default remedy for that crash.
    * - ``geometry``
      - ``spherical`` or ``planeparallel``.
    * - ``ionisation_parameter_model``

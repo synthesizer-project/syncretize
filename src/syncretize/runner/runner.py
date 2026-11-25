@@ -178,6 +178,31 @@ class Runner(Stages):
         self.section_done()
         return jobs
 
+    def recheck(self):
+        """Sort every section's Cloudy outputs again (see Section.recheck).
+
+        A section that changed carries on from its next stage once the run
+        is resumed. Its jobs must have stopped.
+
+        Returns:
+            list of str
+                What each section does next (None when nothing changed).
+        """
+        self._setup_log("recheck")
+        nexts = []
+        for section in self.sections:
+            self.set_stage("recheck", section)
+            nexts.append(section.recheck())
+        self.set_stage("recheck")
+        if any(nexts) and self._load_state().get("next") == "done":
+            self._save_state(next="cloudy")
+        if any(nexts):
+            log.info(
+                "Resume the run to carry on: python -m syncretize.runner "
+                f"resume {self.config.path}"
+            )
+        return nexts
+
     def incident(self):
         """Make the incident grid, in this process.
 

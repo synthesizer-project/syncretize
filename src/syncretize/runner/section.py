@@ -39,7 +39,7 @@ from syncretize.cloudy.create_synthesizer_grid import (
 )
 from syncretize.cloudy.utils import get_cloudy_params, resolve_param_file
 from syncretize.grid_io import write_cloudy_build, write_run_config
-from syncretize.runner import perturb, slurm
+from syncretize.runner import perturb, remedy, slurm
 from syncretize.runner.cloudy import work
 from syncretize.runner.config import (
     STOP_BEFORE,
@@ -335,14 +335,6 @@ class Section(Stages):
         else:
             rounds.append(summary)
         self._log_round(rounds, records)
-        # With every model run, those that failed every attempt are run again
-        # either side of their parameters, to be interpolated
-        if not counts["todo"] and self._perturb():
-            counts = self.queue.counts()
-        if not counts["todo"]:
-            self._save_state(rounds=rounds, models=counts, next="assemble")
-            self._remove_records()
-            return "assemble"
         walltime = self._walltime()
         out_of_time = summary["stopped"] + summary["lost"]
         if out_of_time and longer is None:
@@ -365,6 +357,55 @@ class Section(Stages):
                 f"{_count(out_of_time, 'model')} ran out of time, so the "
                 f"next round's time limit grows to {slurm_time(walltime)}"
             )
+        what = self._carry_on(rounds, round_, walltime)
+        self._remove_records()
+        return what
+
+    def _carry_on(self, rounds, round_, walltime):
+        """After a round (or a recheck or review): what the section does next.
+
+        Crashed grid points are run again with their next remedy. Then,
+        unless the section has been reviewed, it pauses (``next`` is
+        "review") when too many failed with no remedy left. With every model
+        run, those that failed every attempt are perturbed (if asked to),
+        and with nothing left to run the section is assembled.
+
+        Args:
+            rounds (list of dict)
+                Every round so far.
+            round_ (int)
+                The round just finished.
+            walltime (int)
+                The next round's worker time limit (s).
+
+        Returns:
+            str
+                "work" for another round, "review" or "assemble".
+        """
+        self._remedy()
+        counts = self.queue.counts()
+        why = self._review()
+        if why:
+            log.warning(
+                f"Pausing {self.name} for a review: {why[0]}. If they can be "
+                "fixed numerically, add a remedy (Cloudy.remedies) or change "
+                "the Cloudy config, then resume the run; resuming carries on "
+                "(trying any new remedy first) and won't pause again" + why[1]
+            )
+            self._save_state(
+                rounds=rounds,
+                models=counts,
+                walltime=slurm_time(walltime),
+                next="review",
+            )
+            return "review"
+        # With every model run, those that failed every attempt are run again
+        # either side of their parameters, to be interpolated
+        if not counts["todo"] and self._perturb():
+            counts = self.queue.counts()
+        if not counts["todo"]:
+            self._save_state(rounds=rounds, models=counts, next="assemble")
+            return "assemble"
         self._save_state(
             rounds=rounds,
             models=counts,
@@ -372,8 +413,156 @@ class Section(Stages):
             walltime=slurm_time(walltime),
             next="finish",
         )
-        self._remove_records()
         return "work"
+
+    def _remedy(self):
+        """Fill grid points from remedied runs that worked, and queue the
+        next remedy of those that crashed (see ``syncretize.runner.remedy``).
+
+        Returns:
+            list of str
+                The remedied runs queued.
+        """
+        cloudy_dir = self._load_state()["cloudy_dir"]
+        states = self.queue.states()
+        models = self._load_models()
+        filled = {
+            model: run
+            for model, run in remedy.filled(cloudy_dir, states).items()
+            if states.get(model) == "failed"
+        }
+        for model, run in filled.items():
+            self.queue.resolve(model)
+            states[model] = "done"
+            models[model]["state"] = "done"
+            models[model]["remedied_by"] = run
+        # Why each failed model last crashed (as a recheck read it, for
+        # runs checked by older rules)
+        reasons = {
+            model: (entry.get("recheck") or entry["attempts"][-1]).get(
+                "reason"
+            )
+            for model, entry in models.items()
+            if states.get(model) == "failed"
+            and (entry["attempts"] or entry.get("recheck"))
+        }
+        from syncretize.cloudy.create_cloudy_input_grid import (
+            write_perturbed_input,
+        )
+
+        runs = remedy.advance(
+            cloudy_dir,
+            states,
+            reasons,
+            self.cloudy["remedies"],
+            write_perturbed_input,
+        )
+        if runs:
+            self.queue.add(runs)
+            for run in runs:
+                models.setdefault(run, {"state": "todo", "attempts": []})
+        if filled or runs:
+            self._save_models(models)
+            failures = self._load_state().get("failures") or {}
+            self._save_state(
+                failures={
+                    m: why for m, why in failures.items() if m not in filled
+                }
+            )
+        if filled:
+            log.info(
+                f"Filled {_count(len(filled), 'crashed grid point')} from "
+                "runs with a remedy"
+            )
+        if runs:
+            log.info(
+                f"Running {_count(len(runs), 'crashed grid point')} again "
+                "with a remedy (Cloudy.remedies)"
+            )
+        return runs
+
+    def _review(self):
+        """Why the section should pause for a look at its failures, if so.
+
+        Counts the grid points that have run (leaving out those waiting for
+        a remedy) and those failed with no remedy left, over every grid
+        point and at each value of each axis (Cloudy.review).
+
+        Returns:
+            (str, str)
+                What failed, and the axis values where most failed (lines,
+                or ""); None to carry on.
+        """
+        settings = self.cloudy["review"]
+        state = self._load_state()
+        if settings is None or state.get("reviewed"):
+            return None
+        states = self.queue.states()
+        waiting = remedy.pending(state["cloudy_dir"], states)
+        ran = {
+            model: state_ == "failed"
+            for model, state_ in states.items()
+            if remedy.is_grid_point(model)
+            and state_ in ("done", "failed")
+            and model not in waiting
+        }
+        if len(ran) < settings["min_models"]:
+            return None
+        with open(
+            os.path.join(state["cloudy_dir"], "grid_points.json")
+        ) as file:
+            points = json.load(file)
+        axes = [
+            (name, part)
+            for part in ("incident", "photoionisation")
+            for name in points[part]["axes"]
+        ]
+        slices = {}
+        for model, failed in ran.items():
+            i, j = (int(n) for n in model.split("_"))
+            place = (
+                points["incident"]["indices"][i]
+                + points["photoionisation"]["indices"][j]
+            )
+            for (name, part), index in zip(axes, place):
+                tally = slices.setdefault((name, part, index), [0, 0])
+                tally[0] += 1
+                tally[1] += failed
+        bad = sorted(
+            (
+                (failed / n, name, part, index, n, failed)
+                for (name, part, index), (n, failed) in slices.items()
+                if n >= settings["min_models"]
+                and failed / n >= settings["slice_fraction"]
+            ),
+            reverse=True,
+        )
+        failed = sum(ran.values())
+        if failed / len(ran) < settings["fraction"] and not bad:
+            return None
+
+        def value(name, part, index):
+            values = points[part].get("values")
+            if part == "photoionisation" and values:
+                where = points[part]["axes"].index(name)
+                return sorted({v[where] for v in values})[index]
+            return f"index {index}"
+
+        lines = [
+            f"{name} = {value(name, part, index)}: {f} of {n} failed "
+            f"({fraction:.0%})"
+            for fraction, name, part, index, n, f in bad[:LIST_FAILURES]
+        ]
+        return (
+            f"{failed} of {len(ran)} grid points run have failed with no "
+            f"remedy left ({failed / len(ran):.0%})",
+            "".join(
+                ["\nThe axis values where most of them failed:"]
+                + [f"\n  {line}" for line in lines]
+            )
+            if lines
+            else "",
+        )
 
     def _perturb(self):
         """Queue runs either side of the models that failed every attempt.
@@ -571,7 +760,7 @@ class Section(Stages):
 
         This is the finish job: another round when models are left, else
         the assembly job (or nothing, when models ran out of time at
-        ``max_walltime``).
+        ``max_walltime`` or the section paused for a review).
 
         Returns:
             str
@@ -579,9 +768,23 @@ class Section(Stages):
                 None.
         """
         what = self.finish(self._stopped_workers())
+        return self._submit_after(what)
+
+    def _submit_after(self, what):
+        """Submit what comes next.
+
+        Args:
+            what (str)
+                "work", "assemble", or "walltime" or "review" (nothing).
+
+        Returns:
+            str
+                The ID of the next finish job or of the assembly job, or
+                None.
+        """
         if what == "work":
             return self.submit_round()
-        if what == "walltime":
+        if what in ("walltime", "review"):
             return None
         job = self._submit_next("assemble", self._resources("assemble"))
         log.info(f"Every model has run: submitted the assembly job {job}")
@@ -619,6 +822,10 @@ class Section(Stages):
                 f"then the finish job {new}"
             )
             return new
+        # Paused for a review: carry on with its failures, once
+        if stage == "review":
+            log.info(f"Carrying on {self.name} after its review")
+            return self._submit_after(self._reviewed())
         job = state.get("next_job")
         if job is not None and slurm.job_running(job):
             log.info(
@@ -664,6 +871,12 @@ class Section(Stages):
             if stage == "walltime":
                 self._save_state(next="finish")
                 stage = "finish"
+            # Here there's no one to look, so it carries on (its next round
+            # is run here, then finished)
+            if stage == "review":
+                if self._reviewed() == "work":
+                    self.work("local")
+                continue
             if stage == "finish":
                 # Every local worker has stopped once work returns
                 if self.finish(lambda owner: False) == "work":
@@ -699,10 +912,155 @@ class Section(Stages):
                 f"  varied ({n_models} photoionisation models per incident "
                 "point):",
                 _dump(varied, 4) if varied else "    (none)",
-                "  A model succeeds when Cloudy exited OK and wrote "
+                "  A model succeeds when Cloudy finished (warnings and "
+                "unintended stops are flagged in the grid) and wrote "
                 + ", ".join(f".{e}" for e in self._required_extensions())
                 + " (at least 100 bytes each)",
+                "  Crashed models are run again with these remedies first: "
+                + (
+                    "; ".join(
+                        f"{r['match']!r}: {r['changes']}"
+                        for r in self.cloudy["remedies"]
+                    )
+                    or "none"
+                ),
             ]
+        )
+
+    def _reviewed(self):
+        """Carry on after a review, accepting the failures (once).
+
+        Returns:
+            str
+                What comes next: "work" or "assemble" (see _carry_on).
+        """
+        self._save_state(reviewed=True)
+        state = self._load_state()
+        return self._carry_on(
+            state.get("rounds", []), state.get("round", 1), self._walltime()
+        )
+
+    def recheck(self):
+        """Sort the section's Cloudy outputs again under the current rules.
+
+        A stopped round's records and claims are tidied first, as its finish
+        job would. Failed runs that Cloudy finished (with warnings, or
+        stopped for an unintended reason) are done, and crashed grid points
+        get their remedies; queued perturbed or remedied runs of grid points
+        no longer failed are dropped, and so are the perturbed runs of those
+        waiting for a remedy (perturbed again if it fails). Then the section
+        carries on as after a round (review, perturbation, assembly), but
+        only when something changed, so a done section stays done. Its jobs
+        must have stopped: resume the run after.
+
+        Returns:
+            str
+                What comes next ("work", "review" or "assemble"), or None
+                when nothing changed.
+        """
+        state = self._load_state()
+        if state.get("next") in (None, "start"):
+            return None
+        if self.queue.counts()["claimed"]:
+            self._record_lost(self.queue.requeue_claims(slurm.is_running()))
+            if self.queue.counts()["claimed"]:
+                raise RuntimeError(
+                    f"{self.name} has models claimed by running workers; "
+                    "recheck once its jobs have stopped"
+                )
+        if self._gather_records():
+            self._remove_records()
+            state = self._load_state()
+        from syncretize.cloudy.create_synthesizer_grid import cloudy_outcome
+        from syncretize.runner.cloudy import model_path
+
+        cloudy_dir = state["cloudy_dir"]
+        extensions = self._required_extensions()
+        models = self._load_models()
+        states = self.queue.states()
+        finished = {}
+        for model, state_ in states.items():
+            if state_ != "failed":
+                continue
+            outcome, reason = cloudy_outcome(
+                model_path(cloudy_dir, model), extensions
+            )
+            # Why it crashed, as read now (remedies match on it)
+            entry = models.setdefault(model, {"attempts": []})
+            entry["recheck"] = {"outcome": outcome, "reason": reason}
+            if outcome != "crashed":
+                self.queue.resolve(model)
+                states[model] = "done"
+                finished[outcome] = finished.get(outcome, 0) + 1
+                entry["state"] = "done"
+        self._save_models(models)
+        queued = self._remedy()
+        models = self._load_models()
+        states = self.queue.states()
+        waiting = remedy.pending(cloudy_dir, states)
+        # The extra runs of grid points no longer failed aren't needed, nor
+        # (yet) the perturbed runs of those waiting for a remedy
+        dropped = 0
+        plan = perturb.load(cloudy_dir)
+        remedies = remedy.load(cloudy_dir)
+        for model in sorted(set(plan) | set(remedies)):
+            failed = states.get(model) == "failed"
+            if failed and model not in waiting:
+                continue
+            i = model.partition("_")[0]
+            runs = [
+                side["name"]
+                for parameter in plan.pop(model, {}).values()
+                for side in (parameter["minus"], parameter["plus"])
+            ]
+            if not failed:
+                runs += [run["name"] for run in remedies.get(model, [])]
+            for name in runs:
+                if states.get(f"{i}_{name}") == "todo":
+                    self.queue.drop(f"{i}_{name}")
+                    models.pop(f"{i}_{name}", None)
+                    dropped += 1
+        if finished or dropped:
+            perturb._save(cloudy_dir, plan)
+            self._save_models(models)
+            self._save_state(
+                failures={
+                    model: why
+                    for model, why in (state.get("failures") or {}).items()
+                    if states.get(model) == "failed"
+                }
+            )
+        log.info(
+            f"Rechecked {self.name}: "
+            + (
+                ", ".join(
+                    f"{n} failed {'run' if n == 1 else 'runs'} {how}"
+                    for how, n in (
+                        ("finished cleanly", finished.get("clean", 0)),
+                        (
+                            "finished with warnings",
+                            finished.get("warnings", 0),
+                        ),
+                        (
+                            "stopped for an unintended reason",
+                            finished.get("unintended", 0),
+                        ),
+                    )
+                    if n
+                )
+                or "every failed run crashed"
+            )
+            + (
+                f"; dropped {_count(dropped, 'queued run')} they no longer "
+                "need"
+                if dropped
+                else ""
+            )
+        )
+        if not (finished or dropped or queued):
+            return None
+        return self._carry_on(
+            state.get("rounds", []), state.get("round", 1), self._walltime()
         )
 
     def _resources(self, stage):
@@ -769,7 +1127,7 @@ class Section(Stages):
             if entry["attempts"]
             else None
             for model, entry in models.items()
-            if entry["state"] == "failed" and not perturb.is_perturbed(model)
+            if entry["state"] == "failed" and remedy.is_grid_point(model)
         }
         self._save_state(failures=failures)
         return records

@@ -18,6 +18,7 @@ def main():
         choices=[
             "run",
             "resume",
+            "recheck",
             "incident",
             "start",
             "work",
@@ -27,6 +28,8 @@ def main():
         ],
         help="run: every stage (submits the start job, or runs here with "
         "--local); resume: carry on a stopped run from its next stages; "
+        "recheck: sort the Cloudy outputs again (failed runs Cloudy "
+        "finished are done), with the run's jobs stopped, then resume; "
         "incident: only the incident grid, here. The Slurm jobs run start "
         "(incident grid, every Cloudy section's inputs and first round), "
         "and for one Cloudy section (--section) work (one Cloudy worker), "
@@ -99,6 +102,8 @@ def main():
     )
     if args.stage in ("run", "resume"):
         getattr(runner, args.stage)(local=args.local)
+    elif args.stage == "recheck":
+        runner.recheck()
     elif args.stage == "work":
         # An array task is "<array job>_<task>" to sacct
         task = os.environ.get("SLURM_ARRAY_TASK_ID")

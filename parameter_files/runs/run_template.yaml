@@ -67,6 +67,13 @@ Incident:
 #     step: 0.1                  # How far either side, as a fraction of the gap to the neighbouring grid value of each Cloudy axis. Default: 0.1.
 #     log_step: 0.05             # How far either side (dex) for the ionisation parameter of a grid with no Cloudy axes. Default: 0.05.
 #     max_steps: 3               # A side that fails is tried again twice as far out, up to this many times in all. Default: 3.
+#   remedies:                    # Run crashed models again with numerical changes to their Cloudy parameters, the first whose match (a regular expression) is in why it crashed. Default: the one below; [] for none.
+#     - match: grains_qheat      # Cloudy's assertion in grain quantum heating, at low density
+#       changes: {grain_qheat: false}
+#   review:                      # Pause for a look when many models fail with no remedy left (false: never). Default: on, with these.
+#     fraction: 0.1              # ... this fraction of the grid points run
+#     slice_fraction: 0.5        # ... or this fraction of those at one value of an axis
+#     min_models: 20             # ... once at least this many have run (at that value)
 
 # More Cloudy set-ups for the same incident grid, each making its own grid
 # (named after its configs, so each needs different ones)

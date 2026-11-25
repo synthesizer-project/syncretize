@@ -81,6 +81,7 @@ from syncretize.runner.cloudy import (
 from syncretize.runner.log import ROUND_COLUMNS, round_row
 from syncretize.runner.perturb import is_perturbed
 from syncretize.runner.queue import STATES
+from syncretize.runner.remedy import is_grid_point
 from syncretize.runner.slurm import RUNNING_STATES
 
 #: How many run.log lines each grid's log panel holds
@@ -958,7 +959,8 @@ def _grid_points(names, state):
     """
     points, perturbed = {}, 0
     for where, models in names.items():
-        runs = sum(map(is_perturbed, models))
+        # Perturbed and remedied runs, not grid points
+        runs = sum(not is_grid_point(model) for model in models)
         points[where] = len(models) - runs
         perturbed += runs
     interpolated = len(state.get("interpolated") or [])
@@ -975,6 +977,8 @@ STAGE_BADGES = {
     "done": ("DONE", "bold black on green"),
     # Models ran out of time at max_walltime: it waits for a longer one
     "walltime": ("NEEDS LONGER MAX_WALLTIME", "bold white on red"),
+    # Many models failed: it waits for a look (see run.log), then resume
+    "review": ("NEEDS REVIEW", "bold white on red"),
 }
 
 #: The badge while failed models' perturbed runs are under way
@@ -1315,7 +1319,8 @@ def _where(state):
         str
             "✓" when done, its round (and whether it is perturbing) while
             running, "▸ assembling", "✗ out of time" when its models ran
-            out of time at max_walltime, or "…" before its first round.
+            out of time at max_walltime, "✗ review" when it paused for a
+            look at its failures, or "…" before its first round.
     """
     stage = state.get("next")
     if stage == "done":
@@ -1327,6 +1332,8 @@ def _where(state):
         return "▸ assembling"
     if stage == "walltime":
         return "✗ out of time"
+    if stage == "review":
+        return "✗ review"
     return "…"
 
 
@@ -1581,7 +1588,7 @@ def _failures(snapshot):
     given_up = [
         record
         for record in snapshot["records"]
-        if _given_up(record) and not is_perturbed(record["model"])
+        if _given_up(record) and is_grid_point(record["model"])
     ]
     given_up.sort(key=_ended)
     for record in given_up:
@@ -2595,7 +2602,7 @@ GRID_COLUMNS = (
 
 
 #: The order of a section's stages, to sort the all grids page by stage
-STAGE_ORDER = ("start", "walltime", "finish", "assemble", "done")
+STAGE_ORDER = ("start", "walltime", "review", "finish", "assemble", "done")
 
 #: The columns the all grids page sorts by most first (the rest A to Z)
 MOST_FIRST = ("progress", "done", "running", "failed")

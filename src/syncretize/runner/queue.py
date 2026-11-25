@@ -208,6 +208,25 @@ class Queue:
             self._path("todo", model),
         )
 
+    def resolve(self, model):
+        """Move a failed model to done (a remedied run, or a recheck, found
+        it didn't fail).
+
+        Args:
+            model (str)
+                The model, e.g. "3_12".
+        """
+        os.rename(self._path("failed", model), self._path("done", model))
+
+    def drop(self, model):
+        """Take a model waiting in todo out of the queue.
+
+        Args:
+            model (str)
+                The model, e.g. "3_12p0-1".
+        """
+        os.remove(self._path("todo", model))
+
     def requeue_failed(self, max_retries):
         """Put failed models that can still be retried back in todo.
 

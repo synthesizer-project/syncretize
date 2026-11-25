@@ -14,6 +14,7 @@ A run config has these sections:
 See ``parameter_files/runs/run_template.yaml`` for every key.
 """
 
+import copy
 import importlib
 import os
 import re
@@ -63,10 +64,31 @@ CLOUDY_DEFAULTS = {
     # parameters and interpolated (see syncretize.runner.perturb); off
     # unless given
     "perturb": None,
+    # Crashed models are run again with numerical changes (see
+    # syncretize.runner.remedy); [] for none
+    "remedies": None,
+    # Pause for a look when many models fail (see Section.finish); false
+    # for never
+    "review": True,
 }
 
 #: Every key of Cloudy.perturb, with its default
 PERTURB_DEFAULTS = {"step": 0.1, "log_step": 0.05, "max_steps": 3}
+
+#: The remedies tried when a section gives none: each runs a crashed model
+#: whose crash matches ``match`` (a regular expression) again with
+#: ``changes`` to its Cloudy parameters, which mustn't change its physics
+#: beyond what the grid's quality flags record
+DEFAULT_REMEDIES = [
+    # Cloudy's assertion in grain quantum heating, at low density
+    {"match": "grains_qheat", "changes": {"grain_qheat": False}},
+]
+
+#: Every key of Cloudy.review, with its default: a section pauses (``next``
+#: is "review") once ``fraction`` of its models, or ``slice_fraction`` of
+#: those at one value of an axis (at least ``min_models`` of them), have
+#: failed with no remedy left
+REVIEW_DEFAULTS = {"fraction": 0.1, "slice_fraction": 0.5, "min_models": 20}
 
 #: How long before a worker's time limit it stops the Cloudy runs left
 STOP_BEFORE = "00:02:00"
@@ -237,6 +259,8 @@ def load_run(run_file):
         _check_cloudy_version(run_file, where, cloudy)
         if cloudy["perturb"] is not None:
             _check_perturb(run_file, where, cloudy)
+        _check_remedies(run_file, where, cloudy)
+        _check_review(run_file, where, cloudy)
         # Each section's grid (and directory) is named after its configs
         name = section_name(cloudy)
         if name in names:
@@ -307,6 +331,85 @@ def _check_perturb(run_file, where, cloudy):
             f"{run_file}: {where}.perturb.max_steps must be a whole number "
             "of at least 1"
         )
+
+
+def _check_remedies(run_file, where, cloudy):
+    """Fill in a section's remedies (the defaults when not given) and check.
+
+    Args:
+        run_file (str)
+            The run config, for errors.
+        where (str)
+            The section's key, e.g. "Cloudy2", for errors.
+        cloudy (dict)
+            The section, whose remedies are filled in.
+    """
+    remedies = cloudy["remedies"]
+    if remedies is None:
+        remedies = copy.deepcopy(DEFAULT_REMEDIES)
+    if not isinstance(remedies, list):
+        raise ValueError(f"{run_file}: {where}.remedies must be a list")
+    for n, remedy in enumerate(remedies):
+        at = f"{run_file}: {where}.remedies[{n}]"
+        if (
+            not isinstance(remedy, dict)
+            or set(remedy) != {"match", "changes"}
+            or not isinstance(remedy["changes"], dict)
+            or not remedy["changes"]
+        ):
+            raise ValueError(
+                f"{at} must be a mapping of match (a regular expression) and "
+                "changes (the Cloudy parameters to change)"
+            )
+        try:
+            re.compile(remedy["match"])
+        except (re.error, TypeError) as error:
+            raise ValueError(f"{at}.match: {error}") from None
+    cloudy["remedies"] = remedies
+
+
+def _check_review(run_file, where, cloudy):
+    """Fill in a section's review settings and check them.
+
+    ``true`` takes the defaults and ``false`` turns reviews off (None).
+
+    Args:
+        run_file (str)
+            The run config, for errors.
+        where (str)
+            The section's key, e.g. "Cloudy2", for errors.
+        cloudy (dict)
+            The section, whose review is filled in.
+    """
+    given = cloudy["review"]
+    if given is False:
+        cloudy["review"] = None
+        return
+    review = _fill(
+        run_file,
+        "review",
+        {} if given is True else given,
+        REVIEW_DEFAULTS,
+        f"{where}.",
+    )
+    for key in ("fraction", "slice_fraction"):
+        value = review[key]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not 0 < value <= 1
+        ):
+            raise ValueError(
+                f"{run_file}: {where}.review.{key} must be a fraction "
+                "above 0, at most 1"
+            )
+    count = review["min_models"]
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise ValueError(
+            f"{run_file}: {where}.review.min_models must be a whole number "
+            "of at least 1"
+        )
+    cloudy["review"] = review
 
 
 def incident_module(model):

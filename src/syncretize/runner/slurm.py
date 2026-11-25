@@ -8,8 +8,13 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 
 from syncretize.runner.log import log
+
+#: How long (s) to wait before each try at submitting a job: about 40
+#: minutes in all, inside a finish job's hour
+SUBMIT_WAITS = (0, 60, 120, 300, 600, 1200)
 
 #: Job states (sacct) in which a job may still be running
 RUNNING_STATES = {
@@ -92,12 +97,23 @@ def submit(
     with open(script, "w") as file:
         file.write("\n".join(lines) + "\n")
 
-    result = subprocess.run(
-        ["sbatch", "--parsable", script],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    # Slurm refuses submissions now and then (e.g. "allocation failure"
+    # while its allocation check is down), and a finish job that can't
+    # submit the next round stops its section, so it asks again for a while
+    for n, wait in enumerate(SUBMIT_WAITS):
+        time.sleep(wait)
+        result = subprocess.run(
+            ["sbatch", "--parsable", script], capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            break
+        error = (result.stderr or result.stdout).strip()
+        if n == len(SUBMIT_WAITS) - 1:
+            raise RuntimeError(f"sbatch refused {script}: {error}")
+        log.info(
+            f"sbatch refused {os.path.basename(script)} ({error}); asking "
+            f"again in {SUBMIT_WAITS[n + 1]} s"
+        )
     # --parsable prints "<id>" or "<id>;<cluster>"
     job = result.stdout.strip().split(";")[0]
     log.debug(f"Submitted {script} as job {job}")

@@ -407,6 +407,43 @@ def required_extensions(include_spectra, include_intrinsic_lines, geometry):
     return extensions
 
 
+#: How much of the end of a .out holds a crash's report (Cloudy echoes the
+#: whole input deck and a backtrace after the assertion)
+CRASH_TAIL = 32768
+
+#: Cloudy's report of a failed assertion, e.g. "Failed: wid == 0." then
+#: "It happened in the file grains_qheat.cpp at line number 2047"
+ASSERTION = re.compile(
+    r"Failed: (.*?)\.?\s*\n\s*It happened in the file (\S+) at line number "
+    r"(\d+)"
+)
+
+#: Cloudy's last line's count of warnings, e.g. "Cloudy ends: 1400 zones, 3
+#: iterations, 3 warnings, 1 caution."
+WARNINGS = re.compile(r"Cloudy ends:[^\n]*?(\d+) warnings?")
+
+#: Why Cloudy stopped each iteration, e.g. "Calculation stopped because
+#: NZONE reached. Iteration 1 of 10"
+STOPPED = re.compile(r"Calculation stopped because ([^.\n]*)")
+
+#: The bits of a grid's "quality" dataset
+QUALITY = {
+    "warnings": 1,
+    "unintended_stop": 2,
+    "remedied": 4,
+    "interpolated": 8,
+    "failed": 16,
+}
+QUALITY_DESCRIPTION = (
+    "Bits saying how each point was made: 1 Cloudy warned (e.g. grains "
+    "above their sublimation temperature), 2 Cloudy stopped for an "
+    "unintended reason (e.g. the zone limit), 4 run again with a numerical "
+    "remedy after crashing (see the remedies attribute), 8 crashed and "
+    "interpolated between runs perturbed either side of it, 16 crashed and "
+    "couldn't be filled (NaN); 0 is a clean run"
+)
+
+
 def check_if_failed(
     model_to_check,
     extensions_to_check=["emergent_elin"],
@@ -414,8 +451,11 @@ def check_if_failed(
     """
     Function to check if a particular model has failed.
 
-    A model has failed unless cloudy ended its .out file with "Cloudy exited
-    OK" and wrote each output file with at least 100 bytes.
+    A model has failed (crashed) unless Cloudy finished its calculation
+    (its .out ends with "Cloudy ends: ...") and wrote each output file with
+    at least 100 bytes. A run Cloudy finished with warnings, or stopped for
+    an unintended reason (e.g. the zone limit), hasn't failed: see
+    ``cloudy_outcome`` for those.
 
     Args:
         model_to_check (str)
@@ -425,18 +465,21 @@ def check_if_failed(
 
     Returns:
         str or None
-            Why the model failed (e.g. cloudy's last line, or "no
-            .emergent_elin"), or None if it didn't.
+            Why the model failed (e.g. "assert wid == 0 (grains_qheat.cpp:
+            2047)", Cloudy's last line, or "no .emergent_elin"), or None if
+            it didn't.
     """
-    # Cloudy writes "Cloudy exited OK" only when it ends without an error
     try:
         with open(model_to_check + ".out", "rb") as file:
             file.seek(0, os.SEEK_END)
-            file.seek(max(0, file.tell() - 1000))
+            file.seek(max(0, file.tell() - CRASH_TAIL))
             tail = file.read().decode(errors="replace")
     except FileNotFoundError:
         return "no .out"
-    if "Cloudy exited OK" not in tail:
+    if "Cloudy ends:" not in tail:
+        assertion = ASSERTION.search(tail)
+        if assertion:
+            return "assert {} ({}:{})".format(*assertion.groups())
         lines = tail.strip().splitlines()
         return lines[-1].strip() if lines else "empty .out"
 
@@ -447,6 +490,42 @@ def check_if_failed(
         if os.path.getsize(path) < 100:
             return f".{ext} under 100 bytes"
     return None
+
+
+def cloudy_outcome(model_to_check, extensions_to_check=["emergent_elin"]):
+    """
+    How a Cloudy run went: crashed, or finished cleanly or with caveats.
+
+    Args:
+        model_to_check (str)
+            The model, including path, to check.
+        extensions_to_check (list)
+            The output files it must have written.
+
+    Returns:
+        (str, str)
+            The outcome, "crashed" (see ``check_if_failed``), "unintended"
+            (finished, but Cloudy stopped for an unintended reason),
+            "warnings" (finished with warnings) or "clean", and why: the
+            crash, the stop or "<n> warnings" (None when clean).
+    """
+    crash = check_if_failed(model_to_check, extensions_to_check)
+    if crash:
+        return "crashed", crash
+    with open(model_to_check + ".out", "rb") as file:
+        file.seek(0, os.SEEK_END)
+        file.seek(max(0, file.tell() - 1000))
+        warnings = WARNINGS.search(file.read().decode(errors="replace"))
+    if not warnings:
+        return "clean", None
+    # The stop's warning is in the last iteration's report, well before the
+    # end: only runs with warnings are read in full
+    with open(model_to_check + ".out", "rb") as file:
+        text = file.read().decode(errors="replace")
+    if "stopped for unintended reasons" in text:
+        stops = STOPPED.findall(text)
+        return "unintended", stops[-1].strip() if stops else "unintended"
+    return "warnings", f"{warnings.group(1)} warnings"
 
 
 def _below(below_threshold, incident_index_tuple):
@@ -511,6 +590,82 @@ def _interpolations(cloudy_dir, new_grid_name, extensions_to_check):
     return interpolations
 
 
+def _remedies(cloudy_dir, new_grid_name, extensions_to_check):
+    """The runs standing in for crashed models, run again with a remedy.
+
+    Reads the remedies the Runner tried (remedies.json, see
+    syncretize.runner.remedy): each model's runs in the order tried. A
+    crashed model is made from the first of its runs that didn't crash.
+
+    Returns:
+        dict
+            Each model ("<i>_<j>") with such a run: the run's path (without
+            extension) and the Cloudy parameters its remedy changed.
+    """
+    path = f"{cloudy_dir}/{new_grid_name}/remedies.json"
+    if not os.path.exists(path):
+        return {}
+    with open(path) as file:
+        tried = json.load(file)
+    remedies = {}
+    for model, runs in tried.items():
+        incident_index = model.partition("_")[0]
+        for run in runs:
+            run_path = (
+                f"{cloudy_dir}/{new_grid_name}/{incident_index}/{run['name']}"
+            )
+            if not check_if_failed(run_path, extensions_to_check):
+                remedies[model] = (run_path, run["changes"])
+                break
+    return remedies
+
+
+def _quality(
+    cloudy_dir,
+    new_grid_name,
+    incident_index_list,
+    photoionisation_index_list,
+    new_shape,
+    extensions_to_check,
+    below_threshold,
+    interpolations,
+    remedies,
+):
+    """Each grid point's QUALITY bits (0 below the threshold or clean)."""
+    quality = np.zeros(new_shape, dtype=np.int32)
+    for incident_index, incident_index_tuple in enumerate(incident_index_list):
+        if _below(below_threshold, incident_index_tuple):
+            continue
+        for photoionisation_index, photoionisation_index_tuple in enumerate(
+            photoionisation_index_list
+        ):
+            model = f"{incident_index}_{photoionisation_index}"
+            path = (
+                f"{cloudy_dir}/{new_grid_name}/"
+                f"{incident_index}/{photoionisation_index}"
+            )
+            outcome = cloudy_outcome(path, extensions_to_check)[0]
+            bits = 0
+            if outcome == "crashed" and model in remedies:
+                bits = QUALITY["remedied"]
+                outcome = cloudy_outcome(
+                    remedies[model][0], extensions_to_check
+                )[0]
+            if outcome == "crashed":
+                bits |= QUALITY[
+                    "interpolated" if model in interpolations else "failed"
+                ]
+            elif outcome == "unintended":
+                bits |= QUALITY["unintended_stop"]
+            elif outcome == "warnings":
+                bits |= QUALITY["warnings"]
+            quality[
+                tuple(incident_index_tuple)
+                + tuple(photoionisation_index_tuple)
+            ] = bits
+    return quality
+
+
 def _normalised_run(cloudy, path, geometry, lam, log10_q):
     """A run's spectra, and the factor normalising it to the grid point.
 
@@ -552,9 +707,13 @@ def check_cloudy_runs(
     machine=None,
     cloudy_executable_path=None,
     below_threshold=None,
+    remedies=None,
 ):
     """
     Check that all the cloudy runs have run properly.
+
+    Models made from a run with a remedy (``remedies``, see _remedies)
+    haven't failed.
 
     Args:
         new_grid_name
@@ -600,7 +759,8 @@ def check_cloudy_runs(
             )
 
             # Record models that have failed
-            if failed:
+            model = f"{incident_index}_{photoionisation_index}"
+            if failed and model not in (remedies or {}):
                 # Append the incident and photoionisation index to an array
                 failed_list.append([incident_index, photoionisation_index])
 
@@ -701,6 +861,7 @@ def add_spectra(
     geometry=None,
     below_threshold=None,
     interpolations=None,
+    remedies=None,
 ):
     """
     Open cloudy spectra and add them to the grid.
@@ -744,6 +905,9 @@ def add_spectra(
             Failed models to fill from runs perturbed around them (see
             _interpolations); they are marked in the "interpolated" dataset
             rather than "failures".
+        remedies (dict)
+            Crashed models made from a run with a remedy instead (see
+            _remedies).
     """
 
     # Always store the spectra add_lines relies on. reflected_incident is
@@ -797,6 +961,7 @@ def add_spectra(
     failures = np.zeros(new_shape)
     interpolated = np.zeros(new_shape)
     interpolations = interpolations or {}
+    remedies = remedies or {}
 
     # Ratio of the normalised incident continuum to the input SED, per run.
     # The input is read from the file, not a loaded Grid, since synthesizer
@@ -849,10 +1014,14 @@ def add_spectra(
                 spectra["transmitted"][indices] = incident
                 continue
 
-            # Check to see if the model failed or not
+            # Check to see if the model failed or not (a crashed model run
+            # again with a remedy is that run)
+            model = f"{incident_index}_{photoionisation_index}"
             failed = check_if_failed(
                 infile, extensions_to_check=extensions_to_check
             )
+            if failed and model in remedies:
+                infile, failed = remedies[model][0], None
 
             # The grid point's specific ionising luminosity, which the runs
             # are normalised to
@@ -864,7 +1033,6 @@ def add_spectra(
                 else None
             )
 
-            model = f"{incident_index}_{photoionisation_index}"
             if failed and model in interpolations:
                 # Interpolate between the runs perturbed either side of it
                 # (averaging over the parameters perturbed along)
@@ -992,6 +1160,7 @@ def add_lines(
     below_threshold=None,
     geometry=None,
     interpolations=None,
+    remedies=None,
 ):
     """
     Open cloudy lines and add them to the HDF5 grid
@@ -1029,8 +1198,12 @@ def add_lines(
         interpolations (dict)
             Failed models to fill from runs perturbed around them (see
             _interpolations).
+        remedies (dict)
+            Crashed models made from a run with a remedy instead (see
+            _remedies).
     """
     interpolations = interpolations or {}
+    remedies = remedies or {}
 
     def read_lines(path, extension):
         """A run's line IDs, wavelengths and luminosities, by wavelength."""
@@ -1154,12 +1327,15 @@ def add_lines(
                 quiet_points.append(indices)
                 continue
 
-            # Check to see if the model failed or not
+            # Check to see if the model failed or not (a crashed model run
+            # again with a remedy is that run)
+            model = f"{incident_index}_{photoionisation_index}"
             failed = check_if_failed(
                 infile, extensions_to_check=extensions_to_check
             )
+            if failed and model in remedies:
+                infile, failed = remedies[model][0], None
 
-            model = f"{incident_index}_{photoionisation_index}"
             if failed and model in interpolations:
                 # Interpolate between the runs perturbed either side of it,
                 # each normalised to the grid point (they ran at slightly
@@ -1563,6 +1739,11 @@ def create_synthesizer_grid(
             "perturbed around them"
         )
 
+    # Crashed models run again with a numerical remedy
+    remedies = _remedies(cloudy_dir, new_grid_name, extensions_to_check)
+    if remedies:
+        print(f"{len(remedies)} crashed models are made from remedied runs")
+
     # Check cloudy runs and potentially replace them by the nearest grid point
     # if they fail.
     check_cloudy_runs(
@@ -1574,6 +1755,7 @@ def create_synthesizer_grid(
         machine=machine,
         cloudy_executable_path=cloudy_executable_path,
         below_threshold=below_threshold,
+        remedies=remedies,
     )
 
     # Even if a grid point has failed the code will now still create a grid,
@@ -1596,6 +1778,7 @@ def create_synthesizer_grid(
             geometry=geometry,
             below_threshold=below_threshold,
             interpolations=interpolations,
+            remedies=remedies,
         )
         print("Added spectra")
         print(spectra.keys())
@@ -1619,8 +1802,35 @@ def create_synthesizer_grid(
         below_threshold=below_threshold,
         geometry=geometry,
         interpolations=interpolations,
+        remedies=remedies,
     )
     print("Added lines")
+
+    # How each point was made: clean, with Cloudy's caveats, remedied,
+    # interpolated or failed
+    changes = sorted(
+        {json.dumps(c, sort_keys=True) for _, c in remedies.values()}
+    )
+    new_grid.write_dataset(
+        "quality",
+        _quality(
+            cloudy_dir,
+            new_grid_name,
+            incident_index_list,
+            photoionisation_index_list,
+            new_shape,
+            extensions_to_check,
+            below_threshold,
+            interpolations,
+            remedies,
+        )
+        * dimensionless,
+        QUALITY_DESCRIPTION,
+        False,
+        verbose=False,
+        bits=json.dumps(QUALITY),
+        remedies=json.dumps([json.loads(c) for c in changes]),
+    )
 
     # Mark the points below the ionising threshold, over every
     # photoionisation point

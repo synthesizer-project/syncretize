@@ -19,7 +19,7 @@ from syncretize.incident.builder import (
     build_grid,
     table_point,
 )
-from syncretize.runner import Runner
+from syncretize.runner import Runner, perturb
 from syncretize.runner.cloudy import work
 from syncretize.runner.config import load_run, seconds, slurm_time
 from syncretize.runner.queue import Queue
@@ -316,10 +316,12 @@ def test_unknown_cloudy_config(tmp_path):
 FAKE_CLOUDY = f"""#!{sys.executable}
 # A stand-in for cloudy.exe -r <j>, run in <cloudy_dir>/<i>. FAKE_CLOUDY maps
 # a model "<i>_<j>" (or a pattern, e.g. "*" for every model; the first match
-# applies) to what it does: "fail" (exit with
-# an error), "fail_once" (fail the first run only), "no_lines" (exit OK
-# without lines), "no_output" (stop before writing anything, as when killed
-# early), "sleep" (take 0.5 s) or "hang" (take a minute).
+# applies) to what it does: "fail" (crash), "fail_once" (crash the first run
+# only), "qheat" (crash on Cloudy's grain quantum heating assertion unless
+# its input turns quantum heating off), "warn" (finish with a warning),
+# "nzone" (finish, stopped by the zone limit), "no_lines" (exit OK without
+# lines), "no_output" (stop before writing anything, as when killed early),
+# "sleep" (take 0.5 s) or "hang" (take a minute).
 import fnmatch, json, os, sys, time
 j = sys.argv[2]
 model = os.path.basename(os.getcwd()) + "_" + j
@@ -336,13 +338,31 @@ if behaviour == "no_output":
     sys.exit(1)
 if behaviour == "fail_once":
     behaviour = "ok" if os.path.exists(j + ".out") else "fail"
+if behaviour == "qheat":
+    with open(j + ".in") as file:
+        behaviour = "ok" if "no qheat" in file.read() else "qheat"
 with open(j + ".out", "w") as file:
     file.write(os.environ["CLOUDY_DATA_PATH"] + "\\n")
     if behaviour == "fail":
         file.write(" [Stop in cdMain, something went wrong]\\n")
         sys.exit(1)
+    if behaviour == "qheat":
+        file.write(" PROBLEM DISASTER\\n An assert has been thrown.\\n")
+        file.write(" Failed: wid == 0.\\n It happened in the file ")
+        file.write("grains_qheat.cpp at line number 2047\\n")
+        file.write("[0x4a0715] _start -- ??:?\\n")
+        sys.exit(1)
     file.write(" Start Iteration Number 2\\n Iteration 2 of 10.\\n")
-    file.write(" [Stop in cdMain, Cloudy exited OK]\\n")
+    if behaviour == "nzone":
+        file.write("W-Calculation stopped because default number of zones ")
+        file.write("reached.\\n >>>> The calculation stopped for ")
+        file.write("unintended reasons.\\n")
+    if behaviour in ("warn", "nzone"):
+        file.write(" Cloudy ends: 1400 zones, 2 iterations, 1 warning.\\n")
+        file.write(" [Stop in cdMain, something went wrong]\\n")
+    else:
+        file.write(" Cloudy ends: 10 zones, 2 iterations.\\n")
+        file.write(" [Stop in cdMain, Cloudy exited OK]\\n")
 # Continua (.cont: wavelength and 8 nu L_nu columns, blue last) and the
 # albedo (.refl, column 4)
 import numpy as np
@@ -371,6 +391,7 @@ def cloudy_run(
     extra=None,
     perturb=None,
     more=None,
+    options=None,
     **cloudy,
 ):
     """A run's Cloudy section that runs the fake Cloudy, and its queue.
@@ -394,6 +415,8 @@ def cloudy_run(
         more (dict)
             More Cloudy sections (e.g. {"Cloudy2": {...}}), whose
             executable is the fake Cloudy, or None.
+        options (dict)
+            More keys of the Cloudy section (e.g. review), or None.
         **cloudy
             The run's cloudy settings (Run.cloudy), e.g. max_retries=0.
 
@@ -426,6 +449,7 @@ def cloudy_run(
                 "extra_config": extra_config,
                 "executable": str(exe.parents[1]),
                 "perturb": perturb,
+                **(options or {}),
             },
             **{
                 key: {"executable": str(exe.parents[1]), **values}
@@ -892,6 +916,180 @@ def test_failed_models_are_interpolated_from_perturbed_runs(
     ]
     assert section._job_name("work") == "R3-test-C1-PerturbCloudy"
     assert "[C1 perturb]" in run_log
+
+
+def test_cloudy_caveats_are_flagged_and_crashes_remedied(
+    tmp_path, monkeypatch
+):
+    """Runs Cloudy finished with warnings or an unintended stop are done
+    (flagged), and a crash with a remedy is run again with it."""
+    section, queue = cloudy_run(
+        tmp_path,
+        monkeypatch,
+        {"1_3": "warn", "2_5": "nzone", "0_0": "qheat", "3_1": "fail"},
+    )
+    (grid,) = section.runner.run(local=True)
+
+    models = section._load_models()
+    assert [models[m]["attempts"][-1]["outcome"] for m in ("1_3", "2_5")] == [
+        "warnings",
+        "unintended",
+    ]
+    assert models["2_5"]["attempts"][-1]["reason"] == (
+        "default number of zones reached"
+    )
+    # The crash was run again with grain quantum heating off, and filled it
+    assert models["0_0"]["attempts"][-1]["reason"] == (
+        "assert wid == 0 (grains_qheat.cpp:2047)"
+    )
+    assert models["0_0"]["state"] == "done"
+    assert models["0_0"]["remedied_by"] == "0_0r1"
+    cloudy_dir = Path(section._load_state()["cloudy_dir"])
+    assert "no qheat" in (cloudy_dir / "0" / "0r1.in").read_text()
+    remedies = json.loads((cloudy_dir / "remedies.json").read_text())
+    assert remedies["0_0"][0]["changes"] == {"grain_qheat": False}
+    # A crash no remedy matches stays failed
+    assert sorted(section._load_state()["failures"]) == ["3_1"]
+
+    with h5py.File(grid) as hdf:
+        quality = hdf["quality"][()].reshape(4, 48)
+        luminosity = hdf["lines/luminosity"][()].reshape(4, 48, -1)
+        remedies_used = json.loads(hdf["quality"].attrs["remedies"])
+    # One point of each (the photoionisation points aren't in j's order)
+    assert sorted(quality[quality > 0]) == [1, 2, 4, 16]
+    assert quality[0].max() == 4 and quality[3].max() == 16
+    assert np.isfinite(luminosity[quality < 16]).all()
+    assert np.isnan(luminosity[quality == 16]).all()
+    assert remedies_used == [{"grain_qheat": False}]
+    run_log = (tmp_path / "work" / "run.log").read_text()
+    assert "Running 1 crashed grid point again with a remedy" in run_log
+    assert "Filled 1 crashed grid point from runs with a remedy" in run_log
+
+
+def test_review_pauses_when_many_fail(tmp_path, monkeypatch):
+    """A section pauses for a review when too many models failed with no
+    remedy left, then carries on (once) when resumed."""
+    section, queue = cloudy_run(
+        tmp_path,
+        monkeypatch,
+        {"0_*": "fail", "1_*": "fail", "2_0": "qheat"},
+        max_retries=0,
+        options={"review": {"min_models": 4}},
+    )
+    section.setup(section.config.incident["grid"])
+    run_worker(section, 60, 60, max_retries=0)
+    assert section.finish(lambda owner: False) == "review"
+    state = section._load_state()
+    assert state["next"] == "review"
+    # The crash with a remedy waits for it, rather than counting as failed
+    assert queue.states()["2_0r1"] == "todo"
+    why, where = section._review()
+    assert why.startswith("96 of 191 grid points run have failed")
+    assert "ages = index 0: 96 of 96 failed (100%)" in where
+
+    # Resuming carries on with the failures, and won't pause again
+    monkeypatch.setattr(section, "submit_round", lambda: "9")
+    assert section.resume() == "9"
+    state = section._load_state()
+    assert state["reviewed"] and state["next"] == "finish"
+    assert state["round"] == 2
+    assert section._review() is None
+
+
+def test_recheck_finishes_runs_cloudy_finished(tmp_path, monkeypatch):
+    """Recheck makes failed runs Cloudy finished done, drops the queued
+    runs they no longer need, and carries the section on."""
+    section, queue = cloudy_run(
+        tmp_path,
+        monkeypatch,
+        {"1_3": "fail", "2_5": "warn"},
+        perturb={"step": 0.1, "max_steps": 1},
+        max_retries=0,
+    )
+    section.setup(section.config.incident["grid"])
+    run_worker(section, 60, 60, max_retries=0)
+    # As the older rule did: a run with a warning failed
+    os.rename(queue._path("done", "2_5"), queue._path("failed", "2_5"))
+    Path(queue._path("failed", "2_5")).write_text("1")
+    section.finish(lambda owner: False)
+    assert queue.states()["2_5"] == "failed"
+    # Its perturbed runs are queued
+    assert any(m.startswith("2_5p") for m in queue.names("todo"))
+
+    section._save_state(next="done")
+    section.runner._save_state(next="done")
+    assert section.runner.recheck()[0] == "work"
+    states = queue.states()
+    assert states["2_5"] == "done"
+    assert not any(m.startswith("2_5p") for m in states)
+    assert "2_5" not in perturb.load(section._load_state()["cloudy_dir"])
+    assert section._load_models()["2_5"]["recheck"]["outcome"] == "warnings"
+    assert section.runner._load_state()["next"] == "cloudy"
+    run_log = (tmp_path / "work" / "run.log").read_text()
+    assert "1 failed run finished with warnings" in run_log
+    assert "dropped 10 queued runs they no longer need" in run_log
+
+    # Nothing to change: a done section stays done
+    section._save_state(next="done")
+    assert section.recheck() is None
+
+
+def test_recheck_remedies_crashes_older_rules_misread(tmp_path, monkeypatch):
+    """A crash recorded with an older reason gets its remedy on recheck."""
+    section, queue = cloudy_run(
+        tmp_path, monkeypatch, {"1_3": "qheat"}, max_retries=0
+    )
+    section.setup(section.config.incident["grid"])
+    section._save_state(next="finish")
+    run_worker(section, 60, 60, max_retries=0)
+    section._gather_records()
+    section._remove_records()
+    models = section._load_models()
+    models["1_3"]["attempts"][-1]["reason"] = "[0x4a0715] _start -- ??:?"
+    section._save_models(models)
+    assert section.recheck() == "work"
+    assert queue.states()["1_3r1"] == "todo"
+
+
+def test_remedy_config_is_checked(tmp_path):
+    """Remedies default to the qheat one, and bad ones are refused."""
+    executable = tmp_path / "c23.01"
+    run = load_run(
+        write_run(
+            tmp_path,
+            Cloudy={"config": "c23.01-sps", "executable": str(executable)},
+        )
+    )
+    assert run.sections[1]["remedies"][0]["changes"] == {"grain_qheat": False}
+    assert run.sections[1]["review"]["fraction"] == 0.1
+    for remedies, message in (
+        ([{"match": "("}], "mapping of match"),
+        ([{"match": "(", "changes": {"nend": 3000}}], "remedies\\[0\\].match"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            load_run(
+                write_run(
+                    tmp_path,
+                    Cloudy={
+                        "config": "c23.01-sps",
+                        "executable": str(executable),
+                        "remedies": remedies,
+                    },
+                )
+            )
+    run = load_run(
+        write_run(
+            tmp_path,
+            Cloudy={
+                "config": "c23.01-sps",
+                "executable": str(executable),
+                "review": False,
+                "remedies": [],
+            },
+        )
+    )
+    assert run.sections[1]["review"] is None
+    assert run.sections[1]["remedies"] == []
 
 
 def test_several_cloudy_sections_share_the_incident_grid(
