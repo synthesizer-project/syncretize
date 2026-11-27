@@ -63,3 +63,48 @@ def test_ionisation_edges_stay_sharp():
     # Only the redward HI point and the four He points are added
     assert close_lam.size == close.size + 5
     assert np.min(np.abs(close_lam.value - (edge + EDGE_OFFSET))) < 1e-6
+
+
+def test_ionising_sed_is_rebinned_for_cloudy():
+    """Cloudy's samples of a spiky SED keep its ionising photons."""
+    from scipy.integrate import trapezoid
+    from unyt import Angstrom, Hz, erg, s
+
+    from syncretize.grid_io import add_ionisation_edges
+    from syncretize.photoionisation import (
+        CLOUDY_MESH,
+        edge_wavelength,
+        rebin_ionising,
+    )
+
+    # A spiky ionising spectrum sampled every 9 Angstrom, like FSPS 3.2's,
+    # with a step at each edge and the edge points grid_io adds
+    lam = np.r_[np.arange(100.0, 912.0, 9.0), 2000.0, 5000.0]
+    lnu = np.where(np.arange(lam.size) % 2, 3.0, 1.0)
+    lnu = lnu * np.where(lam > edge_wavelength("HI"), 10.0, 1.0)
+    lam, spectra = add_ionisation_edges(
+        lam * Angstrom, {"incident": lnu * erg / s / Hz}
+    )
+    lam, lnu = lam.value, spectra["incident"].value
+
+    new_lam, new_lnu = rebin_ionising(lam, lnu)
+    assert np.all(np.diff(new_lam) > 0)
+    # The edges stay sharp, and nothing redward of the HI edge changes
+    edge = edge_wavelength("HI")
+    near = np.abs(lam - edge) < 0.05
+    assert np.all(np.isin(lam[near], new_lam))
+    assert np.all(new_lam[new_lam > edge] == lam[lam > edge])
+
+    # Ionising photons (a sum of lnu/lam) as cloudy sees them: the SED
+    # interpolated log-log at its mesh, against the input's
+    mesh = np.loadtxt(CLOUDY_MESH)
+    mesh = mesh[(mesh > 100.0) & (mesh < edge)]
+
+    def photons(x, y):
+        seen = np.exp(np.interp(np.log(mesh), np.log(x), np.log(y)))
+        return trapezoid(seen / mesh, mesh)
+
+    ionising = lam < edge
+    truth = trapezoid(lnu[ionising] / lam[ionising], lam[ionising])
+    assert abs(photons(lam, lnu) / truth - 1) > 0.03
+    assert abs(photons(new_lam, new_lnu) / truth - 1) < 0.01

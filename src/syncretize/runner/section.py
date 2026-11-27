@@ -34,6 +34,7 @@ import numpy as np
 
 from syncretize.cloudy.create_cloudy_input_grid import create_cloudy_inputs
 from syncretize.cloudy.create_synthesizer_grid import (
+    QUALITY,
     create_synthesizer_grid,
     required_extensions,
 )
@@ -682,11 +683,21 @@ class Section(Stages):
             for model, why in (state.get("failures") or {}).items()
             if model not in interpolated
         }
+        # Points Cloudy made with a caveat, or that were remedied or
+        # interpolated (see the grid's quality dataset), but didn't fail
+        with h5py.File(grid, "r") as hdf:
+            quality = hdf["quality"][()] if "quality" in hdf else None
+        flagged = (
+            int(np.count_nonzero(quality & ~QUALITY["failed"]))
+            if quality is not None
+            else None
+        )
         self._save_state(
             grid=grid,
             next="done",
             failures=failures,
             interpolated=interpolated,
+            flagged=flagged,
         )
         # The section is done once saved, so the run is marked done even if
         # its summary can't be logged (e.g. the grid locked on Lustre)

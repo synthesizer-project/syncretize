@@ -1167,10 +1167,10 @@ def test_several_cloudy_sections_share_the_incident_grid(
             # comes back after the last
             page = app.screen
             await pilot.press("o", "O")
-            assert (page.sort, page.reverse) == (1, True)
+            assert page.sorts["view"] == [1, True]
             for _ in range(7):
                 await pilot.press("o")
-            assert (page.sort, page.reverse) == (0, False)
+            assert page.sorts["view"] == [0, False]
             await pilot.press("down", "enter")
             await pilot.pause(0.5)
             assert switcher.current == rows[1][0]
@@ -1190,11 +1190,13 @@ def test_several_cloudy_sections_share_the_incident_grid(
             yaml.safe_dump({"Run": {"work_dir": run_work_dir}})
         )
     other = runs / "b"
-    assert find_runs(str(runs)) == {
-        "active": [],
-        "done": [work_dir],
-        "waiting": [str(other / "work")],
-    }
+    found = find_runs(str(runs))
+    assert (found["active"], found["done"], found["waiting"]) == (
+        [],
+        [work_dir],
+        [str(other / "work")],
+    )
+    assert found["runs"][work_dir][0] == "done"
     state = yaml.safe_load((tmp_path / "work" / "state.yaml").read_text())
     (tmp_path / "work" / "state.yaml").write_text(
         yaml.safe_dump({**state, "next": "cloudy"})
@@ -1204,23 +1206,66 @@ def test_several_cloudy_sections_share_the_incident_grid(
         yaml.safe_dump({"name": "other", "next": "start"})
     )
 
+    # Every section done but not the run (its last assembly died) stalls it
+    assert find_runs(str(runs))["runs"][work_dir][0] == "stalled"
+
     async def drive_directory():
-        """Check a directory of runs shows a tab per section, and the pick."""
+        """Check a directory of runs opens on every grid, finished apart."""
+        from syncretize.runner.watch import _AllGrids
+
         app = WatchApp(interval=0.5, directory=str(runs))
         async with app.run_test(size=(140, 45)) as pilot:
             await pilot.pause(1.5)
+            assert isinstance(app.screen, _AllGrids)
+            # The finished grids are apart from those under way
             grids = [
                 (cells[6], cells[7].split()[:1])
                 for _, cells, _ in app.grid_rows()
             ]
-            assert grids == [("test", ["C1"]), ("test", ["C2"]), ("other", [])]
-            assert app._shown() == work_dir
-            await pilot.press("3")
+            assert grids == [("other", [])]
+            finished = [
+                cells[5].split()[0] for _, cells, _, _ in app.finished_rows()
+            ]
+            assert finished == ["C1", "C2"]
+            text = app.overview(118).plain
+            assert "1 runs running" in text and "1 stalled" in text
+            assert "grids done" in text
+            # Enter on a finished grid of a run under way shows its view
+            app.screen.query_one(".finished").focus()
+            await pilot.press("down", "enter")
             await pilot.pause(0.5)
-            assert app._shown() == str(other / "work")
+            assert not isinstance(app.screen, _AllGrids)
+            assert app._shown() == work_dir
             await pilot.press("q")
 
     asyncio.run(drive_directory())
+
+
+def test_status_tells_a_stalled_section():
+    """A section whose next job has gone from Slurm has stalled."""
+    from datetime import datetime, timedelta, timezone
+
+    from syncretize.runner.status import section_status, stall_reason
+
+    def submitted(ago):
+        when = datetime.now(timezone.utc) - timedelta(seconds=ago)
+        return when.isoformat(timespec="seconds")
+
+    old = {"stage": "finish", "job": "12", "submitted": submitted(3600)}
+    state = {"next": "finish", "next_job": "12", "jobs": [old]}
+    assert section_status(state, {"12"}) == "running"
+    assert section_status(state, None) == "running"  # no Slurm to ask
+    assert section_status(state, set()) == "stalled"
+    assert stall_reason(state) == "finish job 12 ended without running"
+    # A job failing says why
+    old["outcome"] = "failed: RuntimeError('sbatch refused')"
+    assert "sbatch refused" in stall_reason(state)
+    # A job just submitted may not be listed yet
+    new = {"stage": "finish", "job": "13", "submitted": submitted(10)}
+    state = {"next": "finish", "next_job": "13", "jobs": [old, new]}
+    assert section_status(state, set()) == "running"
+    for stage in ("done", "walltime", "review"):
+        assert section_status({"next": stage}, set()) == stage
 
 
 def test_watch_reads_state_again_only_once_changed(tmp_path):

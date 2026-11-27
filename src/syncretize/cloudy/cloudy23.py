@@ -17,7 +17,7 @@ from synthesizer.synth_warnings import warn
 from unyt import angstrom, c, cm, h, s, unyt_array
 
 from syncretize.cloudy.utils import resolve_linelist
-from syncretize.photoionisation import edge_is_resolved
+from syncretize.photoionisation import edge_is_resolved, rebin_ionising
 
 
 class ShapeCommands:
@@ -65,6 +65,11 @@ class ShapeCommands:
                 "smear it; regenerate the incident grid with sharp edges "
                 "(see syncretize#151)."
             )
+
+        # Give cloudy the ionising part averaged over its own cells, so it
+        # sees the input's ionising photons
+        lam, lnu = rebin_ionising(lam.to("Angstrom").value, lnu)
+        lam *= angstrom
 
         # define frequency
         nu = c / lam

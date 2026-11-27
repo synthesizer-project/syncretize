@@ -230,6 +230,8 @@ class Stages:
             **values
                 The keys to set.
         """
+        if values.get("next") == "done":
+            values["finished"] = _now()
         state = self._load_state() | values | {"updated": _now()}
         _save(
             self._path("state.yaml"),

@@ -387,12 +387,22 @@ It only reads the run's files (and asks Slurm about its jobs every 30
 seconds), so it can be left running anywhere.
 
 Given a directory holding runs instead (any directory with runs' ``run.yaml``
-files in it or below, e.g. a campaign's ``runs/``), it watches every grid of
-every run under way there, and the all grids page counts the runs under way,
-done and not yet submitted. Runs appear once submitted and drop off once done
-(the directory is searched every 30 seconds); only the shown grid's run is
-read in full, the others' state files and queues every 10 seconds.
-``--once`` prints a summary of each run under way.
+files in it or below, e.g. a campaign's ``runs/``), it opens on the all grids
+page: the grids under way, then, below, every grid finished there (when it
+finished, its models, its failed and flagged points; ``Tab`` moves between
+the tables, and the sort keys sort the one focused). The overview counts the
+runs and the grids by status. Runs appear once submitted (the directory is
+searched every 30 seconds); only the shown grid's run is read in full, the
+others' state files and queues every 10 seconds. ``--once`` prints a summary
+of each run under way.
+
+Each run and grid has a status (``syncretize.runner.status``): running,
+stalled, paused for a review or a longer ``max_walltime``, or done. One has
+*stalled* when the job it waits on has gone from Slurm without carrying on:
+it failed (e.g. Slurm refused to take its next job), or Slurm ended it before
+it ran (e.g. ``NODE_FAIL``). A job that never ran can't say so, so the status
+comes from the state files and your jobs in Slurm. Its badge says why;
+resuming the run carries it on.
 
 Without ``syncretize watch``, to see how a round is doing while its workers
 run:
